@@ -803,6 +803,32 @@ static int CSAVE_OFF, ARG_OFF;                    /* 跨调用保存区 / 实参
 static int NFIXED;                                /* 当前函数固定参数个数（va_start 用） */
 static int A0_DIRECT;                             /* 调用结果就要留在 a0，别再拷回临时（return f() 用） */
 
+/* 函数级大常量缓存
+ * ----------------
+ * 超过 7-trit（±1093）的字面量要说 LUI+ADDI 两条才能装出来。这种量往往出现在
+ * 循环条件里（while(i<=200000)），每轮重装就是纯浪费。叶子函数里 s 系列是空的，
+ * 拿几个把它们预先装好，循环里直接当只读寄存器用。 */
+#define CC_MAX 2
+static __int128 CC_V[CC_MAX]; static int CC_R[CC_MAX]; static int CC_N;   /* 45-trit 常量超 long long */
+static void collect_fn_consts(Node*n){
+    if(!n||CC_N>=CC_MAX) return;
+    if(n->k==N_NUM){
+        __int128 v=n->numw;                    /* 必须用全精度：3^40 已超 long long */
+        __int128 av=v<0?-v:v;
+        if(av>1093){
+            for(int i=0;i<CC_N;i++) if(CC_V[i]==v) return;
+            CC_V[CC_N++]=v;
+        }
+        return;
+    }
+    Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
+    for(int i=0;i<10;i++) collect_fn_consts(all[i]);
+    if(n->body) for(int i=0;i<n->nitems;i++) collect_fn_consts(n->body[i]);
+    if(n->args) for(int i=0;i<n->nargs;i++) collect_fn_consts(n->args[i]);
+    if(n->items) for(int i=0;i<n->nitems;i++) collect_fn_consts(n->items[i]);
+    if(n->dinit) for(int i=0;i<n->ndecls;i++) collect_fn_consts(n->dinit[i]);
+}
+
 static int has_call(Node*n);   /* forward */
 
 static void too_deep(int off){
@@ -878,6 +904,28 @@ static int syscall_no(const char*name){
 /* 求值 n，结果放在返回的寄存器里；进入时 TDN=d0，返回后 TDN=d0+1 且结果 = TPOOL[d0] */
 /* ===================== 类型推导与左值寻址 ===================== */
 static int eval(Node*n);          /* forward */
+
+/* dst = src * c（c>=2），src 保持不被修改。
+ * VM 里一条 MUL 约 70ns、一条 ADD 约 5ns，所以小常量用"加倍累加"展开远快于乘法：
+ *   c=3 -> dst=src; dst+=dst; dst+=src        (2 条 ADD)
+ *   c=9 -> dst=src; 2x; 4x; 8x; +=src         (4 条 ADD)
+ * 调用者必须保证 dst != src（src 是只读的常驻寄存器时尤其重要）。 */
+static void mul_const_into(int dst,int src,long long c){
+    emitf("ADDI %s, %s, 0",regname(dst),regname(src));      /* dst = src */
+    long long k=1;
+    while(k*2<=c){ emitf("ADD %s, %s, %s",regname(dst),regname(dst),regname(dst)); k*=2; }
+    while(k<c){    emitf("ADD %s, %s, %s",regname(dst),regname(dst),regname(src)); k++; }
+}
+/* 字面量是否真的落在 long long 内（num 是截断值，用 numw 校验） */
+static int num_fits_ll(Node*n){ return n->numw==(__int128)n->num; }
+/* 展开后是否仍划算（MUL≈70ns vs ADD≈5ns，最多容 12 条） */
+static int mul_chain_cost(long long c){
+    long long ac=c<0?-c:c; int n=1;      /* 1 条 ADDI 拷贝 */
+    long long k=1;
+    while(k*2<=ac){ n++; k*=2; }
+    n += (int)(ac-k);
+    return n;
+}
 static char* ty_cat(const char*a,const char*b){
     char*out=malloc(strlen(a)+strlen(b)+1); strcpy(out,a); strcat(out,b); return out;
 }
@@ -997,7 +1045,10 @@ static int eval(Node*n){
     if(!n){ int r=tacq(); emitf("ADDI %s, zero, 0",regname(r)); return r; }
     int d0=TDN;
     switch(n->k){
-    case N_NUM: { int r=tacq(); load_imm128(r,n->numw); return r; }
+    case N_NUM: {
+        for(int i=0;i<CC_N;i++) if(CC_V[i]==n->numw) return CC_R[i];  /* 已预装：只读共享 */
+        int r=tacq(); load_imm128(r,n->numw); return r;
+    }
     case N_STR: { int r=tacq(); load_imm(r,n->straddr); return r; }
     case N_VAR: {
         LocVar*v=findloc(n->s);
@@ -1039,6 +1090,21 @@ static int eval(Node*n){
             lbl(endl);
             TDN=d0+1;
             return d;
+        }
+        /* 常量乘法强度削减：小常量展开成加法链，避开 70ns 的硬件乘法 */
+        if(!strcmp(op,"*")&&(n->l->k==N_NUM||n->r->k==N_NUM)){
+            Node*nm=n->r->k==N_NUM?n->r:n->l;
+            Node*vr=n->r->k==N_NUM?n->l:n->r;
+            long long c=nm->num;
+            if(num_fits_ll(nm)&&c!=0&&c!=1&&c!=-1&&vr->k!=N_NUM&&mul_chain_cost(c)<=12){
+                int a=eval(vr);
+                int d=tacq();                          /* 必须与 a 分开：a 的原值还要用 */
+                mul_const_into(d,a,c<0?-c:c);
+                if(c<0) emitf("SUB %s, zero, %s",regname(d),regname(d));
+                if(d!=TPOOL[d0]){ emitf("ADDI %s, %s, 0",regname(TPOOL[d0]),regname(d)); d=TPOOL[d0]; }
+                TDN=d0+1;
+                return d;
+            }
         }
         char*lt=expr_type(n->l), *rt=expr_type(n->r);
         int a=eval(n->l);
@@ -1112,14 +1178,27 @@ static int eval(Node*n){
                 if(r->k==N_NUM){ load_imm128(tg->reg,r->numw); return tg->reg; }
                 /* x = x ± 小常量 -> 一条 ADDI */
                 if(r->k==N_BIN&&r->l&&r->l->k==N_VAR&&!strcmp(r->l->s,lv->s)&&
-                   r->r&&r->r->k==N_NUM&&(!strcmp(r->s,"+")||!strcmp(r->s,"-"))){
+                   r->r&&r->r->k==N_NUM&&num_fits_ll(r->r)&&(!strcmp(r->s,"+")||!strcmp(r->s,"-"))){
                     long long c=r->r->num; if(!strcmp(r->s,"-")) c=-c;
                     if(c>=-1093&&c<=1093){ emitf("ADDI %s, %s, %lld",R,R,c); return tg->reg; }
                 }
-                /* x = x op y（只取无符号/移位歧义的 + - * & | ^） */
+                /* x = x * 小常量：加法链比 MUL 快一个数量级 */
+                if(r->k==N_BIN&&!strcmp(r->s,"*")&&r->l&&r->l->k==N_VAR&&
+                   !strcmp(r->l->s,lv->s)&&r->r&&r->r->k==N_NUM){
+                    long long c=r->r->num;
+                    if(num_fits_ll(r->r)&&c!=0&&c!=1&&c!=-1&&mul_chain_cost(c)<=12){
+                        int t=tacq();
+                        mul_const_into(t,tg->reg,c<0?-c:c);
+                        if(c<0) emitf("SUB %s, zero, %s",regname(t),regname(t));
+                        emitf("ADDI %s, %s, 0",R,regname(t));
+                        TDN=0;
+                        return tg->reg;
+                    }
+                }
+                /* x = x op y（只取无符号/移位歧义的 + - & | ^） */
                 if(r->k==N_BIN&&r->l&&r->l->k==N_VAR&&!strcmp(r->l->s,lv->s)&&r->r){
                     const char*op=r->s;
-                    if(!strcmp(op,"+")||!strcmp(op,"-")||!strcmp(op,"*")||
+                    if(!strcmp(op,"+")||!strcmp(op,"-")||
                        !strcmp(op,"&")||!strcmp(op,"|")||!strcmp(op,"^")){
                         int b=eval(r->r);
                         emitf("%s %s, %s, %s",binop_insn(op),R,R,regname(b));
@@ -1566,10 +1645,25 @@ static void gen_func(Node*f){
         if(r<0) LOC[i].spilled=1; else LOC[i].reg=r;
     }
     int spill=0; for(int i=0;i<NLOC;i++) if(LOC[i].spilled){ LOC[i].off=spill; spill+=ty_size(LOC[i].ty,NULL); }
+    /* 大常量预装到空闲的 callee-saved 寄存器（仅叶子函数：那里 s 系是空的） */
+    CC_N=0;
+    collect_fn_consts(f->fbody);
+    if(!PP_SAVED&&CC_N>0){
+        static int scout[6]={9,22,23,24,25,26};
+        int got=0;
+        for(int i=0;i<6&&got<CC_N;i++)
+            if(!USEDREG[scout[i]]){ USEDREG[scout[i]]=1; CC_R[got++]=scout[i]; }
+        CC_N=got;                       /* 寄存器不够就少缓存几个 */
+    } else CC_N=0;
     /* 收集实际用到的、需要保存的寄存器（caller-saved 池无需保存） */
     int sregs[8],ns=0;
-    if(PP_SAVED) for(int k=0;k<PP_N;k++) if(USEDREG[PP_POOL[k]]) sregs[ns++]=PP_POOL[k];
+    if(PP_SAVED){
+        for(int k=0;k<PP_N;k++) if(USEDREG[PP_POOL[k]]) sregs[ns++]=PP_POOL[k];
+    } else {
+        for(int k=0;k<CC_N;k++) sregs[ns++]=CC_R[k];   /* 常量缓存用的 s 寄存器同样要存 */
+    }
     int need_frame = hascall || spill>0 || ns>0;
+    if(getenv("TRV_DUMP_CC")) fprintf(stderr,"[cc] %s: CC_N=%d ns=%d spill=%d hascall=%d need_frame=%d\n",f->s,CC_N,ns,spill,hascall,need_frame);
     /* 帧布局: s0 = 原sp+18; 原sp[0]=old fp, [9]=ra; saved s 寄存器从 s0+0 起;
      * spill 在 saved 之后。sp 抬升量须覆盖到 spill 顶部。 */
     int savbase=0;
@@ -1605,6 +1699,7 @@ static void gen_func(Node*f){
         else emitf("ADDI %s, %s, 0",regname(v->reg),regname(r));
         TDN=0;
     }
+    for(int i=0;i<CC_N;i++) load_imm128(CC_R[i],(__int128)CC_V[i]);   /* 大常量只装一次 */
     /* 参数装载（在帧建立后） */
     for(int i=0;i<f->nparams&&i<8;i++){
         LocVar*v=&LOC[i];
