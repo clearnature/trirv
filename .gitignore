@@ -1,0 +1,19 @@
+# 编译产物
+trirv_vm
+trirv_vm_portable
+*.o
+*.so
+*.dSYM/
+
+# PGO profile 数据
+*.profraw
+*.profdata
+default.profraw
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 临时/实验基准（实验代码单独在 experiments/ 分支存档）
+/tmp/
+*.tmp
