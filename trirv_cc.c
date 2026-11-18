@@ -688,15 +688,54 @@ static void emitf(const char*fmt,...){
 static char* newlbl(const char*tag){ char b[32]; snprintf(b,sizeof(b),"_L%d",++LBL); (void)tag; return strdup(b); }
 static void lbl(const char*s){ emitf("%s:",s); }
 
+/* 相邻跳转消除：`JAL zero, L` 紧邻 `L:` 时等于空转，直接删掉。
+ * 最典型的来源是函数体末尾的 return 跳到紧跟其后的 epilogue。
+ * 只处理"跳转目标就是下一条指令"这一种，语义上恒等，不依赖数据流分析。 */
+static void drop_jump_to_next(void){
+    int w=0;
+    for(int i=0;i<NOUT;i++){
+        if(!strncmp(OUT[i],"JAL zero, ",10)){
+            const char*tgt=OUT[i]+10;
+            int hit=0;
+            for(int j=i+1;j<NOUT;j++){
+                int L=(int)strlen(OUT[j]);
+                if(L>0&&OUT[j][L-1]==':'){
+                    if(L-1==(int)strlen(tgt)&&!strncmp(OUT[j],tgt,L-1)) hit=1;
+                } else break;                       /* 标签之后还有指令，就不是空转 */
+            }
+            if(hit) continue;
+        }
+        OUT[w++]=OUT[i];
+    }
+    NOUT=w;
+}
+
 static int reg_free(int r){ return !USEDREG[r]; }
 static void reg_take(int r){ if(r>0&&r<27) USEDREG[r]=1; }
+/* 持久化寄存器池
+ * ---------------
+ * 有调用的函数只能用 callee-saved 的 s1,s2..s6——被调者不会破坏它们，
+ * 代价是进函数要存、出函数要恢复（每个变量 2 条）。
+ * 但"叶子函数"（函数体内没有任何调用，含 syscall）根本没人会踩它的寄存器，
+ * 于是可以直接用 caller-saved 的 a 系列，一个字节的保存/恢复都不用付。
+ * 池从 a_nparams 开始，避开形参占用的 a0..a(n-1)，装载时不会互相覆盖。
+ * 只避开 t0-t5(表达式临时)、t6(变参块基址)、s0(帧指针)、sp/ra/zero。 */
+static int PP_POOL[8]={22,23,24,25,26,9,-1,-1};
+static int PP_N=6, PP_SAVED=1;      /* PP_SAVED: 池里的寄存器是否需要存/恢复 */
+static void pp_set(int leaf,int nparams){
+    static int cpup[6]={22,23,24,25,26,9};
+    if(leaf&&nparams<8){
+        int k=0;
+        for(int i=nparams;i<8;i++) PP_POOL[k++]=10+i;   /* a_nparams .. a7 */
+        PP_N=k; PP_SAVED=0;
+    } else {
+        for(int i=0;i<6;i++) PP_POOL[i]=cpup[i];
+        PP_N=6; PP_SAVED=1;
+    }
+}
 static int reg_alloc_persistent(void){
-    /* 持久化寄存器池：只用 callee-saved 的 s1,s2..s6(共6个)。
-     * 每个函数会在 prologue 保存它实际用到的 s 寄存器，故跨调用安全。
-     * 避开 t0/t1/t2(表达式临时)、a0-a7(参数/syscall)、sp/fp/ra/zero。 */
-    static int pool[]={22,23,24,25,26,9};
-    for(unsigned i=0;i<sizeof(pool)/sizeof(pool[0]);i++)
-        if(reg_free(pool[i])){ reg_take(pool[i]); return pool[i]; }
+    for(int i=0;i<PP_N;i++)
+        if(PP_POOL[i]>=0&&reg_free(PP_POOL[i])){ reg_take(PP_POOL[i]); return PP_POOL[i]; }
     return -1;   /* 溢出到栈 */
 }
 /* 表达式临时寄存器：t0,t1,t2, 再用剩余空闲 */
@@ -762,6 +801,7 @@ static const int TPOOL[6]={5,6,7,18,19,20};      /* t0 t1 t2 t3 t4 t5 */
 static int TDN;                                   /* 已占用的临时深度 */
 static int CSAVE_OFF, ARG_OFF;                    /* 跨调用保存区 / 实参暂存区基址 */
 static int NFIXED;                                /* 当前函数固定参数个数（va_start 用） */
+static int A0_DIRECT;                             /* 调用结果就要留在 a0，别再拷回临时（return f() 用） */
 
 static int has_call(Node*n);   /* forward */
 
@@ -778,6 +818,26 @@ static void chk_off(int off){
     }
 }
 static int tacq(void){ if(TDN>=6) too_deep(0); return TPOOL[TDN++]; }
+
+/* 表达式求值的"可写性"约定
+ * -------------------------
+ * 为了让 `s = s + i` 直接落在变量自己的寄存器上（而不是先算进 t、再拷回 s），
+ * eval 允许把常驻寄存器（s 系列）当作只读结果返给上级。能否覆写由 in_tpool 判定：
+ *   - 在 TPOOL 里   -> 本次表达式的私有临时，可以当目标寄存器随手写
+ *   - 不在 TPOOL 里 -> 变量/参数的常驻寄存器，只能读
+ * 任何"要往结果里写"的地方都必须先过 dstof()，否则会写坏变量。
+ * 两个集合不相交（TPOOL={5,6,7,18,19,20}，s 系={9,22..26}），判定是精确的。 */
+static int in_tpool(int r){ for(int i=0;i<6;i++) if(TPOOL[i]==r) return 1; return 0; }
+/* 为 src 的结果挑一个可写目标：src 本身可写就复用，否则另取临时。
+   注意它只分配目标、不搬值——适合 "dst = op(src)" 这种 dst 由指令写入的场合。 */
+static int dstof(int src){ return in_tpool(src)? src : tacq(); }
+/* 把 src 复制到一个可写寄存器（src 是常驻寄存器、后面要就地累加/加偏移时用） */
+static int rwcopy(int src){
+    if(in_tpool(src)) return src;
+    int t=tacq();
+    emitf("ADDI %s, %s, 0",regname(t),regname(src));
+    return t;
+}
 
 static const char* binop_insn(const char*op){
     static const char*m[]={
@@ -896,22 +956,33 @@ static int addr_of(Node*n){
         emitf("ADDI %s, s0, %d",regname(r),v->off);
         return r;
     }
-    if(lv->k==N_DEREF) return eval(lv->e);
+    if(lv->k==N_DEREF){ int a=eval(lv->e); return rwcopy(a); }   /* *p 的地址= p 的值，不能改写 p */
     if(lv->k==N_INDEX){
         char*bt=expr_type(lv->l);
         char*et=is_array(bt)?array_elem(bt):strdup((char*)pointee(bt));
         int es=ty_bytes(et);
-        int base = is_array(bt)? addr_of(lv->l) : eval(lv->l);
+        int base = is_array(bt)? addr_of(lv->l) : rwcopy(eval(lv->l));   /* 指针变量要独立一份 */
+        int dbase = TDN;                        /* base 之后的水位 = 结果所在深度+1 */
         int idx  = eval(lv->r);
-        if(es!=1){ load_imm(SCRATCH,es); emitf("MUL %s, %s, %s",regname(idx),regname(idx),regname(SCRATCH)); }
+        if(es!=1){
+            load_imm(SCRATCH,es);
+            if(in_tpool(idx)) emitf("MUL %s, %s, %s",regname(idx),regname(idx),regname(SCRATCH));
+            else {                              /* 索引直接来自变量寄存器，缩放要用临时 */
+                int t=tacq();
+                emitf("MUL %s, %s, %s",regname(t),regname(idx),regname(SCRATCH));
+                idx=t;
+            }
+        }
         emitf("ADD %s, %s, %s",regname(base),regname(base),regname(idx));
-        TDN--;                                  /* 释放 idx，base 作为结果 */
+        /* 按标记回退水位：索引是表达式才占过临时，是变量则根本没占，
+           用 TDN-- 会把 base 一起释放掉，导致上层复用 base 的寄存器。 */
+        TDN=dbase;
         return base;
     }
     if(lv->k==N_MEMBER){
         char*bt=expr_type(lv->l);
         int base;
-        if(lv->arrow){ bt=(char*)pointee(bt); base=eval(lv->l); }
+        if(lv->arrow){ bt=(char*)pointee(bt); base=rwcopy(eval(lv->l)); }
         else if(is_array(bt)) base=addr_of(lv->l);
         else base=addr_of(lv->l);
         Member*m=member_find(bt,lv->s);
@@ -932,53 +1003,77 @@ static int eval(Node*n){
         LocVar*v=findloc(n->s);
         /* 数组名求值 = 数组首地址（C 的退化规则） */
         if(v&&is_array(v->ty)) return addr_of(n);
+        /* 常驻寄存器里的变量直接返回其寄存器，省掉 `ADDI t, s, 0` 这次拷贝。
+           结果因此是只读的，上级若要写必须先 dstof()。 */
+        if(v&&!v->spilled&&v->reg>0) return v->reg;
         int r=tacq();
         if(!v) emitf("ADDI %s, zero, 0",regname(r));           /* 未知符号兜底 */
-        else if(v->spilled){ chk_off(v->off); emitf("LW %s, %d(s0)",regname(r),v->off); }
-        else emitf("ADDI %s, %s, 0",regname(r),regname(v->reg));
+        else { chk_off(v->off); emitf("LW %s, %d(s0)",regname(r),v->off); }
         return r;
     }
     case N_UN: {
         int a=eval(n->e);
-        if(!strcmp(n->s,"-")) emitf("SUB %s, zero, %s",regname(a),regname(a));
-        else if(!strcmp(n->s,"!")) emitf("SLTIU %s, %s, 1",regname(a),regname(a));
-        else if(!strcmp(n->s,"~")) emitf("TNOT %s, %s",regname(a),regname(a));
-        return a;
+        int d=dstof(a);                                  /* -x 不能原地改写 x */
+        if(!strcmp(n->s,"-")) emitf("SUB %s, zero, %s",regname(d),regname(a));
+        else if(!strcmp(n->s,"!")) emitf("SLTIU %s, %s, 1",regname(d),regname(a));
+        else if(!strcmp(n->s,"~")) emitf("TNOT %s, %s",regname(d),regname(a));
+        return d;
     }
     case N_BIN: {
         const char*op=n->s;
         if(!strcmp(op,"&&")||!strcmp(op,"||")){          /* C 短路语义 */
             int a=eval(n->l);
-            emitf("SLTIU %s, %s, 1",regname(a),regname(a));
-            emitf("XORI %s, %s, 1",regname(a),regname(a));
+            int d=dstof(a);
+            emitf("SLTIU %s, %s, 1",regname(d),regname(a));
+            emitf("XORI %s, %s, 1",regname(d),regname(d));
             char*shortl=newlbl("short"),*endl=newlbl("logic");
-            emitf("%s %s, zero, %s", !strcmp(op,"&&")?"BEQ":"BNE", regname(a), shortl);
+            emitf("%s %s, zero, %s", !strcmp(op,"&&")?"BEQ":"BNE", regname(d), shortl);
             int b=eval(n->r);
-            emitf("SLTIU %s, %s, 1",regname(b),regname(b));
-            emitf("XORI %s, %s, 1",regname(b),regname(b));
-            emitf("ADDI %s, %s, 0",regname(a),regname(b));
+            int bd=dstof(b);
+            emitf("SLTIU %s, %s, 1",regname(bd),regname(b));
+            emitf("XORI %s, %s, 1",regname(bd),regname(bd));
+            if(bd!=d) emitf("ADDI %s, %s, 0",regname(d),regname(bd));
             emitf("JAL zero, %s",endl);
             lbl(shortl);
-            emitf("ADDI %s, zero, %d",regname(a), !strcmp(op,"&&")?0:1);
+            emitf("ADDI %s, zero, %d",regname(d), !strcmp(op,"&&")?0:1);
             lbl(endl);
             TDN=d0+1;
-            return a;
+            return d;
         }
         char*lt=expr_type(n->l), *rt=expr_type(n->r);
         int a=eval(n->l);
         int b=eval(n->r);
+        /* 目标寄存器优先复用本次表达式的私有临时；两侧都是常驻寄存器
+           （`a * b` 这种纯变量运算）时才新取一个。 */
+        int d = in_tpool(a)? a : (in_tpool(b)? b : tacq());
+        if(d!=TPOOL[d0]){                    /* 维持"结果落在 TPOOL[d0]"的不变量 */
+            emitf("ADDI %s, %s, 0",regname(TPOOL[d0]),regname(d));
+            d=TPOOL[d0];
+        }
         if((!strcmp(op,"+")||!strcmp(op,"-"))&&is_ptr(lt)&&!is_ptr(rt)){
             int es=ty_bytes(pointee(lt));
+            if(es!=1&&!in_tpool(b)){         /* 偏移量在常驻寄存器里，不能原地缩放 */
+                load_imm(SCRATCH,es);
+                emitf("MUL %s, %s, %s",regname(d),regname(b),regname(SCRATCH));
+                emitf("%s %s, %s, %s",op[0]=='+'?"ADD":"SUB",regname(d),regname(a),regname(d));
+                TDN=d0+1; return d;
+            }
             if(es!=1){ load_imm(SCRATCH,es); emitf("MUL %s, %s, %s",regname(b),regname(b),regname(SCRATCH)); }
         } else if(!strcmp(op,"+")&&is_ptr(rt)&&!is_ptr(lt)){
             int es=ty_bytes(pointee(rt));
+            if(es!=1&&!in_tpool(a)){
+                load_imm(SCRATCH,es);
+                emitf("MUL %s, %s, %s",regname(d),regname(a),regname(SCRATCH));
+                emitf("ADD %s, %s, %s",regname(d),regname(d),regname(b));
+                TDN=d0+1; return d;
+            }
             if(es!=1){ load_imm(SCRATCH,es); emitf("MUL %s, %s, %s",regname(a),regname(a),regname(SCRATCH)); }
         } else if(!strcmp(op,"-")&&is_ptr(lt)&&is_ptr(rt)){
             int es=ty_bytes(pointee(lt));
-            emitf("SUB %s, %s, %s",regname(a),regname(a),regname(b));
-            if(es!=1){ load_imm(SCRATCH,es); emitf("DIV %s, %s, %s",regname(a),regname(a),regname(SCRATCH)); }
+            emitf("SUB %s, %s, %s",regname(d),regname(a),regname(b));
+            if(es!=1){ load_imm(SCRATCH,es); emitf("DIV %s, %s, %s",regname(d),regname(d),regname(SCRATCH)); }
             TDN=d0+1;
-            return a;
+            return d;
         }
         int uns = ty_uns(lt)||ty_uns(rt);
         const char*ins=binop_insn(op);
@@ -986,11 +1081,11 @@ static int eval(Node*n){
             if(uns&&!strcmp(ins,"DIV")) ins="DIVU";
             else if(uns&&!strcmp(ins,"REM")) ins="REMU";
             else if(!strcmp(ins,"SRL")&&!uns) ins="SRA";     /* 有符号右移用算术移位 */
-            emitf("%s %s, %s, %s",ins,regname(a),regname(a),regname(b));
+            emitf("%s %s, %s, %s",ins,regname(d),regname(a),regname(b));
         }
-        else emit_rel_u(op,a,a,b,uns);
+        else emit_rel_u(op,d,a,b,uns);
         TDN=d0+1;                                        /* 释放右操作数 */
-        return a;
+        return d;
     }
     case N_ASSIGN: {
         Node*lv=n->l;
@@ -1005,6 +1100,42 @@ static int eval(Node*n){
             int r=tacq();
             if(dst!=r) emitf("ADDI %s, %s, 0",regname(r),regname(dst));
             return r;
+        }
+        /* —— 目标驱动求值：把右侧直接算进左值自己的常驻寄存器 ——
+           只处理最常见且无副作用的形态（常量 / x op y / 另一个变量），
+           其余仍走通用路径，行为完全不变。 */
+        if(lv->k==N_VAR&&n->r){
+            LocVar*tg=findloc(lv->s);
+            Node*r=n->r;
+            if(tg&&!tg->spilled&&tg->reg>0&&!is_ptr(expr_type(lv))){
+                const char*R=regname(tg->reg);
+                if(r->k==N_NUM){ load_imm128(tg->reg,r->numw); return tg->reg; }
+                /* x = x ± 小常量 -> 一条 ADDI */
+                if(r->k==N_BIN&&r->l&&r->l->k==N_VAR&&!strcmp(r->l->s,lv->s)&&
+                   r->r&&r->r->k==N_NUM&&(!strcmp(r->s,"+")||!strcmp(r->s,"-"))){
+                    long long c=r->r->num; if(!strcmp(r->s,"-")) c=-c;
+                    if(c>=-1093&&c<=1093){ emitf("ADDI %s, %s, %lld",R,R,c); return tg->reg; }
+                }
+                /* x = x op y（只取无符号/移位歧义的 + - * & | ^） */
+                if(r->k==N_BIN&&r->l&&r->l->k==N_VAR&&!strcmp(r->l->s,lv->s)&&r->r){
+                    const char*op=r->s;
+                    if(!strcmp(op,"+")||!strcmp(op,"-")||!strcmp(op,"*")||
+                       !strcmp(op,"&")||!strcmp(op,"|")||!strcmp(op,"^")){
+                        int b=eval(r->r);
+                        emitf("%s %s, %s, %s",binop_insn(op),R,R,regname(b));
+                        TDN=0;
+                        return tg->reg;
+                    }
+                }
+                /* x = 另一个常驻变量 */
+                if(r->k==N_VAR){
+                    LocVar*sv=findloc(r->s);
+                    if(sv&&!sv->spilled&&sv->reg>0&&!is_array(sv->ty)){
+                        if(sv->reg!=tg->reg) emitf("ADDI %s, %s, 0",R,regname(sv->reg));
+                        return tg->reg;
+                    }
+                }
+            }
         }
         int v=eval(n->r);                                /* 值（也可能是左值地址的来源） */
         int d1=TDN;
@@ -1052,32 +1183,54 @@ static int eval(Node*n){
     case N_DEREF: {
         char*ty=(char*)pointee(expr_type(n->e));
         int a=eval(n->e);
-        load_mem(a,a,0,ty);
-        return a;
+        int d=dstof(a);
+        load_mem(d,a,0,ty);
+        return d;
     }
     case N_ADDR: return addr_of(n->e);
     case N_CALL: {
         int nargs=n->nargs;
+        int sn=syscall_no(n->s);
         /* 1) 活跃临时全部落栈：被调者会破坏 t 系列寄存器。索引=深度，嵌套不会互相覆盖。 */
         for(int i=0;i<d0;i++) emitf("SW %s, %d(s0)",regname(TPOOL[i]),CSAVE_OFF+i*9);
-        /* 2) 实参逐个求值后暂存（嵌套调用会破坏 a0-a7，故不能直接放进 a 寄存器） */
-        for(int i=0;i<nargs;i++){
-            int r=eval(n->args[i]);
-            emitf("SW %s, %d(s0)",regname(r),ARG_OFF+i*9);
-            TDN=d0;
+        /* 快路径：实参全是常量或标量变量、不超过 8 个且非变参时，
+           直接装进 a 寄存器，省掉"先写暂存区再读回"的两趟访存。 */
+        int fast = (sn<0)&&nargs<=8&&!fn_is_variadic(n->s);
+        for(int i=0;i<nargs&&fast;i++){
+            Node*a=n->args[i];
+            if(a->k==N_NUM) continue;
+            if(a->k==N_VAR){ LocVar*v=findloc(a->s); if(v&&!is_array(v->ty)) continue; }
+            fast=0;
         }
-        int sn=syscall_no(n->s);
-        /* 变参或被调函数形参超过 8 个：参数块在帧内连续排布，块基址进 t6。
-           块放在帧内（而不是 sp 之下）是为了不与已求值的实参暂存区互相踩踏。 */
-        int need_block = (sn<0) && (fn_is_variadic(n->s)||nargs>8);
-        if(need_block) emitf("ADDI t6, s0, %d",ARG_OFF);
-        for(int i=0;i<nargs&&i<8;i++) emitf("LW a%d, %d(s0)",i,ARG_OFF+i*9);
-        if(sn>=0){ load_imm(A7,sn); emitf("ECALL"); }
-        else emitf("JAL ra, %s",n->s);
+        if(fast){
+            for(int i=0;i<nargs;i++){
+                Node*a=n->args[i];
+                if(a->k==N_NUM){ load_imm128(10+i,a->numw); continue; }
+                LocVar*v=findloc(a->s);
+                if(!v) emitf("ADDI a%d, zero, 0",i);
+                else if(!v->spilled&&v->reg>0){ if(v->reg!=10+i) emitf("ADDI a%d, %s, 0",i,regname(v->reg)); }
+                else { chk_off(v->off); emitf("LW a%d, %d(s0)",i,v->off); }
+            }
+            emitf("JAL ra, %s",n->s);
+        } else {
+            /* 2) 实参逐个求值后暂存（嵌套调用会破坏 a0-a7，故不能直接放进 a 寄存器） */
+            for(int i=0;i<nargs;i++){
+                int r=eval(n->args[i]);
+                emitf("SW %s, %d(s0)",regname(r),ARG_OFF+i*9);
+                TDN=d0;
+            }
+            /* 变参或被调函数形参超过 8 个：参数块在帧内连续排布，块基址进 t6。
+               块放在帧内（而不是 sp 之下）是为了不与已求值的实参暂存区互相踩踏。 */
+            int need_block = (sn<0) && (fn_is_variadic(n->s)||nargs>8);
+            if(need_block) emitf("ADDI t6, s0, %d",ARG_OFF);
+            for(int i=0;i<nargs&&i<8;i++) emitf("LW a%d, %d(s0)",i,ARG_OFF+i*9);
+            if(sn>=0){ load_imm(A7,sn); emitf("ECALL"); }
+            else emitf("JAL ra, %s",n->s);
+        }
         /* 3) 恢复活跃临时，结果取回 */
         for(int i=0;i<d0;i++) emitf("LW %s, %d(s0)",regname(TPOOL[i]),CSAVE_OFF+i*9);
         int r=tacq();
-        emitf("ADDI %s, a0, 0",regname(r));
+        if(!A0_DIRECT) emitf("ADDI %s, a0, 0",regname(r));   /* return f() 时 a0 已是结果 */
         return r;
     }
     case N_VASTART: {
@@ -1108,9 +1261,10 @@ static int eval(Node*n){
     case N_MEMBER: {
         char*ty=expr_type(n);
         int pa=addr_of(n);
-        if(strcmp(ty,"int")) load_mem(pa,pa,0,ty);
-        else emitf("LW %s, 0(%s)",regname(pa),regname(pa));
-        return pa;
+        int d=dstof(pa);
+        if(strcmp(ty,"int")) load_mem(d,pa,0,ty);
+        else emitf("LW %s, 0(%s)",regname(d),regname(pa));
+        return d;
     }
     default:
         too_deep(2);
@@ -1188,6 +1342,46 @@ static void gen_init_at(const char*ty,int off,Node*init,int*slot){
     TDN=0;
 }
 
+/* 生成"cond 为假就跳到 lbl"的最短序列。
+ * 关系运算的取反不需要先算出 0/1 再取反——把取反直接融进分支条件：
+ *   i <= n  =>  SLT t, n, i ; BNE t, zero, end   （n<i 则退出）
+ * 比 "SLT t,i,n ; XORI t,t,1 ; BEQ t,zero,end" 少一条，循环每轮都省。 */
+static void gen_brfalse(Node*c,const char*lbl){
+    TDN=0;
+    if(c&&c->k==N_BIN){
+        const char*op=c->s;
+        int rel = !strcmp(op,"<")||!strcmp(op,">")||!strcmp(op,"<=")||
+                  !strcmp(op,">=")||!strcmp(op,"==")||!strcmp(op,"!=");
+        if(rel){
+            char*lt=expr_type(c->l),*rt=expr_type(c->r);
+            int uns=ty_uns(lt)||ty_uns(rt);
+            const char*SL=uns?"SLTU":"SLT";
+            int a=eval(c->l);
+            int b=eval(c->r);
+            int d=in_tpool(a)? a : (in_tpool(b)? b : tacq());
+            if(d!=TPOOL[0]){ emitf("ADDI %s, %s, 0",regname(TPOOL[0]),regname(d)); d=TPOOL[0]; }
+            if(!strcmp(op,"<")){        emitf("%s %s, %s, %s",SL,regname(d),regname(a),regname(b)); emitf("BEQ %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,">=")){  emitf("%s %s, %s, %s",SL,regname(d),regname(a),regname(b)); emitf("BNE %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,">")){   emitf("%s %s, %s, %s",SL,regname(d),regname(b),regname(a)); emitf("BEQ %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,"<=")){  emitf("%s %s, %s, %s",SL,regname(d),regname(b),regname(a)); emitf("BNE %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,"==")){  emitf("SUB %s, %s, %s",regname(d),regname(a),regname(b));       emitf("BNE %s, zero, %s",regname(d),lbl); }
+            else {                      emitf("SUB %s, %s, %s",regname(d),regname(a),regname(b));       emitf("BEQ %s, zero, %s",regname(d),lbl); }
+            TDN=0;
+            return;
+        }
+    }
+    int v=eval(c);
+    emitf("BEQ %s, zero, %s",regname(v),lbl);
+    TDN=0;
+}
+
+static int ends_with_return(Node*n){
+    if(!n) return 0;
+    if(n->k==N_RETURN) return 1;
+    if(n->k==N_BLOCK&&n->nitems>0) return ends_with_return(n->body[n->nitems-1]);
+    return 0;
+}
+
 static void gen_stmt(Node*n){
     if(!n) return;
     switch(n->k){
@@ -1207,6 +1401,9 @@ static void gen_stmt(Node*n){
                 }
                 continue;
             }
+            if(!v->spilled&&n->dinit[i]->k==N_NUM){
+                load_imm128(v->reg,n->dinit[i]->numw); TDN=0; continue;
+            }
             TDN=0; int r=eval(n->dinit[i]);
             if(v->spilled){ store_mem(r,8,v->off,v->ty); }
             else if(v->reg!=r) emitf("ADDI %s, %s, 0",regname(v->reg),regname(r));
@@ -1216,11 +1413,9 @@ static void gen_stmt(Node*n){
     case N_EXPR: TDN=0; eval(n->expr); TDN=0; break;
     case N_IF: {
         if(!n->els){ char*end=newlbl("endif");
-            TDN=0; int c=eval(n->cond); TDN=0;
-            emitf("BEQ %s, zero, %s",regname(c),end); gen_stmt(n->then); lbl(end);
+            gen_brfalse(n->cond,end); gen_stmt(n->then); lbl(end);
         } else { char*els=newlbl("else"),*end=newlbl("endif");
-            TDN=0; int c=eval(n->cond); TDN=0;
-            emitf("BEQ %s, zero, %s",regname(c),els);
+            gen_brfalse(n->cond,els);
             gen_stmt(n->then); emitf("JAL zero, %s",end);
             lbl(els); gen_stmt(n->els); lbl(end);
         }
@@ -1228,9 +1423,7 @@ static void gen_stmt(Node*n){
     }
     case N_WHILE: {
         char*start=newlbl("while"),*end=newlbl("end");
-        lbl(start); TDN=0;
-        { int c=eval(n->cond); emitf("BEQ %s, zero, %s",regname(c),end); }
-        TDN=0;
+        lbl(start); gen_brfalse(n->cond,end);
         GROW(LOOPEND,CAPLOOP,NLOOP,char*); GROW(LOOPCONT,CAPLOOPC,NLOOP,char*);
         LOOPEND[NLOOP]=end; LOOPCONT[NLOOP]=start; NLOOP++;
         gen_stmt(n->stmt); NLOOP--;
@@ -1242,7 +1435,7 @@ static void gen_stmt(Node*n){
         TDN=0;
         char*start=newlbl("for"),*cont=newlbl("cont"),*end=newlbl("end");
         lbl(start);
-        if(n->cond){ TDN=0; int c=eval(n->cond); TDN=0; emitf("BEQ %s, zero, %s",regname(c),end); }
+        if(n->cond) gen_brfalse(n->cond,end);
         GROW(LOOPEND,CAPLOOP,NLOOP,char*); GROW(LOOPCONT,CAPLOOPC,NLOOP,char*);
         LOOPEND[NLOOP]=end; LOOPCONT[NLOOP]=cont; NLOOP++;
         gen_stmt(n->stmt); lbl(cont);
@@ -1252,7 +1445,9 @@ static void gen_stmt(Node*n){
     }
     case N_RETURN:
         TDN=0;
-        if(n->expr){ int r=eval(n->expr); emitf("ADDI a0, %s, 0",regname(r)); }
+        if(n->expr&&n->expr->k==N_CALL){        /* return f(...)：结果直接留在 a0 */
+            A0_DIRECT=1; eval(n->expr); A0_DIRECT=0;
+        } else if(n->expr){ int r=eval(n->expr); if(r!=10) emitf("ADDI a0, %s, 0",regname(r)); }
         else emitf("ADDI a0, zero, 0");
         TDN=0;
         if(FUNC_EPILOGUE) emitf("JAL zero, %s",FUNC_EPILOGUE);
@@ -1322,6 +1517,17 @@ static int max_args(Node*n){
     if(n->dinit) for(int i=0;i<n->ndecls;i++){ int v=max_args(n->dinit[i]); if(v>m) m=v; }
     return m;
 }
+static int has_any_call(Node*n){
+    if(!n) return 0;
+    if(n->k==N_CALL) return 1;                 /* 含 syscall：ECALL 同样吃 a0-a7 */
+    Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
+    for(int i=0;i<10;i++) if(has_any_call(all[i])) return 1;
+    if(n->body) for(int i=0;i<n->nitems;i++) if(has_any_call(n->body[i])) return 1;
+    if(n->args) for(int i=0;i<n->nargs;i++) if(has_any_call(n->args[i])) return 1;
+    if(n->items) for(int i=0;i<n->nitems;i++) if(has_any_call(n->items[i])) return 1;
+    if(n->dinit) for(int i=0;i<n->ndecls;i++) if(has_any_call(n->dinit[i])) return 1;
+    return 0;
+}
 static int has_call(Node*n){
     if(!n) return 0;
     if(n->k==N_CALL) return !is_syscall_name(n->s);
@@ -1336,23 +1542,33 @@ static int has_call(Node*n){
 static void gen_func(Node*f){
     NLOC=0; memset(USEDREG,0,sizeof(USEDREG)); NLOOP=0; CURFN=f->s; NFIXED=f->nparams;
     FUNC_EPILOGUE=newlbl("epi");
+    int anycall=has_any_call(f->fbody);
+    int hascall=has_call(f->fbody);
+    pp_set(!anycall&&!f->variadic, f->nparams);   /* 必须在寄存器分配之前定池 */
     for(int i=0;i<f->nparams;i++){
         LocVar*v=loc_new(); v->name=f->params[i]; v->ty=f->ptypes[i];
         int isarr; ty_size(v->ty,&isarr); v->spilled=isarr;
+        /* 叶子函数没有调用会踩 a0-a7，形参可以直接留在它到达时的寄存器里，
+           省掉 `ADDI sN, aM, 0` 这次搬运。池从 a_nparams 起，不会与它们冲突。 */
+        if(!anycall&&!isarr&&!struct_find(v->ty)&&i<8){
+            v->reg=10+i; reg_take(v->reg);
+        }
     }
     if(f->variadic){ LocVar*vb=loc_new(); vb->name="__argbase"; vb->ty="int"; vb->spilled=1; }
     collect_decls(f->fbody);
     for(int i=0;i<NLOC;i++){
-        if(LOC[i].spilled) continue;
+        if(LOC[i].spilled){
+            if(LOC[i].reg>0){ USEDREG[LOC[i].reg]=0; LOC[i].reg=0; }   /* 取址后已落栈，归还寄存器 */
+            continue;
+        }
+        if(LOC[i].reg>0) continue;                                    /* 形参已就地占用 a 寄存器 */
         int r=reg_alloc_persistent();
         if(r<0) LOC[i].spilled=1; else LOC[i].reg=r;
     }
     int spill=0; for(int i=0;i<NLOC;i++) if(LOC[i].spilled){ LOC[i].off=spill; spill+=ty_size(LOC[i].ty,NULL); }
-    /* 收集实际用到的 callee-saved 寄存器 */
-    int sregs[6],ns=0;
-    static int spool[]={9,22,23,24,25,26};
-    for(int k=0;k<6;k++) if(USEDREG[spool[k]]) sregs[ns++]=spool[k];
-    int hascall=has_call(f->fbody);
+    /* 收集实际用到的、需要保存的寄存器（caller-saved 池无需保存） */
+    int sregs[8],ns=0;
+    if(PP_SAVED) for(int k=0;k<PP_N;k++) if(USEDREG[PP_POOL[k]]) sregs[ns++]=PP_POOL[k];
     int need_frame = hascall || spill>0 || ns>0;
     /* 帧布局: s0 = 原sp+18; 原sp[0]=old fp, [9]=ra; saved s 寄存器从 s0+0 起;
      * spill 在 saved 之后。sp 抬升量须覆盖到 spill 顶部。 */
@@ -1366,10 +1582,13 @@ static void gen_func(Node*f){
     int framesize=18+ns*9+spill+call_bytes;   /* sp 抬到帧顶 */
     if(need_frame){
         emitf("SW s0, 0(sp)");
-        emitf("SW ra, 9(sp)");
+        if(hascall) emitf("SW ra, 9(sp)");    /* 叶子函数不调别人，ra 不会被覆盖 */
         emitf("ADDI s0, sp, 18");
         for(int k=0;k<ns;k++) emitf("SW %s, %d(s0)",regname(sregs[k]),savbase+k*9);
-        if(framesize>0){ load_imm(SCRATCH,framesize); emitf("ADD sp, sp, %s",regname(SCRATCH)); }
+        if(framesize>0){
+            if(framesize<=1093) emitf("ADDI sp, sp, %d",framesize);   /* 小帧一步到位 */
+            else { load_imm(SCRATCH,framesize); emitf("ADD sp, sp, %s",regname(SCRATCH)); }
+        }
     }
     if(getenv("TRV_DUMP_LOC")) for(int i=0;i<NLOC;i++)
         fprintf(stderr,"[loc] %-8s ty=%-10s sp=%d off=%d reg=%d\n",LOC[i].name,LOC[i].ty,LOC[i].spilled,LOC[i].off,LOC[i].reg);
@@ -1393,11 +1612,11 @@ static void gen_func(Node*f){
         else if(v->reg!=10+i) emitf("ADDI %s, a%d, 0",regname(v->reg),i);
     }
     gen_stmt(f->fbody);
-    emitf("ADDI a0, zero, 0");
+    if(!ends_with_return(f->fbody)) emitf("ADDI a0, zero, 0");   /* 仅兜底路径需要 */
     lbl(FUNC_EPILOGUE);
     if(need_frame){
         for(int k=0;k<ns;k++) emitf("LW %s, %d(s0)",regname(sregs[k]),savbase+k*9);
-        emitf("LW ra, -9(s0)");
+        if(hascall) emitf("LW ra, -9(s0)");
         emitf("ADDI sp, s0, -18");
         emitf("LW s0, 0(sp)");
     }
@@ -1666,6 +1885,7 @@ int main(int argc,char**argv){
     emitf("ADDI a7, zero, 93");
     emitf("ECALL");
     for(int i=0;i<NFN;i++){ emitf("%s:",FNS[i]->s); gen_func(FNS[i]); }
+    drop_jump_to_next();
     if(getenv("TRV_DUMP_ASM")){ for(int i=0;i<NOUT;i++) fprintf(stderr,"%s\n",OUT[i]); }
     /* 第三个参数（可选）：把汇编文本写入文件，供统一后端/差分测试读取，
        避免与 stderr 上的诊断信息混流。 */
