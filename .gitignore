@@ -1,6 +1,8 @@
 # 编译产物
 trirv_vm
 trirv_vm_portable
+trirv_cc_asan
+trirv_cc_dbg
 *.o
 *.so
 *.dSYM/
