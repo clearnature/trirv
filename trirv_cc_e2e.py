@@ -3,7 +3,7 @@
 流程: C 源码 -> trirv_cc 编译 -> trirv_asm 汇编 -> trirv_isa 机器码 -> trirv_vm 执行
 覆盖: 算术/比较/逻辑、while/for/if、break/continue、函数、递归。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

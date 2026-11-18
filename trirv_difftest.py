@@ -1,5 +1,5 @@
 import subprocess, os
-import trirv_cc as cc, trirv_vm as vm
+import trirv_cc_backend as cc, trirv_vm as vm
 from export_trv import export
 
 _HERE = os.path.dirname(os.path.abspath(__file__))          # 可移植：原硬编码 /workspace

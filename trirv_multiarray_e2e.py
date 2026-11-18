@@ -6,7 +6,7 @@
 
 注：类型串维度按 C 顺序 [行][列]，ty_elem 取最左维；下标链逐层退化。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

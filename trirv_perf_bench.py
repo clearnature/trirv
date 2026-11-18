@@ -10,7 +10,7 @@ import time
 import subprocess
 import trirv_isa as isa
 import trirv_vm as vm
-import trirv_cc as cc
+import trirv_cc_backend as cc
 
 def now():
     return time.perf_counter()

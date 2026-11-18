@@ -17,7 +17,7 @@ echo ""
 echo "========== 2. 负数语义正确性回归（本轮修复的 bug）=========="
 python3.11 - <<'PY'
 import subprocess
-import trirv_cc as cc, trirv_vm as vm
+import trirv_cc_backend as cc, trirv_vm as vm
 cases=[('return -1','int main(){ return -1; }',255),
        ('1-3','int main(){ return 1-3; }',254),
        ('return -100','int main(){ return -100; }',156),

@@ -5,7 +5,7 @@
 calloc 零初始化、realloc 保留数据、动态链表、字符串动态填充、
 分配失败返回 0、以及 VM brk 查询/增长/收缩/越界失败语义。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

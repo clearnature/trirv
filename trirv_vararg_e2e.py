@@ -8,7 +8,7 @@
 第 N 个参数（N=固定参数个数）后的首个变参；本 ABI 所有参数等宽 9 tryte，
 va_arg 按字读取并递增。变参总数上限 8（含固定参数）。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

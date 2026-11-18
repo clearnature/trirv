@@ -3,7 +3,7 @@
 覆盖：&x 取址、*p 解引用读写、char 类型、char* 下标与指针算术、
 int* 9-tryte 步长、strlen/strcpy 风格循环。验证后回归既有工具链。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

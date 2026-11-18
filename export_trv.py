@@ -8,7 +8,7 @@ TRV1 格式（小端）：
            | n_seg × (uint32 addr, uint32 len, bytes data)
 """
 import struct
-import trirv_cc as cc
+import trirv_cc_backend as cc
 
 
 def export(c_src_path, trv_path):

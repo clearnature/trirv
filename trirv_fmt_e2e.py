@@ -10,7 +10,7 @@
 关键约定：unsigned 与 int 同为 9 tryte 整字，仅除法/取模/关系比较改用无符号指令；
 三补码 word 天然是 mod 3^45 的非负表示，故 %x 等直接按 word 位型展开即可。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

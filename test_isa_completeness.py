@@ -181,7 +181,7 @@ else:
 
 # ---------------------------------------------------------------- E. 第二轮深度审查修复
 print("\n=== E. 第二轮审查修复（编译器大栈帧/大常量/短路 + VM 边界）===")
-import trirv_cc as cc
+import trirv_cc_backend as cc
 
 def run_c(src, steps=3000000):
     """C 源码 -> 编译 -> Python VM 执行，返回 (a0有符号值, cpu)。"""
@@ -332,7 +332,7 @@ check("D4 U 型立即数决策 = 实现 13 trit",
       D.get("D4", {}).get("u_imm_trits") == 13 and isa.decode(e("LUI", imm=3**13-1))["imm"] == 3**13-1)
 # D5：45-trit 数据字长（LP64 不适用于三进制硬件，见 §9）
 check("D5 字长决策 = 实现 XLEN = 45", D.get("D5", {}).get("xlen") == isa.XLEN == 45)
-import trirv_cc as _cc
+import trirv_cc_backend as _cc
 check("D5 字长 = 9 tryte (long=pointer 同宽)", _cc.WORD_TRYTES == 9 == isa.XLEN // 5)
 
 print(f"\n=== 总结: {PASS} passed, {FAIL} failed ===")

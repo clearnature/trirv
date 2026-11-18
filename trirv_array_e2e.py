@@ -4,7 +4,7 @@
 形参数组退化、数组传址修改、多数组栈帧共存、char 数组当字符串、
 数组与 malloc 混用。全部编译到 TriRV 机器码后在 VM 运行。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

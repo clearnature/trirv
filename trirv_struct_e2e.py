@@ -4,7 +4,7 @@
 含 char 混合成员、结构体数组、结构体指针参数、指向结构的指针算术、
 与 malloc 联用（手写链表节点）、成员值拷贝。编译到机器码后在 VM 运行。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

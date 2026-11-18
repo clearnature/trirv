@@ -18,6 +18,10 @@ PROFRAW="default.profraw"
 PROFDATA="/tmp/trirv_train.profdata"
 PROFTOOL=${PROFTOOL:-llvm-profdata}   # gcc 用户可改为: PROFTOOL=gcov 变体见文末
 
+echo "=== [0/5] 构建 C 编译器（默认编译后端，零 Python 依赖）==="
+$CC -std=gnu11 -O2 -o trirv_cc trirv_cc.c -lm
+echo "  trirv_cc 就绪"
+
 echo "=== [1/5] 生成 PGO 训练程序（覆盖 算术/乘除/访存/控制流）==="
 cat > "$TRAIN" <<'SRC'
 int sum(int n){int s=0;int i=1;while(i<=n){s=s+i;i=i+1;}return s;}

@@ -9,7 +9,7 @@ struct 数组元素按值传、参数+返回组合、返回再传参、含 char 
 按值传参 = 调用方压源地址、被调方 prologue 逐字拷入本地；
 sret = 调用方栈帧预留缓冲、a0 传缓冲地址、被调方 return 逐字拷入。
 """
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 

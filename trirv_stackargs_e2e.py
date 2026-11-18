@@ -5,7 +5,7 @@
 struct 按值传参与多参数混合。全部回归保持全绿。
 """
 import os
-import trirv_cc as cc
+import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
