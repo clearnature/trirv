@@ -179,6 +179,21 @@ gather 开销反超标量。三值 min/max 的查表是波特尔瓶颈，非算�
   **JIT 热块编译**（把循环体编译成宿主机原生代码块，跨指令消除分发），
   或**真三值硬件**。软件解释器层面已无剩余低风险收益。
 
+## 被否决实验的代码存档（experiments 分支）
+
+所有被否决的性能实验代码**完整保留**，未删除。项目已初始化 Git：
+- `main` 分支：稳定交付版（本报告对应的干净实现）。
+- `experiments` 分支：AOT 原型、LUT 加法/乘法/位平面、add_mod/sub_mod 的全部源码与结论。
+
+```bash
+git checkout experiments   # 查看被否决的实验代码
+ls experiments/            # aot/ lut/ addmod/ + README.md（含账面 vs 端到端数据表）
+git checkout main          # 回到稳定交付版
+```
+
+结论与数据见 `experiments/README.md`。保留原因：实验结论同样有价值，
+账面收益与端到端收益的落差是本项目最重要的经验，代码原文可用于以后复用或重新评估。
+
 ## 复现
 ```bash
 cd /Users/zesheng/ai-lab/trirv
