@@ -49,7 +49,8 @@ MOD45         = 3 ** 45
 I31, I32, NI31 = 2**31, 2**32, -(2**31)
 
 POOL = ("t0", "t1", "t2", "t3", "t4", "t5", "t6")   # 操作数栈驻留池，槽 j -> t{j}
-DEEP = "s3"                                          # 栈深超过池容量时的借用寄存器
+LREG = ("s1", "s2")                                  # 局部变量驻留（仅 leaf 函数）
+DEEP = "s5"                                          # 栈深超过池容量时的借用寄存器
 
 
 class Unsupported(Exception):
@@ -242,6 +243,43 @@ def skip_imm(b, p, op):
     return p
 
 
+def walk_instrs(body):
+    """按指令边界遍历，产出 (操作码, 立即数游标)。结构指令单独吃掉 blocktype 字节。"""
+    p, n = 0, len(body)
+    while p < n:
+        op = body[p]
+        p += 1
+        yield op, p
+        if op in (0x02, 0x03, 0x04):
+            p += 1
+        else:
+            p = skip_imm(body, p, op)
+
+
+def has_call(body):
+    return any(op == 0x10 for op, _ in walk_instrs(body))
+
+
+def pick_lreg(body, nlocals):
+    """挑最热的局部变量给 s1/s2：按 local.set/tee 次数排序（只写的才是热的）。"""
+    cnt = {}
+    for op, p in walk_instrs(body):
+        if op in (0x21, 0x22):
+            i, _ = uleb(body, p)
+            if i < nlocals:
+                cnt[i] = cnt.get(i, 0) + 1
+    hot = sorted(cnt, key=lambda k: (-cnt[k], k))
+    return {i: LREG[j] for j, i in enumerate(hot[:len(LREG)])}
+
+
+def peek_lset(b, p):
+    """若 p 处是 local.set/tee，返回 (局部变量号, 该指令之后的游标)。"""
+    if p < len(b) and b[p] in (0x21, 0x22):
+        i, q = uleb(b, p + 1)
+        return i, q
+    return None
+
+
 class Gen:
     def __init__(self, mod):
         self.mod = mod
@@ -321,16 +359,45 @@ class Gen:
         r = self.reg_of(i)
         return r if r is not None else DEEP
 
-    def get(self, i, borrow="s2"):
-        """取槽 i 的值所在寄存器（必要时从内存补一条 LW）。"""
-        r = self.reg_of(i)
-        if r is not None:
-            if not self.vs.get(i):
-                self.L(f"    LW {r}, {self.slot(i)}(s0)")
-                self.vs[i] = True
+    def get(self, i, borrow="s3"):
+        """取槽 i 的可写寄存器；值若在局部变量寄存器里，先复制到 t{i} 再返回。"""
+        r = self.vs.get(i)
+        if r is not None and r not in LREG:
             return r
+        rr = self.reg_of(i)
+        if rr is None:
+            self.L(f"    LW {borrow}, {self.slot(i)}(s0)")
+            return borrow
+        if r is not None:
+            self.L(f"    ADDI {rr}, {r}, 0")      # 别名 -> 物化成可写副本
+        else:
+            self.L(f"    LW {rr}, {self.slot(i)}(s0)")
+        self.vs[i] = rr
+        return rr
+
+    def read(self, i, borrow="s4"):
+        """只读取槽 i 的值所在寄存器，可能是局部变量寄存器（不可写，零搬移）。"""
+        r = self.vs.get(i)
+        if r is not None:
+            return r
+        rr = self.reg_of(i)
+        if rr is not None:
+            self.L(f"    LW {rr}, {self.slot(i)}(s0)")
+            self.vs[i] = rr
+            return rr
         self.L(f"    LW {borrow}, {self.slot(i)}(s0)")
         return borrow
+
+    def writable(self, i):
+        """取一个可以无条件覆盖的寄存器；旧值不需要保留（比较类指令用）。"""
+        r = self.vs.get(i)
+        if r is not None and r not in LREG:
+            return r
+        rr = self.reg_of(i)
+        if rr is None:
+            return "s3"
+        self.vs.pop(i, None)
+        return rr
 
     def set(self, i, src=None):
         """声明槽 i 的值由 src 持有；src 不在规范寄存器上就补一条搬移。"""
@@ -342,7 +409,7 @@ class Gen:
             return
         if src is not None and src != r:
             self.L(f"    ADDI {r}, {src}, 0")
-        self.vs[i] = True
+        self.vs[i] = r
 
     def kill(self, i):
         self.vs.pop(i, None)
@@ -350,10 +417,8 @@ class Gen:
     def spill_all(self):
         """驻留值全部写回内存；之后栈状态 = 全在内存，任何合流点都安全。"""
         for i in sorted(self.vs):
-            if not self.vs.get(i):
-                continue
-            r = self.reg_of(i)
-            if r is not None:
+            r = self.vs.get(i)
+            if r:
                 self.L(f"    SW {r}, {self.slot(i)}(s0)")
         self.vs.clear()
 
@@ -363,8 +428,8 @@ class Gen:
         self.maxh = max(self.maxh, self.h)
         self.vs.pop(i, None)
         pr = self.reg_of(i)
-        if pr is not None and r == pr:
-            self.vs[i] = True            # 值本来就在规范寄存器上，压栈零指令
+        if r in LREG or pr == r:
+            self.vs[i] = r                # 已在合适寄存器上，压栈零指令
             return
         self.L(f"    SW {r}, {self.slot(i)}(s0)")
 
@@ -373,25 +438,23 @@ class Gen:
         if self.h < 0:
             raise Unsupported("操作数栈下溢（模块未通过校验？）")
         i = self.h
-        if self.vs.get(i):
-            r = self.reg_of(i)
+        r = self.vs.get(i)
+        if r:
             self.vs.pop(i, None)
-            if r is not None:
-                if rd != r:
-                    self.L(f"    ADDI {rd}, {r}, 0")
-                return
+            if rd != r:
+                self.L(f"    ADDI {rd}, {r}, 0")
+            return
         self.L(f"    LW {rd}, {self.slot(i)}(s0)")
         self.vs.pop(i, None)
 
     def pop_val(self, spare="s5"):
-        """弹栈并返回"值已在哪个寄存器里"，驻留时零指令。"""
+        """弹栈并返回"值已在哪个寄存器里"，驻留或别名时零指令。"""
         self.h -= 1
         i = self.h
-        if self.vs.get(i):
-            r = self.reg_of(i)
+        r = self.vs.get(i)
+        if r:
             self.vs.pop(i, None)
-            if r is not None:
-                return r
+            return r
         self.L(f"    LW {spare}, {self.slot(i)}(s0)")
         self.vs.pop(i, None)
         return spare
@@ -409,14 +472,15 @@ class Gen:
         self.L(f"    SLTI {rd}, {rs}, 1")
 
     def wrap(self, r):
-        """规整回 i32 值域 [-2^31, 2^31)。加减最多越界一次，两条判定即可。"""
+        """规整回 i32 值域 [-2^31, 2^31)。加减最多越界一次，两条判定即可。
+        跳转距离只有 1 条指令，用 B 型短跳（±1093 槽），不走 jif 的 BEQ+JAL 三步。"""
         hi, lo = self.lab("w"), self.lab("w")
         self.L(f"    SLT s7, {r}, s11")
-        self.jif("s7", hi)
+        self.L(f"    BNE s7, zero, {hi}")         # r < 2^31 -> 不动
         self.L(f"    SUB {r}, {r}, s10")
         self.L(f"{hi}:")
         self.L(f"    SLT s7, {r}, s9")
-        self.jnot("s7", lo)
+        self.L(f"    BEQ s7, zero, {lo}")         # r >= -2^31 -> 不动
         self.L(f"    ADD {r}, {r}, s10")
         self.L(f"{lo}:")
 
@@ -431,7 +495,7 @@ class Gen:
     def to_unsigned(self, r):
         ok = self.lab("u")
         self.L(f"    SLT s7, {r}, zero")
-        self.jnot("s7", ok)
+        self.L(f"    BEQ s7, zero, {ok}")
         self.L(f"    ADD {r}, {r}, s10")
         self.L(f"{ok}:")
 
@@ -469,8 +533,11 @@ class Gen:
         self.nlocals = len(params) + sum(n for n, _ in groups)
         self.h = 0
         self.maxh = 0
-        self.vs = {}                     # 槽号 -> True 表示值只活在 t{槽号} 里
+        self.vs = {}                     # 槽号 -> 持有该值的寄存器名
+        self.pending = None              # 被就地消费掉的 local.set 之后的游标
         self.dead = False
+        # 局部变量驻留只对 leaf 函数启用：有 call 时被调用者会破坏 s1/s2
+        self.lreg = {} if has_call(body) else pick_lreg(body, self.nlocals)
         self.ret = self.lab("ret")
         name = f"wasm_f{fidx}"
 
@@ -481,7 +548,13 @@ class Gen:
         frame_at = len(self.lines)
         self.L("    __FRAME__")
         for i in range(len(params)):
-            self.L(f"    SW a{i}, {i * WORD}(s0)")
+            if i in self.lreg:
+                self.L(f"    ADDI {self.lreg[i]}, a{i}, 0")
+            else:
+                self.L(f"    SW a{i}, {i * WORD}(s0)")
+        for i in range(len(params), self.nlocals):
+            if i in self.lreg:
+                self.L(f"    ADDI {self.lreg[i]}, zero, 0")
 
         self.ctrl = [("func", None, None, 0)]
         p, n = 0, len(body)
@@ -502,8 +575,24 @@ class Gen:
         self.frames.append((frame_at, size))
         return name
 
+    def inline_target(self, b, p, i0):
+        """识别 `local.get j ... op ... local.set j`：结果可直接写回 j 的寄存器。
+        前提是左操作数槽里放的就是 j 的值本身（未被物化），写它才是安全的。"""
+        pl = peek_lset(b, p)
+        if not pl:
+            return None
+        j, nxt = pl
+        k = self.lreg.get(j)
+        if k and self.vs.get(i0) == k:
+            return j, nxt, k
+        return None
+
     # -- 分派 ------------------------------------------------------
     def gen_instr(self, b, p, fidx):
+        if self.pending is not None:              # 上一条已把这条 local.set/tee 就地消费
+            q = self.pending
+            self.pending = None
+            return q
         op = b[p]; p += 1
 
         # 死代码：结构指令照常走（要配平 block/end），叶子只吃立即数
@@ -614,9 +703,9 @@ class Gen:
             return p
         if op == 0x1B:                            # select
             self.h -= 3
-            c = self.get(self.h + 2, "s2")
-            b2 = self.get(self.h + 1, "s3")
-            a = self.get(self.h, "s4")
+            c = self.get(self.h + 2, "s3")
+            b2 = self.read(self.h + 1, "s4")
+            a = self.get(self.h, "s5")
             keep = self.lab("sel")
             self.jif(c, keep)
             self.L(f"    ADDI {a}, {b2}, 0")
@@ -629,15 +718,26 @@ class Gen:
         # ---- 变量 ----
         if op == 0x20:
             i, p = uleb(b, p)
-            r = self.alloc()
-            self.L(f"    LW {r}, {i * WORD}(s0)")
-            self.push(r); return p
+            if i in self.lreg:
+                self.push(self.lreg[i])        # 别名压栈，零指令
+            else:
+                r = self.alloc()
+                self.L(f"    LW {r}, {i * WORD}(s0)")
+                self.push(r)
+            return p
         if op in (0x21, 0x22):
             i, p = uleb(b, p)
             v = self.pop_val()
-            self.L(f"    SW {v}, {i * WORD}(s0)")
-            if op == 0x22:
-                self.push(v)
+            if i in self.lreg:
+                k = self.lreg[i]
+                if v != k:
+                    self.L(f"    ADDI {k}, {v}, 0")
+                if op == 0x22:
+                    self.push(k)
+            else:
+                self.L(f"    SW {v}, {i * WORD}(s0)")
+                if op == 0x22:
+                    self.push(v)
             return p
         if op == 0x23:
             i, p = uleb(b, p)
@@ -668,20 +768,22 @@ class Gen:
         # ---- 比较 ----
         if op == 0x45:                            # eqz
             self.h -= 1
-            a = self.get(self.h)
-            self.eqz(a, a)
+            rs = self.read(self.h)
+            rd = self.writable(self.h)
+            self.eqz(rd, rs)
             self.set(self.h)
             self.h += 1
             return p
 
         if op in (0x46, 0x47):                    # eq / ne
             self.h -= 2
-            a = self.get(self.h)
-            b2 = self.get(self.h + 1, "s4")
-            self.L(f"    SUB {a}, {a}, {b2}")
-            self.eqz(a, a)
+            src = self.read(self.h)
+            rd = self.writable(self.h)
+            b2 = self.read(self.h + 1, "s4")
+            self.L(f"    SUB {rd}, {src}, {b2}")
+            self.eqz(rd, rd)
             if op == 0x47:
-                self.not_(a, a)
+                self.not_(rd, rd)
             self.kill(self.h + 1)
             self.set(self.h)
             self.h += 1
@@ -689,29 +791,30 @@ class Gen:
 
         if 0x48 <= op <= 0x4F:                    # lt/gt/le/ge (s/u)
             self.h -= 2
-            a = self.get(self.h)
-            b2 = self.get(self.h + 1, "s4")
-            # a 既是左操作数又是结果寄存器，所以每个分支只能算一次
+            src = self.read(self.h)
+            rd = self.writable(self.h)
+            b2 = self.read(self.h + 1, "s4")
+            # rd 只写不读，所以左操作数可以是别名，不必物化
             if op == 0x48:                        # lt_s
-                self.L(f"    SLT {a}, {a}, {b2}")
+                self.L(f"    SLT {rd}, {src}, {b2}")
             elif op == 0x49:                      # lt_u
-                self.lt_u(a, a, b2)
+                self.lt_u(rd, src, b2)
             elif op == 0x4A:                      # gt_s = b < a
-                self.L(f"    SLT {a}, {b2}, {a}")
+                self.L(f"    SLT {rd}, {b2}, {src}")
             elif op == 0x4B:                      # gt_u
-                self.lt_u(a, b2, a)
+                self.lt_u(rd, b2, src)
             elif op == 0x4C:                      # le_s = !(b < a)
-                self.L(f"    SLT {a}, {b2}, {a}")
-                self.not_(a, a)
+                self.L(f"    SLT {rd}, {b2}, {src}")
+                self.not_(rd, rd)
             elif op == 0x4D:                      # le_u
-                self.lt_u(a, b2, a)
-                self.not_(a, a)
+                self.lt_u(rd, b2, src)
+                self.not_(rd, rd)
             elif op == 0x4E:                      # ge_s = !(a < b)
-                self.L(f"    SLT {a}, {a}, {b2}")
-                self.not_(a, a)
+                self.L(f"    SLT {rd}, {src}, {b2}")
+                self.not_(rd, rd)
             else:                                 # 0x4F ge_u
-                self.lt_u(a, a, b2)
-                self.not_(a, a)
+                self.lt_u(rd, src, b2)
+                self.not_(rd, rd)
             self.kill(self.h + 1)
             self.set(self.h)
             self.h += 1
@@ -720,40 +823,67 @@ class Gen:
         # ---- 数值 ----
         if op in (0x6A, 0x6B):                    # add / sub
             self.h -= 2
-            a = self.get(self.h)
-            b2 = self.get(self.h + 1, "s4")
-            self.L(f"    {'ADD' if op == 0x6A else 'SUB'} {a}, {a}, {b2}")
-            self.wrap(a)
-            self.kill(self.h + 1)
-            self.set(self.h)
-            self.h += 1
+            i0, i1 = self.h, self.h + 1
+            inl = self.inline_target(b, p, i0)
+            rd = inl[2] if inl else self.get(i0)
+            b2 = self.read(i1, "s4")
+            self.L(f"    {'ADD' if op == 0x6A else 'SUB'} {rd}, {rd}, {b2}")
+            self.wrap(rd)
+            self.kill(i1)
+            if inl:
+                self.pending = inl[1]             # local.set 已被消费，写回目标就是 rd
+                self.vs.pop(i0, None)
+            elif self.reg_of(i0) is not None:
+                self.vs[i0] = rd
+                self.h += 1
+            else:
+                self.set(i0, rd)
+                self.h += 1
             return p
 
         if op == 0x6C:                            # mul
             self.h -= 2
-            a = self.get(self.h)
-            b2 = self.get(self.h + 1, "s4")
-            self.L(f"    MUL {a}, {a}, {b2}")
-            self.wrap_mul(a)
-            self.kill(self.h + 1)
-            self.set(self.h)
-            self.h += 1
+            i0, i1 = self.h, self.h + 1
+            inl = self.inline_target(b, p, i0)
+            rd = inl[2] if inl else self.get(i0)
+            b2 = self.read(i1, "s4")
+            self.L(f"    MUL {rd}, {rd}, {b2}")
+            self.wrap_mul(rd)
+            self.kill(i1)
+            if inl:
+                self.pending = inl[1]
+                self.vs.pop(i0, None)
+            elif self.reg_of(i0) is not None:
+                self.vs[i0] = rd
+                self.h += 1
+            else:
+                self.set(i0, rd)
+                self.h += 1
             return p
 
         if op in (0x6D, 0x6E, 0x6F, 0x70):        # div_s div_u rem_s rem_u
             self.h -= 2
-            a = self.get(self.h)
-            b2 = self.get(self.h + 1, "s4")
+            i0, i1 = self.h, self.h + 1
+            inl = self.inline_target(b, p, i0)
+            rd = inl[2] if inl else self.get(i0)
+            b2 = self.read(i1, "s4")
             self.L(f"    BEQ {b2}, zero, __wasm_trap")
             if op in (0x6E, 0x70):
-                self.to_unsigned(a)
+                self.to_unsigned(rd)
                 self.to_unsigned(b2)
-            self.L(f"    {'DIV' if op in (0x6D, 0x6E) else 'REM'} {a}, {a}, {b2}")
+            self.L(f"    {'DIV' if op in (0x6D, 0x6E) else 'REM'} {rd}, {rd}, {b2}")
             if op in (0x6E, 0x70):
-                self.wrap(a)
-            self.kill(self.h + 1)
-            self.set(self.h)
-            self.h += 1
+                self.wrap(rd)
+            self.kill(i1)
+            if inl:
+                self.pending = inl[1]
+                self.vs.pop(i0, None)
+            elif self.reg_of(i0) is not None:
+                self.vs[i0] = rd
+                self.h += 1
+            else:
+                self.set(i0, rd)
+                self.h += 1
             return p
 
         if op in (0x71, 0x72, 0x73):
@@ -784,24 +914,24 @@ class Gen:
         self.h -= 1
         i = self.h
         res = self.alloc()                        # 结果占用地址槽的寄存器
-        r = self.reg_of(i)
-        if r is not None and self.vs.get(i):
-            self.L(f"    ADDI s2, {r}, 0")        # 地址搬开，腾出 res 存结果
+        rv = self.vs.get(i)
+        if rv:
+            self.L(f"    ADDI s3, {rv}, 0")       # 地址搬开，腾出 res 存结果
         else:
-            self.L(f"    LW s2, {self.slot(i)}(s0)")
+            self.L(f"    LW s3, {self.slot(i)}(s0)")
         self.kill(i)
-        self.addr_off("s2", offset)               # 常数用 s6，不碰驻留池
+        self.addr_off("s3", offset)               # 常数用 s6，不碰驻留池
         if op == 0x28:                            # i32.load：4 tryte 平衡进制
-            self.L(f"    LB {res}, 0(s2)")
+            self.L(f"    LB {res}, 0(s3)")
             for k, sh in ((1, 5), (2, 10), (3, 15)):
-                self.L(f"    LB s1, {k}(s2)")
-                self.L(f"    SLLI s1, s1, {sh}")
-                self.L(f"    ADD {res}, {res}, s1")
+                self.L(f"    LB s5, {k}(s3)")
+                self.L(f"    SLLI s5, s5, {sh}")
+                self.L(f"    ADD {res}, {res}, s5")
             self.set(self.h)
             self.h += 1
             return p
         if op in (0x2C, 0x2D):                    # load8_s / load8_u
-            self.L(f"    {'LB' if op == 0x2C else 'LBU'} {res}, 0(s2)")
+            self.L(f"    {'LB' if op == 0x2C else 'LBU'} {res}, 0(s3)")
             self.set(self.h)
             self.h += 1
             return p
@@ -814,19 +944,19 @@ class Gen:
         offset, p = uleb(b, p)
         self.h -= 2
         ai, vi = self.h, self.h + 1
-        r = self.reg_of(ai)
-        if r is not None and self.vs.get(ai):
-            self.L(f"    ADDI s2, {r}, 0")        # 地址固定搬到 s2，与值的寄存器解耦
+        rv = self.vs.get(ai)
+        if rv:
+            self.L(f"    ADDI s3, {rv}, 0")       # 地址固定搬到 s3，与值的寄存器解耦
         else:
-            self.L(f"    LW s2, {self.slot(ai)}(s0)")
+            self.L(f"    LW s3, {self.slot(ai)}(s0)")
         self.kill(ai)
         v = self.get(vi, "s4")
         self.kill(vi)
-        self.addr_off("s2", offset)
+        self.addr_off("s3", offset)
         if op == 0x36:                            # i32.store：拆成 4 个平衡 243 位
-            self.L("    ADDI s1, zero, 243")
+            self.L("    ADDI s6, zero, 243")
             for k in range(4):
-                self.L(f"    REM s5, {v}, s1")     # s5 ∈ (-243, 243)
+                self.L(f"    REM s5, {v}, s6")     # s5 ∈ (-243, 243)
                 # 平衡位归位：d>121 -> -243；d<-121 -> +243；中间不动
                 # 修正量 = 243 * ((d<122) + (d<-121) - 1)，无分支
                 self.L("    SLTI s7, s5, 122")
@@ -835,12 +965,12 @@ class Gen:
                 self.L("    ADDI s7, s7, -1")
                 self.L("    SLLI s7, s7, 5")       # ×243
                 self.L("    ADD s5, s5, s7")
-                self.L(f"    SB s5, {k}(s2)")
+                self.L(f"    SB s5, {k}(s3)")
                 self.L(f"    SUB {v}, {v}, s5")
-                self.L(f"    DIV {v}, {v}, s1")
+                self.L(f"    DIV {v}, {v}, s6")
             return p
         if op == 0x3A:                            # store8
-            self.L(f"    SB {v}, 0(s2)")
+            self.L(f"    SB {v}, 0(s3)")
             return p
         if op == 0x3B:
             raise Unsupported("i16 存取：2 tryte 只有 ±29524，与 wasm 的 ±32768 错位")
