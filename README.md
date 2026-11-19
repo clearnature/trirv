@@ -152,6 +152,9 @@ python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 �
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
+python3 trirv_tdd_contract.py                  # 契约测试（TDD，59 项：字段/执行/立即数/STRICT/代数律）
+python3 run_all_tests.py                       # 全量：一条命令跑完 27 套，输出汇总表
+python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
 ```
 
 实测一条完整链路（2026-11-19 验证）：
@@ -164,16 +167,19 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-19 08:07 复测）
+## 五、当前状态（2026-11-19 14:20 全量复测：`run_all_tests.py` 27 套 / 25 PASS / 2 XFAIL）
 
 | 套件 | 结果 |
 | --- | --- |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **27 套：25 PASS，2 XFAIL（struct 按值）** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
+| `trirv_tdd_contract.py`（契约测试：寄存器字段全 32 值 / 立即数越界 / STRICT / 代数律） | **59/59** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
+| `trirv_bitview_e2e.py`（C 的 `& | ^ ~`，方案 A 72 位视图） | 85/85（PyVM + C VM 双跑） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | 14/14 套（`TRV_CC_STRICT=1` 下 12/14，缺 struct 按值） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
