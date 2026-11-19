@@ -80,11 +80,25 @@ static uint32_t encR(int op,int f2,int rs2,int rs1,int funct,int rd){
     v=putf(v,9,12,rs1); v=putf(v,13,16,rs2); v=putf(v,17,19,f2);
     return v;
 }
+/* 立即数越界必须炸，不能取模。
+ * 取模会生成"能跑但算错"的指令：ADDI x1,x0,5000 静默变成 626，LUI 1594323 变成 0，
+ * 程序照常输出数字，只是数字是错的 —— 比编译失败危险得多（2026-11-19 定为此策略）。
+ * 范围与 trirv_asm.parse_int 一致：正数是原始位模式 0..3^n-1，负数按 3 补码 -lim..-1。 */
+#define IMM7_LIM   1093
+#define IMM13_LIM  797161
+static int imm7ok(int v){
+    if(v< -IMM7_LIM || v> 2186){ fprintf(stderr,"IMM7 overflow %d | line: %s\n",v,CURASM); exit(1); }
+    return ((v%2187)+2187)%2187;
+}
+static int imm13ok(int v){
+    if(v< -IMM13_LIM || v> 1594322){ fprintf(stderr,"IMM13 overflow %d | line: %s\n",v,CURASM); exit(1); }
+    return ((v%1594323)+1594323)%1594323;
+}
 static uint32_t encI(int op,int imm7,int rs1,int funct,int rd){
     uint32_t v=0;
     v=putf(v,0,2,op); v=putf(v,3,6,rd); v=putf(v,7,8,funct);
     v=putf(v,9,12,rs1);
-    int m=((imm7%2187)+2187)%2187;
+    int m=imm7ok(imm7);
     v=putf(v,13,19,m);
     return v;
 }
@@ -92,14 +106,14 @@ static uint32_t encS(int op,int imm7,int rs2,int rs1,int funct){
     uint32_t v=0;
     v=putf(v,0,2,op); v=putf(v,7,8,funct);
     v=putf(v,9,12,rs1); v=putf(v,13,16,rs2);
-    int m=((imm7%2187)+2187)%2187;
+    int m=imm7ok(imm7);
     v=putf(v,3,6,m%81); v=putf(v,17,19,m/81);
     return v;
 }
 static uint32_t encU(int op,int imm13,int rd){
     uint32_t v=0;
     v=putf(v,0,2,op); v=putf(v,3,6,rd);
-    int m=((imm13%1594323)+1594323)%1594323;
+    int m=imm13ok(imm13);
     v=putf(v,7,19,m);
     return v;
 }

@@ -27,15 +27,34 @@ REG["fp"] = 8
 
 def parse_int(tok, ntrits=7):
     """解析立即数为 ntrits-trit 的 3 补码位模式。
-    I/S/B 型与 CSR 地址为 7-trit（默认）；U/J 型立即数为 13-trit，需显式传 ntrits=13。"""
+    I/S/B 型与 CSR 地址为 7-trit（默认）；U/J 型立即数为 13-trit，需显式传 ntrits=13。
+
+    取值范围（**越界直接报错，绝不取模**）：
+      正数：0 .. 3^ntrits-1   —— 就是原始位模式，写多少就是多少
+      负数：-lim .. -1        —— lim=(3^ntrits-1)//2，按 3 补码回绕
+
+    为什么要卡这条：B/J 型曾用 `d % 3^7` / `d % 3^13` 静默取模，跳到一个"看起来
+    合法"的错误位置；I/S/U 型字面量有同一个洞——`ADDI x1,x0,5000` 会静默变成 626，
+    `LUI x1,1594323` 变成 0。程序照样跑出数，只是数是错的，比崩溃危险得多。
+    """
     tok = tok.strip()
     mod = 3 ** ntrits
+    lim = (mod - 1) // 2
     if tok in isa.CSR:               # CSR 名（mstatus/mtvec/...）-> 地址
         return isa.CSR[tok] % mod
     if tok.startswith("-"):
         n = int(tok[1:], 0)
+        if n > lim:
+            raise ValueError(
+                f"立即数 -{n} 超出 {ntrits} trit 的 3 补码范围（-{lim}..-1），"
+                f"取模会静默改变语义")
         return (mod - n) % mod       # 负立即数 -> ntrits-trit 3 补码
-    return int(tok, 0) % mod
+    v = int(tok, 0)
+    if not 0 <= v <= mod - 1:
+        raise ValueError(
+            f"立即数 {v} 超出 {ntrits} trit 的位模式范围（0..{mod - 1}），"
+            f"取模会静默改变语义")
+    return v
 
 def strip_comment(line):
     return line.split("#", 1)[0].strip()
