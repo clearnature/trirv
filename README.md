@@ -167,13 +167,13 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-19 14:20 全量复测：`run_all_tests.py` 27 套 / 25 PASS / 2 XFAIL）
+## 五、当前状态（2026-11-19 15:30 全量复测：`run_all_tests.py` 27 套全 PASS）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **27 套：25 PASS，2 XFAIL（struct 按值）** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **27/27 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
-| `trirv_tdd_contract.py`（契约测试：寄存器字段全 32 值 / 立即数越界 / STRICT / 代数律） | **59/59** |
+| `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用） | **76/76** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
@@ -181,7 +181,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~`，方案 A 72 位视图） | 85/85（PyVM + C VM 双跑） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
-| `*_e2e.py`（C 编译到执行全链路） | 14/14 套（`TRV_CC_STRICT=1` 下 12/14，缺 struct 按值） |
+| `*_e2e.py`（C 编译到执行全链路） | **14/14 套**（`TRV_CC_STRICT=1` 下同样 14/14） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |
 
@@ -198,11 +198,14 @@ $ ./trirv_vm /tmp/t.trv
 
 ## 六、已知缺口
 
-1. **C 后端覆盖 130/148 = 88%**：剩下 18 例全是 struct 按值传参 / sret 返回，
-   代码里显式 `exit(2)` 拒绝而非静默错编，走 Python 兜底（约 100 行工作量）。
-   > ⚠️ **验证陷阱**：默认模式下 e2e 全绿，是因为失败用例悄悄回退到 Python 后端。
-   > 考核 C 后端必须加 `TRV_CC_STRICT=1`（禁回退）。实测：14 套里 12 套纯 C 通过，
-   > 2 套（`byvalue`、`stackargs` 的 struct 用例）因上述缺口失败——与 88% 覆盖率一致。
+1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——
+   **2026-11-19 已补齐**，C 后端 148/148。约定与 Python 后端一致：调用方传结构体
+   源地址、被调方入口逐字拷进本地副本（修改完全隔离）；sret 由调用方在帧内预留缓冲、
+   `a0` 传地址、`return` 逐字拷入。每个 sret 调用点各占一块独立缓冲，`f(g(),h())`
+   不会互相覆盖。验证：`byvalue` 17/17、`stackargs` 11/11，**两者都在
+   `TRV_CC_STRICT=1` 下通过**（此前是 9/11 与整套失败）。
+   > ⚠️ **验证陷阱仍在**：默认模式下 e2e 全绿，可能是因为失败用例悄悄回退到 Python
+   > 后端。考核 C 后端必须加 `TRV_CC_STRICT=1`，`run_all_tests.py` 已默认带上。
 2. **VM 的 DIV 慢**：无硬件除法器，走 72 步逐位恢复除法（~150ns）。优化方向是乘法逆元估商，
    预计 1.5–2×。
 3. **动态指令少 8.4× 但墙钟只快 6.5×**：说明单步成本随指令类型差异极大（MUL ~70ns、DIV ~150ns），

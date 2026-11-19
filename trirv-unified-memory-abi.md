@@ -121,7 +121,7 @@ word     = Σ tryte[i] * 3^(5i)          (mod 3^45)
 - syscall 接口 `trirv_syscall_e2e.py`：**18/18 PASS**（进程/线程、时钟、随机、mmap、文件/信号 stub、uname、大常量加载）
 - 栈参数传递 `trirv_stackargs_e2e.py`：**11/11 PASS**（9/10/12 参数普通函数、8 参数纯寄存器路径、跨寄存器/栈边界变参、10 变参、printf 9/混合/负数超 8 参数、sret+多参数、struct 按值传参+多参数）
 - 变参函数 + printf `trirv_vararg_e2e.py`：**12/12 PASS**（多类型变参 int/char\*/char、字符字面量、printf 的 %d/%s/%c/%%/负数/零/纯串、puts、多参数、变参与 malloc 混用）
-- 结构体按值传参/返回 `trirv_byvalue_e2e.py`：**12/12 PASS**（修改隔离、sret 返回、参数+返回组合、struct 数组元素按值传、含 char 整块拷贝、返回再传参、赋值拷贝、嵌套字段、多实例隔离）
+- 结构体按值传参/返回 `trirv_byvalue_e2e.py`：**17/17 PASS**（修改隔离、sret 返回、参数+返回组合、struct 数组元素按值传、含 char 整块拷贝、返回再传参、赋值拷贝、嵌套字段、多实例隔离、`f().x` / `f().in.v` 链式读、两次 `f()` 缓冲互不覆盖）；**两套后端都实现**：C 后端（`trirv_cc.c`）在 2026-11-19 补齐，`TRV_CC_STRICT=1` 下同样 17/17，不再回退 Python
 - 多维数组+初始化列表 `trirv_multiarray_e2e.py`：**15/15 PASS**（二维/三维读写遍历、二维形参首维退化、char 二维、嵌套/扁平初始化、struct 及其数组初始化、部分补零、与 malloc 混用）
 - 结构体 `trirv_struct_e2e.py`：**10/10 PASS**（成员写读、`->` 指针参数、混合 char 成员、结构体数组、数组指针算术、malloc 链表节点、值拷贝、嵌套 struct 指针域、多实例隔离）
 - 一维数组 `trirv_array_e2e.py`：**11/11 PASS**（下标写读、循环填充、数组名退化、形参退化、传址修改、多数组共存、char 数组、与 malloc 混用）

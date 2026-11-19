@@ -257,27 +257,41 @@ def section_asm_edges():
 
 # ---------------------------------------------------------------- §5 后端契约
 def section_backend_strict():
-    section("§5 后端契约（STRICT 必须抛错，非 STRICT 必须回退且记录）")
-    # struct 按值传参：C 后端明确 UNSUPPORTED，Python 后端能编 —— 正好当探针
+    section("§5 后端契约（STRICT 不静默回退 / struct 按值必须走 C 后端）")
     src = ("struct P{int x;int y;}; int f(struct P p){return p.x+p.y;}"
            " int main(){struct P p;p.x=1;p.y=2;return f(p);}")
 
+    # 5.1 struct 按值 + sret 在 C 后端实现后，必须真的走 C 后端而不是回退。
+    #     这条是 2026-11-19 那次实现的回归锁：一旦实现退化，LAST_BACKEND 会变回 py。
     old = os.environ.get("TRV_CC_STRICT")
     os.environ["TRV_CC_STRICT"] = "1"
     try:
         cc.compile_c(src)
-        check("STRICT=1 时不支持的语义必须抛错", False, "却编译通过了")
-    except Exception:
-        check("STRICT=1 时不支持的语义必须抛错", True)
-
-    # 切回非 STRICT：本项要验的正是"静默回退"，所以必须显式清掉外部环境里的 STRICT
-    # （在 run_all_tests.py 里整轮都是 STRICT=1，不清就会把回退当失败）。
-    os.environ.pop("TRV_CC_STRICT", None)
-    try:
-        cc.compile_c(src)
-        check("非 STRICT 时回退 Python 且记录后端", cc.LAST_BACKEND == "py",
+        check("struct 按值传参在 C 后端可编译", cc.LAST_BACKEND == "c",
               f"实际后端 {cc.LAST_BACKEND}")
+    except Exception as e:
+        check("struct 按值传参在 C 后端可编译", False, f"仍抛错：{str(e)[:70]}")
+
+    # 5.2 回退机制本身：把 _compile_c 打成必失败，验证两种模式下的行为差异。
+    #     不依赖"某个构造恰好不被支持"，机制变化才不会被误判。
+    real = cc._compile_c
+    cc._compile_c = lambda s: (_ for _ in ()).throw(ValueError("boom(注入的失败)"))
+    try:
+        try:
+            cc.compile_c(src)
+            check("STRICT=1 时后端失败必须抛错", False, "却静默回退成功")
+        except Exception:
+            check("STRICT=1 时后端失败必须抛错", True)
+
+        os.environ.pop("TRV_CC_STRICT", None)
+        try:
+            cc.compile_c(src)
+            check("非 STRICT 时回退 Python 且记录后端", cc.LAST_BACKEND == "py",
+                  f"实际后端 {cc.LAST_BACKEND}")
+        finally:
+            pass
     finally:
+        cc._compile_c = real
         if old is None:
             os.environ.pop("TRV_CC_STRICT", None)
         else:
@@ -386,6 +400,67 @@ def section_bitlaws():
     check("24 组随机对拍（& | ^）", bad == 0, f"{bad} 组错")
 
 
+# ---------------------------------------------------------------- §8 struct ABI
+def section_struct_abi():
+    section("§8 struct 按值 ABI（调用点缓冲必须各自独立）")
+    cases = [
+        # 两个 sret 调用同时作为实参：各自的返回缓冲不能是同一块
+        ("f(g(),h()) 两个缓冲",
+         "struct P{int x;}; struct P g(){struct P p;p.x=3;return p;}"
+         " struct P h(){struct P p;p.x=4;return p;}"
+         " int add(struct P a,struct P b){return a.x*10+b.x;}"
+         " int main(){return add(g(),h());}", 34),
+        # 同一调用点在循环里复用缓冲：每轮都必须拿到本轮的值
+        ("循环里反复 sret",
+         "struct P{int x;}; struct P mk(int a){struct P p;p.x=a;return p;}"
+         " int main(){int s=0;int i;for(i=1;i<=4;i++){s=s+mk(i).x;}return s;}", 10),
+        # 返回值再按值传参（sret -> 形参拷贝 两级拷贝）
+        ("sret 结果再按值传",
+         "struct P{int x;int y;}; struct P mk(int a){struct P p;p.x=a;p.y=a*2;return p;}"
+         " int sum(struct P q){return q.x+q.y;}"
+         " int main(){return sum(mk(7));}", 21),
+        # 形参修改必须与实参隔离
+        ("形参修改不回流",
+         "struct P{int x;}; void bump(struct P p){p.x=99;}"
+         " int main(){struct P s;s.x=5;bump(s);return s.x;}", 5),
+    ]
+    for name, src, want in cases:
+        got, prog, strs = compile_run_py(src)
+        check(f"{name}（PyVM）", got == want, f"得 {got}，期望 {want}")
+        if -128 <= want <= 127:
+            cg = run_c_vm_prog(prog, strs)
+            if cg is not None:
+                check(f"{name}（C VM）", cg == want, f"得 {cg}，期望 {want}")
+
+
+# ---------------------------------------------------------------- §9 嵌套调用
+def section_nested_calls():
+    section("§9 嵌套调用契约（返回值只能来自 a0）")
+    # 事故：A0_DIRECT（"return f() 结果直留 a0"）是全局标记，实参里的嵌套调用
+    # 会跟着跳过 `ADDI r, a0, 0`，把失效的旧临时值当返回值。修复前
+    # `return f(g(3),g(4))` 返回 0 而不是 34，编译期毫无提示。
+    cases = [
+        ("f(g(3),g(4))",
+         "int f(int a,int b){return a*10+b;} int g(int v){return v;}"
+         " int main(){return f(g(3),g(4));}", 34),
+        ("f(g(),h()) 无参内层",
+         "int f(int a,int b){return a*10+b;} int g(){return 3;} int h(){return 4;}"
+         " int main(){return f(g(),h());}", 34),
+        ("三层嵌套",
+         "int f(int a,int b,int c){return a*100+b*10+c;}"
+         " int g(int v){return v+1;} int main(){return f(g(0),g(1),g(2));}", 123),
+        ("嵌套结果再参与运算",
+         "int f(int a,int b){return a*10+b;} int g(int v){return v;}"
+         " int main(){return f(g(1),g(2))*2;}", 24),
+    ]
+    for name, src, want in cases:
+        got, prog, strs = compile_run_py(src)
+        check(f"{name}（PyVM）", got == want, f"得 {got}，期望 {want}")
+        cg = run_c_vm_prog(prog, strs)
+        if cg is not None:
+            check(f"{name}（C VM）", cg == want, f"得 {cg}，期望 {want}")
+
+
 # ---------------------------------------------------------------- main
 def main():
     print("TriRV 契约测试（TDD）")
@@ -396,6 +471,8 @@ def main():
     section_backend_strict()
     section_big_frame()
     section_bitlaws()
+    section_struct_abi()
+    section_nested_calls()
 
     print("\n" + "=" * 60)
     print(f"契约测试：{PASS}/{PASS + FAIL} 通过")
