@@ -869,7 +869,6 @@ static void parse_program(void){
          * 处理成普通函数 f（签名不参与布局，调用约定由调用点决定）。
          * __libc_start_main 就是以这种形态出现在 musl 源里的。 */
         if(at("(")&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,"*")){
-            fprintf(stderr,"[dbg] fnptr def: %s\n",TOKS[IPOS+2].s);
             take();                              /* ( */
             expect("*");
             char*fname=take()->s;                /* 函数名 */
@@ -882,6 +881,10 @@ static void parse_program(void){
                     else if(atk(TK_EOF)) break;
                     take();
                 } while(d>0);
+            }
+            for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,fname)){
+                fprintf(stderr,"link error: duplicate function '%s'\n",fname);
+                exit(1);
             }
             Node*f=nnew(N_FUNC); f->rettype=ret; f->s=fname;
             f->ptypes=malloc(sizeof(char*)*32);
@@ -1003,7 +1006,14 @@ static void parse_program(void){
             }
         }
         expect(")");
-        f->fbody=parse_block();
+        if(accept(";")){                       /* 函数原型声明：只有签名，无体 */
+            continue;                          /* 签名不参与代码生成；供调用的 FNRETS 在统一阶段建表 */
+        }
+        for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,name)){
+                fprintf(stderr,"link error: duplicate function '%s'\n",name);
+                exit(1);
+            }
+            f->fbody=parse_block();
         FNS=grow(FNS,&CAPFN,NFN,sizeof(Node*)); FNS[NFN++]=f;
     }
 }
@@ -2897,12 +2907,34 @@ int main(int argc,char**argv){
     { __int128 p=1; for(int i=0;i<45;i++) p*=3; TRV_P45V=p;   /* 3^45（模数本体） */
       { __int128 w=1; for(int b=0;b<9;b++){ TRV_WT[b]=w; w*=243; } }  /* W[b]=3^(5b) 低->高 */
     }
-    if(argc<3){ fprintf(stderr,"usage: %s <src.c> <out.trv> [out.asm]\n",argv[0]); return 1; }
-    FILE*fp=fopen(argv[1],"r"); if(!fp){perror("open");return 1;}
-    fseek(fp,0,SEEK_END); long sz=ftell(fp); fseek(fp,0,SEEK_SET);
-    char*src=malloc(sz+1); fread(src,1,sz,fp); src[sz]=0; fclose(fp);
-    lex(src); IPOS=0;
-    parse_program();
+    if(argc<3){ fprintf(stderr,"usage: %s <src.c> <out.trv> [out.asm] [-l lib.c ...]\n",argv[0]); return 1; }
+    /* 多文件（mini 链接器）：-l 库文件与主文件按序拼接成一个翻译单元。
+     * C 的链接语义中最常用的"先原型后定义 + 重复定义检测"由此获得：
+     *   - 顺序：命令行出现顺序（-l 库在前、主文件在后也支持）
+     *   - 重复函数定义：parse_program 检测 FNS 重名 -> 报错
+     *   - 调用先于定义：两遍代码生成兜底（前向引用已解决） */
+    {   /* 拼接所有源文件 */
+        long total=0;
+        int *sizes=malloc(sizeof(int)*(size_t)argc);
+        char **bufs=malloc(sizeof(char*)*(size_t)argc);
+        int nf=0;
+        for(int ai=1;ai<argc;ai++){
+            if(!strcmp(argv[ai],"-l")){ ai++;
+                if(ai>=argc){ fprintf(stderr,"-l needs file\n"); return 1; }
+            } else if(ai!=1) continue;   /* 只认 argv[1]（主文件）与 -l */
+            FILE*fp=fopen(argv[ai],"r"); if(!fp){perror(argv[ai]);return 1;}
+            fseek(fp,0,SEEK_END); long sz=ftell(fp); fseek(fp,0,SEEK_SET);
+            char*src=malloc((size_t)sz+2);
+            fread(src,1,(size_t)sz,fp); src[sz]=0; fclose(fp);
+            if(sz==0||src[sz-1]!='\n'){ src[sz]='\n'; sz++; }   /* 拼接边界保证 */
+            bufs[nf]=src; sizes[nf]=(int)sz; total+=sz; nf++;
+        }
+        char*src=malloc((size_t)total+1); long off=0;
+        for(int i=0;i<nf;i++){ memcpy(src+off,bufs[i],(size_t)sizes[i]); off+=sizes[i]; }
+        src[total]=0;
+        lex(src); IPOS=0;
+        parse_program();
+    }
     /* 能力闸门：未实现特性直接拒绝，交由统一后端回退到 Python 参考实现。
      * struct 按值传参/返回已于 2026-11-19 实现（见 gen_func 的 prologue 拷贝与
      * N_RETURN 的 sret 拷贝），不再拦截。 */

@@ -605,7 +605,11 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
    strcat/strcmp/strncmp/strchr/abs/atoi/__errno_location）。
    ③ mini-busybox（`trirv_busybox.c`）：按 argv[1] 分派 applet 的多调用二进制，
    Alpine 用户空间模型。为此编译器补齐 typedef/const/do-while/三目/复合赋值/cast。
-   真 musl 源码移植仍为后续目标（前置：链接器、arch 层、CHAR_BIT 决策）。
+   ④ 多文件链接（mini linker，2026-11-19）：`trirv_cc 主文件 -l 库...` 按序拼接，
+   跨文件调用 / 先原型后定义 / 重复定义检测（link error 退出码 1）；busybox 已用
+   正式分层构建（`-l trirv_musl.c -l trirv_crt.c`），e2e 14 项锁定。
+   真 musl 源码移植仍为后续目标（前置：目标文件符号表/弱符号/归档、arch 层、
+   CHAR_BIT 决策）。
 
 ---
 

@@ -86,6 +86,7 @@ SUITES = [
     ("trirv_stackargs_e2e.py",    "栈上传参",                False, None),
     ("trirv_crt_e2e.py",          "crt0+musl 启动链 29 项",   False, None),
     ("trirv_musl_e2e.py",         "musl libc + busybox 48 项", False, None),
+    ("trirv_link_e2e.py",         "多文件链接 14 项",         False, None),
     ("trirv_mdiff.py",            "M 扩展差分 700 项",        True,  None),
     ("trirv_wasm_e2e.py",         "Wasm 三路差分 93 例",      True,  None),
     ("trirv_tritref_test.py",     "tryte 参考实现 46164 项",  True,  None),
