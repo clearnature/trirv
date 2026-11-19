@@ -206,7 +206,21 @@ J-type (jal):
 | 10 | FENCE | I |
 | 11 | T-LOGIC | R |
 | 12 | T-PACK | R |
-| 13–26 | 保留（M/A/C 扩展） | — |
+| 13 | M-EXT（MUL/MULH/MULHSU/MULHU） | R |
+| 14 | DIV-EXT（DIV/DIVU） | R |
+| 15 | REM-EXT（REM/REMU） | R |
+| 16 | ZICSR（CSRRW/S/C + 立即数版） | I |
+| 17 | PRIV（MRET/WFI） | I |
+| 18 | ATOMIC（LRW/SCW/AMO*） | R |
+| 19–26 | 保留（TC 压缩扩展预留） | — |
+
+> **分配现状（以代码为唯一真相源，2026-11-19 核对）**：3-trit opcode 共 27 个槽位
+> （0..26），已用 19 个（0–18），余 8 个（19–26）留给 TC。
+> 明细见 `trirv_isa.py` 的 `OPCODE` / `INST` 表，当前共 **74 条指令**。
+> 校验：`python3 -c "import trirv_isa as i; print(len(i.INST))"` → `74`。
+>
+> 本节旧版仅列出 0–12，把 13–26 整段标为"保留"，与 §2「M/A/Zicsr/PRIV 扩展两套 VM 均已实现」
+> 相矛盾；现已按实际分配补齐，与代码一致。
 
 ---
 
@@ -262,7 +276,7 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
 2. ~~写指令编码表（生成机器码的 Python 脚本）~~ ✅
 3. ~~实现 VM 取指/译码/执行~~ ✅ 74 条指令，Python/C 双实现
 4. ~~实现汇编器（编码 20-trit 指令）~~ ✅
-5. ~~跑通最小程序（加法 + 分支 + ECALL 退出）~~ ✅ 12 个 e2e 全通过
+5. ~~跑通最小程序（加法 + 分支 + ECALL 退出）~~ ✅ 13 个 e2e 全通过
 6. ~~加 TT 扩展（三值逻辑 + 打包/解包）~~ ✅ 含 T-LOGIC/T-PACK/TSEXT
 7. 接 crt0 + musl（见 ABI 文档）—— 后续目标
 
@@ -311,8 +325,8 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
   非法 PC 现在停机。
 - **write 负 count**：Python/C VM 统一返回 `-EINVAL`（-22），原 Python 返回 0、C 返回负值。
 
-验证：`test_isa_completeness.py` **57/57 PASS**（含 C VM 边界差分与 PC 编址专项），
-`trirv_difftest.py` 11/11 PASS，12 个 `*_e2e.py` 全部通过。
+验证：`test_isa_completeness.py` **73/73 PASS**（含 C VM 边界差分与 PC 编址专项），
+`trirv_difftest.py` 11/11 PASS，13 个 `*_e2e.py` 全部通过（2026-11-19 复测）。
 
 ### 11.1.1 指令级随机差分 fuzz 与 MUL 溢出修复（2026-11-18）
 
@@ -332,7 +346,7 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
   是**实现手段**；此处 MUL 是**数值幅值超出 C 宿主类型**（`__int128`），二者正交。
 
 验证：8 组 × 800 case（共 6400 条全幅随机指令）Python/C 字节流完全一致；
-修复后 `test_isa_completeness.py` 57/57、difftest 11/11、CSR 13/13、12 个 e2e 全绿。
+修复后 `test_isa_completeness.py` 73/73、difftest 11/11、CSR 13/13、13 个 e2e 全绿。
 
 新增 `trirv_fuzz_mem.py`（访存 + 原子差分 fuzz）：覆盖 ALU fuzz 未涉及的访存语义——
 SW/SH/SB 写入与 LW/LB/LBU/LH/LHU 读回的 tryte 序与零扩展、有符号 base + 7-trit
