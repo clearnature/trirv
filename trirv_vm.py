@@ -400,22 +400,25 @@ class VM:
         elif name == "SLTU":
             self.regs[rd] = 1 if self.regs[rs1] < self.regs[rs2] else 0
         elif name == "AND":
-            self.regs[rd] = self.regs[rs1] & self.regs[rs2]
+            self.regs[rd] = self._tritwise("min", self.regs[rs1], self.regs[rs2])
         elif name == "OR":
-            self.regs[rd] = self.regs[rs1] | self.regs[rs2]
+            self.regs[rd] = self._tritwise("max", self.regs[rs1], self.regs[rs2])
         elif name == "XOR":
-            self.regs[rd] = self.regs[rs1] ^ self.regs[rs2]
+            self.regs[rd] = self._tritwise("xor", self.regs[rs1], self.regs[rs2])
         elif name == "SLTI":
             self.regs[rd] = 1 if a < s(isa.sign_extend_imm(imm)) else 0
         elif name == "SLTIU":
             immu = isa.sign_extend_imm(imm) % MOD
             self.regs[rd] = 1 if self.regs[rs1] < immu else 0
         elif name == "XORI":
-            self.regs[rd] = self.regs[rs1] ^ (isa.sign_extend_imm(imm) % MOD)
+            self.regs[rd] = self._tritwise("xor", self.regs[rs1],
+                                           isa.sign_extend_imm(imm) % MOD)
         elif name == "ORI":
-            self.regs[rd] = self.regs[rs1] | (isa.sign_extend_imm(imm) % MOD)
+            self.regs[rd] = self._tritwise("max", self.regs[rs1],
+                                           isa.sign_extend_imm(imm) % MOD)
         elif name == "ANDI":
-            self.regs[rd] = self.regs[rs1] & (isa.sign_extend_imm(imm) % MOD)
+            self.regs[rd] = self._tritwise("min", self.regs[rs1],
+                                           isa.sign_extend_imm(imm) % MOD)
         elif name == "SLLI":
             # 立即数左移：移位量取 imm 低 7 trit（无符号解释），乘 3^sh。
             sh = imm % (3**7)
@@ -542,9 +545,9 @@ class VM:
                 src = self.regs[rs2]
                 if name == "AMOADD":  new = u(s(old) + s(src))
                 elif name == "AMOSWAP": new = src
-                elif name == "AMOAND":  new = old & src
-                elif name == "AMOOR":   new = old | src
-                elif name == "AMOXOR":  new = old ^ src
+                elif name == "AMOAND":  new = self._tritwise("min", old, src)
+                elif name == "AMOOR":   new = self._tritwise("max", old, src)
+                elif name == "AMOXOR":  new = self._tritwise("xor", old, src)
                 elif name == "AMOMIN":  new = u(min(s(old), s(src)))
                 else:                   new = u(max(s(old), s(src)))  # AMOMAX
                 self._store_word(addr, new)
@@ -591,14 +594,24 @@ class VM:
         self.steps += 1
 
     def _tritwise(self, op, x, y):
+        """逐 trit 三值运算。三进制寄存器里**没有二进制位**，所以 AND/OR/XOR
+        只能是逐 trit 的：AND=min、OR=max、XOR=(a+b) mod 3。
+        min/max 与 TAND/TOR 同义（RISC-V 兼容名 + 三值逻辑名）。"""
         res = 0
-        for i in range(XLEN):
-            dx = (x // 3**i) % 3
-            dy = (y // 3**i) % 3
-            if op == "max": d = max(dx, dy)
-            elif op == "min": d = min(dx, dy)
-            elif op == "not": d = 2 - dx
-            res += d * 3**i
+        p = 1
+        for _ in range(XLEN):
+            x, dx = divmod(x, 3)
+            y, dy = divmod(y, 3)
+            if op == "max":
+                d = dx if dx > dy else dy
+            elif op == "min":
+                d = dx if dx < dy else dy
+            elif op == "not":
+                d = 2 - dx
+            else:                                   # xor：逐 trit 模 3 相加
+                d = (dx + dy) % 3
+            res += d * p
+            p *= 3
         return res
 
     def run(self, max_steps=10000, trace=False):

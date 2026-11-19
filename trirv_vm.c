@@ -394,9 +394,9 @@ static inline void store_tryte(VM *v, __int128_t addr, __uint128_t val){
 }
 static inline uint8_t load_tryte(VM *v, __int128_t addr){return (addr>=0&&addr<MEMSZ)?(v->mem_ref[addr]%243):0;}
 
-/* 三进制 trit 表 + tryte 级 min/max/not 查表（逐元素优化核心） */
+/* 三进制 trit 表 + tryte 级 min/max/not/xor 查表（逐元素优化核心） */
 static uint8_t TRIT_TAB[243][5];
-static uint8_t LUT_MIN[243][243], LUT_MAX[243][243], LUT_NOT[243];
+static uint8_t LUT_MIN[243][243], LUT_MAX[243][243], LUT_XOR[243][243], LUT_NOT[243];
 static void init_trit_tab(void){
     for(int v=0;v<243;v++){int x=v;for(int i=0;i<5;i++){TRIT_TAB[v][i]=x%3;x/=3;}}
     for(int a=0;a<243;a++){
@@ -404,10 +404,11 @@ static void init_trit_tab(void){
         for(int i=0;i<5;i++){nt+=(2-x%3)*p;x/=3;p*=3;}
         LUT_NOT[a]=nt;
         for(int b=0;b<243;b++){
-            x=a;int y=b;uint8_t mn=0,mx=0;p=1;
+            x=a;int y=b;uint8_t mn=0,mx=0,xr=0;p=1;
             for(int i=0;i<5;i++){int ta=x%3,tb=y%3;x/=3;y/=3;
-                mn+=(ta<tb?ta:tb)*p;mx+=(ta>tb?ta:tb)*p;p*=3;}
-            LUT_MIN[a][b]=mn;LUT_MAX[a][b]=mx;
+                mn+=(ta<tb?ta:tb)*p;mx+=(ta>tb?ta:tb)*p;
+                xr+=((ta+tb)%3)*p;p*=3;}
+            LUT_MIN[a][b]=mn;LUT_MAX[a][b]=mx;LUT_XOR[a][b]=xr;
         }
     }
 }
@@ -470,13 +471,14 @@ static inline __uint128_t sx10(__uint128_t word){
 /* 优化版三值运算：无除法器取 tryte + 查表 + 正向累加。
  * 相比原来 unpack(9×128位除法)+SIMD-min+pack(45×乘加)：tryte 提取由 9 次硬件 div
  * 改为 9 次 magic mul+shift（零除指令），运算由 45 次逐 trit 降为 9 次查表。
- * mode 0=min 1=max 2=not */
+ * mode 0=min 1=max 2=not 3=(a+b) mod 3 */
 static __uint128_t tritwise(int mode,__uint128_t a,__uint128_t b){
     __uint128_t res=0,p=1;
     for(int i=0;i<9;i++){
         uint8_t ta,tb;
         a=divmod243(a,&ta); b=divmod243(b,&tb);
-        uint8_t r=(mode==0)?LUT_MIN[ta][tb]:(mode==1)?LUT_MAX[ta][tb]:LUT_NOT[ta];
+        uint8_t r=(mode==0)?LUT_MIN[ta][tb]:(mode==1)?LUT_MAX[ta][tb]:
+                    (mode==2)?LUT_NOT[ta]:LUT_XOR[ta][tb];
         res+=(__uint128_t)r*p;p*=243;
     }
     return res;
@@ -554,9 +556,10 @@ static inline void amo_exec(VM *v,Op op,int rd,int rs1,int rs2){
         switch(op){
             case OP_AMOADD:  newv=u(s(old)+s(src)); break;
             case OP_AMOSWAP: newv=src; break;
-            case OP_AMOAND:  newv=old&src; break;
-            case OP_AMOOR:   newv=old|src; break;
-            case OP_AMOXOR:  newv=old^src; break;
+            /* 原子位运算同样按逐 trit 三值逻辑（与 AND/OR/XOR 一致） */
+            case OP_AMOAND:  newv=tritwise(0,old,src); break;
+            case OP_AMOOR:   newv=tritwise(1,old,src); break;
+            case OP_AMOXOR:  newv=tritwise(3,old,src); break;
             case OP_AMOMIN:  newv=u(s(old)<s(src)?s(old):s(src)); break;
             case OP_AMOMAX:  newv=u(s(old)>s(src)?s(old):s(src)); break;
             default:         newv=old; break;
@@ -674,12 +677,16 @@ static inline void step(VM *v){
         case OP_SLTU:v->reg[rd]=u(v->reg[rs1]<v->reg[rs2]?1:0);break;
         case OP_SLTI:v->reg[rd]=u(a<imm?1:0);break;
         case OP_SLTIU:v->reg[rd]=u(v->reg[rs1]<immu?1:0);break;
-        case OP_XOR:v->reg[rd]=v->reg[rs1]^v->reg[rs2];break;
-        case OP_OR:v->reg[rd]=v->reg[rs1]|v->reg[rs2];break;
-        case OP_AND:v->reg[rd]=v->reg[rs1]&v->reg[rs2];break;
-        case OP_XORI:v->reg[rd]=v->reg[rs1]^immu;break;
-        case OP_ORI:v->reg[rd]=v->reg[rs1]|immu;break;
-        case OP_ANDI:v->reg[rd]=v->reg[rs1]&immu;break;
+        /* 三进制寄存器里没有"二进制位"：AND/OR/XOR 一律**逐 trit**。
+         *   AND = min（≡ TAND/TMIN）、OR = max（≡ TOR/TMAX）、XOR = (a+b) mod 3。
+         * 早先这三条按宿主整数的二进制位运算实现，与 SLL/SRL（×3^k）不同进制，
+         * 属实现遗留；2026-11-19 按 §5.1 决议 B 统一到三进制。 */
+        case OP_XOR:v->reg[rd]=tritwise(3,v->reg[rs1],v->reg[rs2]);break;
+        case OP_OR:v->reg[rd]=tritwise(1,v->reg[rs1],v->reg[rs2]);break;
+        case OP_AND:v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]);break;
+        case OP_XORI:v->reg[rd]=tritwise(3,v->reg[rs1],immu);break;
+        case OP_ORI:v->reg[rd]=tritwise(1,v->reg[rs1],immu);break;
+        case OP_ANDI:v->reg[rd]=tritwise(0,v->reg[rs1],immu);break;
         /* 三进制无预测分支：比较生成平衡三值条件码 t∈{-1,0,+1}（纯算术无控制流），
          * 再由 t 得 cond，最后用位掩码无分支地在 fallthrough 与预计算目标间选择 PC。
          * 全程无 data-dependent 控制流 → CPU 分支预测器无事可做（无预测）。
@@ -840,12 +847,12 @@ L_SLT:   v->reg[rd]=u(a<b?1:0); NEXT();
 L_SLTU:  v->reg[rd]=u(v->reg[rs1]<v->reg[rs2]?1:0); NEXT();
 L_SLTI:  v->reg[rd]=u(a<imm?1:0); NEXT();
 L_SLTIU: v->reg[rd]=u(v->reg[rs1]<immu?1:0); NEXT();
-L_XOR:   v->reg[rd]=v->reg[rs1]^v->reg[rs2]; NEXT();
-L_OR:    v->reg[rd]=v->reg[rs1]|v->reg[rs2]; NEXT();
-L_AND:   v->reg[rd]=v->reg[rs1]&v->reg[rs2]; NEXT();
-L_XORI:  v->reg[rd]=v->reg[rs1]^immu; NEXT();
-L_ORI:   v->reg[rd]=v->reg[rs1]|immu; NEXT();
-L_ANDI:  v->reg[rd]=v->reg[rs1]&immu; NEXT();
+L_XOR:   v->reg[rd]=tritwise(3,v->reg[rs1],v->reg[rs2]); NEXT();
+L_OR:    v->reg[rd]=tritwise(1,v->reg[rs1],v->reg[rs2]); NEXT();
+L_AND:   v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]); NEXT();
+L_XORI:  v->reg[rd]=tritwise(3,v->reg[rs1],immu); NEXT();
+L_ORI:   v->reg[rd]=tritwise(1,v->reg[rs1],immu); NEXT();
+L_ANDI:  v->reg[rd]=tritwise(0,v->reg[rs1],immu); NEXT();
 L_LB:    v->reg[rd]=tsext(load_tryte(v,a+imm)); NEXT();
 L_LBU:   v->reg[rd]=u(load_tryte(v,a+imm)); NEXT();
 L_LH:    v->reg[rd]=sx10((__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243); NEXT();

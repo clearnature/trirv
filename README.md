@@ -75,8 +75,26 @@ RISC-V psABI 规定 plain `char` 默认无符号（GCC riscv 后端 `DEFAULT_SIG
 TriRV 的 tryte 值域与它天然吻合。编译器据此对 `char`/`unsigned char` 发 `LBU`，
 只有显式 `signed char` 才发 `LB`。
 
+**D. 唯一的语义偏离：位运算**
+
+RISC-V 的 `AND/OR/XOR` 是**二进制**按位；三进制寄存器里没有二进制位，
+所以 TriRV 把它们定义为**逐 trit 三值逻辑**（2026-11-19 决议 B）：
+
+| 指令 | 语义 | 同义 |
+| --- | --- | --- |
+| `AND`/`ANDI` | 逐 trit $\min$ | ≡ `TAND`/`TMIN` |
+| `OR`/`ORI` | 逐 trit $\max$ | ≡ `TOR`/`TMAX` |
+| `XOR`/`XORI` | 逐 trit $(a+b)\bmod 3$ | 三进制的"不进位加法" |
+
+实测：`AND 12,10 = 9`、`OR = 13`、`XOR = 22`（二进制会是 8/14/6）。
+这不是偷懒——二进制按位在三进制硬件上要么拆位（wasm 端实测 372–436 条指令/次），
+要么根本不存在。连带后果：**C 的 `& | ^` 需要二进制语义，编译器现在明确报错**
+（`UNSUPPORTED: 二进制位运算 &`），而不是静默算成三值 min。详见
+`ternary-isa-design.md` §5.1。
+
 **至此，TriRV 与 RV32I 在编码格式、寄存器命名、ABI、指令语义四个层面全部对齐，
-剩下的差异只有三进制物理决定的位宽与进制换算——那属于定义层，不作优劣比较。**
+剩下的差异只有三进制物理决定的位宽与进制换算，以及上面这一条位运算语义——
+都属于定义层，不作优劣比较。**
 
 指令语义覆盖率：**RV32I 40 条全部有对应**。
 
@@ -112,6 +130,7 @@ python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 �
 python3 trirv_wasm_e2e.py                      # 93 例三路差分（参考解释器 / PyVM / C VM）
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
+python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 ```
 
 实测一条完整链路（2026-11-19 验证）：
@@ -133,6 +152,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
+| `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
 | `*_e2e.py`（C 编译到执行全链路） | 14/14 套（`TRV_CC_STRICT=1` 下 12/14，缺 struct 按值） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |

@@ -883,9 +883,17 @@ static int rwcopy(int src){
 }
 
 static const char* binop_insn(const char*op){
+    /* 三进制 ISA 里 AND/OR/XOR 是**逐 trit 三值逻辑**（min/max/mod3 加），
+     * 不是二进制按位。C 的 & | ^ 要的是二进制语义，只能软件模拟（尚未实现）。
+     * 这里必须硬报错：静默映射过去会让 x&1 算出三值 min，比编译失败危险得多。 */
+    if(!strcmp(op,"&")||!strcmp(op,"|")||!strcmp(op,"^")){
+        fprintf(stderr,"UNSUPPORTED: 二进制位运算 %s —— 三进制 ISA 的 AND/OR/XOR 是逐 trit 三值逻辑"
+                       "（min/max/mod 3 加），C 的二进制位运算需要软件模拟（尚未实现）\n",op);
+        exit(2);
+    }
     static const char*m[]={
         "+","ADD","-","SUB","*","MUL","/","DIV","%","REM",
-        "&","AND","|","OR","^","XOR","<<","SLL",">>","SRL",NULL};
+        "<<","SLL",">>","SRL",NULL};
     for(int i=0;m[i];i+=2) if(!strcmp(op,m[i])) return m[i+1];
     return NULL;
 }
@@ -898,11 +906,11 @@ static void emit_rel_u(const char*op,int dst,int a,int b,int uns){
     const char*D=regname(dst),*A=regname(a),*B=regname(b);
     const char*SL = uns?"SLTU":"SLT";
     if(!strcmp(op,"<"))       emitf("%s %s, %s, %s",SL,D,A,B);
-    else if(!strcmp(op,">=")){ emitf("%s %s, %s, %s",SL,D,A,B); emitf("XORI %s, %s, 1",D,D); }
+    else if(!strcmp(op,">=")){ emitf("%s %s, %s, %s",SL,D,A,B); emitf("SLTIU %s, %s, 1",D,D); }
     else if(!strcmp(op,">"))  emitf("%s %s, %s, %s",SL,D,B,A);
-    else if(!strcmp(op,"<=")){ emitf("%s %s, %s, %s",SL,D,B,A); emitf("XORI %s, %s, 1",D,D); }
+    else if(!strcmp(op,"<=")){ emitf("%s %s, %s, %s",SL,D,B,A); emitf("SLTIU %s, %s, 1",D,D); }
     else if(!strcmp(op,"==")){ emitf("SUB %s, %s, %s",D,A,B); emitf("SLTIU %s, %s, 1",D,D); }
-    else if(!strcmp(op,"!=")){ emitf("SUB %s, %s, %s",D,A,B); emitf("SLTIU %s, %s, 1",D,D); emitf("XORI %s, %s, 1",D,D); }
+    else if(!strcmp(op,"!=")){ emitf("SUB %s, %s, %s",D,A,B); emitf("SLTU %s, zero, %s",D,D); }
     else too_deep(1);
 }
 
@@ -1095,14 +1103,12 @@ static int eval(Node*n){
         if(!strcmp(op,"&&")||!strcmp(op,"||")){          /* C 短路语义 */
             int a=eval(n->l);
             int d=dstof(a);
-            emitf("SLTIU %s, %s, 1",regname(d),regname(a));
-            emitf("XORI %s, %s, 1",regname(d),regname(d));
+            emitf("SLTU %s, zero, %s",regname(d),regname(a));   /* bool(x) = (x != 0)，一条搞定 */
             char*shortl=newlbl("short"),*endl=newlbl("logic");
             emitf("%s %s, zero, %s", !strcmp(op,"&&")?"BEQ":"BNE", regname(d), shortl);
             int b=eval(n->r);
             int bd=dstof(b);
-            emitf("SLTIU %s, %s, 1",regname(bd),regname(b));
-            emitf("XORI %s, %s, 1",regname(bd),regname(bd));
+            emitf("SLTU %s, zero, %s",regname(bd),regname(b));
             if(bd!=d) emitf("ADDI %s, %s, 0",regname(d),regname(bd));
             emitf("JAL zero, %s",endl);
             lbl(shortl);
@@ -1443,7 +1449,7 @@ static void gen_init_at(const char*ty,int off,Node*init,int*slot){
 /* 生成"cond 为假就跳到 lbl"的最短序列。
  * 关系运算的取反不需要先算出 0/1 再取反——把取反直接融进分支条件：
  *   i <= n  =>  SLT t, n, i ; BNE t, zero, end   （n<i 则退出）
- * 比 "SLT t,i,n ; XORI t,t,1 ; BEQ t,zero,end" 少一条，循环每轮都省。 */
+ * 比 "SLT t,i,n ; SLTIU t,t,1 ; BEQ t,zero,end" 少一条，循环每轮都省。 */
 static void gen_brfalse(Node*c,const char*lbl){
     TDN=0;
     if(c&&c->k==N_BIN){

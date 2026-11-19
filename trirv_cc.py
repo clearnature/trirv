@@ -713,12 +713,12 @@ class CodeGen:
             if op in ("&&", "||"):
                 # C 短路语义：左边即可定结果时不求值右边（如 p && *p）。
                 self.gen_expr(n.l); self.pop("t0")
-                self.emit("SLTIU t0, t0, 1"); self.emit("XORI t0, t0, 1")  # t0 = bool(l)
+                self.emit("SLTU t0, zero, t0")   # bool(x) = (x != 0)  # t0 = bool(l)
                 short = self.new_label("short"); end = self.new_label("logic")
                 # && 左假 -> 短路得 0；|| 左真 -> 短路得 1
                 self.emit(f"{'BEQ' if op=='&&' else 'BNE'} t0, zero, {short}")
                 self.gen_expr(n.r); self.pop("t1")
-                self.emit("SLTIU t1, t1, 1"); self.emit("XORI t1, t1, 1")  # t1 = bool(r)
+                self.emit("SLTU t1, zero, t1")  # t1 = bool(r)
                 self.emit("ADDI t0, t1, 0")                                 # 结果 = bool(r)
                 self.emit(f"JAL x0, {end}")
                 self.out.append(short + ":")
@@ -860,8 +860,15 @@ class CodeGen:
             raise SyntaxError(f"不可作为左值: {k}")
 
     def gen_bin(self, op, uns=False):
+        # 三进制 ISA 的 AND/OR/XOR 是逐 trit 三值逻辑，不是二进制按位。
+        # C 的 & | ^ 要二进制语义，只能软件模拟（尚未实现）—— 必须硬报错，
+        # 静默映射会让 x&1 算成三值 min，比编译失败危险得多。
+        if op in ("&", "|", "^"):
+            raise RuntimeError(
+                f"UNSUPPORTED: 二进制位运算 {op} —— 三进制 ISA 的 AND/OR/XOR 是逐 trit "
+                f"三值逻辑（min/max/mod 3 加），C 的二进制位运算需要软件模拟（尚未实现）")
         simple = {"+":"ADD","-":"SUB","*":"MUL","/":"DIV","%":"REM",
-                  "&":"AND","|":"OR","^":"XOR","<<":"SLL",">>":"SRL"}
+                  "<<":"SLL",">>":"SRL"}
         if op == "/" and uns: self.emit("DIVU t0, t0, t1"); return
         if op == "%" and uns: self.emit("REMU t0, t0, t1"); return
         if op in simple:
@@ -871,25 +878,24 @@ class CodeGen:
             lt = "SLTU" if uns else "SLT"
             if op in ("<", ">="):
                 self.emit(f"{lt} t0, t0, t1")
-                if op == ">=": self.emit("XORI t0, t0, 1")  # !(a<b)
+                if op == ">=": self.emit("SLTIU t0, t0, 1")  # !(a<b)
             elif op in (">", "<="):
                 self.emit(f"{lt} t0, t1, t0")
-                if op == "<=": self.emit("XORI t0, t0, 1")  # !(a>b)
+                if op == "<=": self.emit("SLTIU t0, t0, 1")  # !(a>b)
             elif op == "==":
                 self.emit("SUB  t0, t0, t1")
                 self.emit("SLTIU t0, t0, 1")   # diff==0 -> 1
             elif op == "!=":
                 self.emit("SUB  t0, t0, t1")
-                self.emit("SLTIU t0, t0, 1")
-                self.emit("XORI t0, t0, 1")
+                self.emit("SLTU t0, zero, t0")
             return
         if op == "&&":
-            self.emit("SLTIU t0, t0, 1"); self.emit("XORI t0, t0, 1")
-            self.emit("SLTIU t1, t1, 1"); self.emit("XORI t1, t1, 1")
+            self.emit("SLTU t0, zero, t0")   # bool(x) = (x != 0)
+            self.emit("SLTU t1, zero, t1")
             self.emit("AND  t0, t0, t1"); return
         if op == "||":
-            self.emit("SLTIU t0, t0, 1"); self.emit("XORI t0, t0, 1")
-            self.emit("SLTIU t1, t1, 1"); self.emit("XORI t1, t1, 1")
+            self.emit("SLTU t0, zero, t0")   # bool(x) = (x != 0)
+            self.emit("SLTU t1, zero, t1")
             self.emit("OR   t0, t0, t1"); return
         raise RuntimeError(f"未知二元运算 {op}")
 
