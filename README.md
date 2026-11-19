@@ -78,6 +78,7 @@ TriRV 的 tryte 值域与它天然吻合。编译器据此对 `char`/`unsigned c
 | `trirv-firmware-architecture.md` | 跑在 TriRV 上的实时固件（RMS 调度、零运行期分配） |
 | `PERF_REPORT.md` | 性能：编译期 Python→C 后端、运行期按 VM 代价定向 |
 | `CC_寄存器式编译器说明.md` | 编译器内部：可写性约定、目标驱动赋值、寄存器池 |
+| `WASM_ROUTE_A.md` | Wasm 栈式字节码 → TriRV 翻译器：内存模型取舍、指令映射、实测与限制 |
 
 ## 四、快速开始
 
@@ -91,6 +92,10 @@ TRV_CC=py python3 export_trv.py foo.c foo.trv   # 强制 Python 参考后端做�
 ./trirv_vm foo.trv                          # 执行
 ./trirv_vm -n 40 -t 1 foo.trv               # 多实例多线程压测
 ./trirv_vm -o 1000 foo.trv                  # dump 地址 1000 起的 9 tryte
+
+python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 参数可选，输出汇编）
+python3 trirv_wasm_e2e.py                      # 58 例三路差分（参考解释器 / PyVM / C VM）
+python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 ```
 
 实测一条完整链路（2026-11-19 验证）：
@@ -113,6 +118,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `*_e2e.py`（C 编译到执行全链路） | 14/14 套（`TRV_CC_STRICT=1` 下 12/14，缺 struct 按值） |
+| `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **58/58** |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |
 
 性能（对比 Python 栈式后端，32 寄存器 + LB/LH 对齐后复测）：
@@ -142,7 +148,19 @@ $ ./trirv_vm /tmp/t.trv
    落到栈上后，写用 `SB`（mod 243 截断）、读用 `LB`/`LBU`（按符号性扩展），语义与 C 一致。
    代价是每次读写多一次访存，但这些变量本来就在热循环里很少见。
 
-## 七、最近话题（2026-11-19）
+## 七、Wasm 前端（路径 A，2026-11-19 落地）
+
+三进制能不能跑栈式字节码？**能，已跑通。**
+
+- `trirv_wasm.py`：Wasm 二进制 → TriRV 汇编，栈到栈直译（操作数栈静态落槽，运行时不动 sp）
+- 三路差分 58/58：参考解释器 × Python VM × C VM，含 hello world 中文输出字节一致
+- 关键取舍：**1 wasm byte = 1 tryte，地址零偏移**，代价是 i8 少 13 个值、i32 内存值域 ±1.74e9
+- 实测代价：求和 1..100000，wasm 直译比 C 寄存器式 **9.40× 动态指令 / 8.97× 墙钟**，
+  而单步成本几乎相同（11.0 vs 11.6 ns）——差距全在指令条数，优化路径明确
+- 不支持：按位运算（三进制无免费映射）、i16/i64、br_table、call_indirect
+- 详见 `WASM_ROUTE_A.md`
+
+## 八、最近话题（2026-11-19）
 
 - **战略定调**：以开源 RISC-V 为规范和标准，只做进制层面的底层替换，不另建生态；
   软核（虚拟机）先行，栈式 masm 先跑通，LLVM 寄存器式后端后期接入。
