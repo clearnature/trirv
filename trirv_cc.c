@@ -2282,7 +2282,20 @@ static int eval(Node*n){
                 if(indirect){
                     int tr=eval(n->e);
                     emitf("JALR ra, 0(%s)",regname(tr));
-                } else emitf("JAL ra, %s",n->s);
+                } else {
+                    /* 形参函数指针直接调用：名字不是编译期已知函数
+                     * （FNS 查无）→ 它是函数指针形参/局部指针变量，
+                     * 按间接调用处理（读变量槽 → JALR）。
+                     * 此前静默 emit "JAL ra, name"，assemble 期
+                     * find_label miss → imm=0 → 运行期死循环。 */
+                    int known = 0;
+                    { int k; for(k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,n->s)){known=1;break;} }
+                    if(!known){
+                        Node*v=nnew(N_VAR); v->s=n->s;
+                        int tr=eval(v);
+                        emitf("JALR ra, 0(%s)",regname(tr));
+                    } else emitf("JAL ra, %s",n->s);
+                }
             }
         }
         /* 3) 恢复活跃临时，结果取回 */

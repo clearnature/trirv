@@ -22,6 +22,7 @@ TRI_REWRITE = {
     "ldiv.c": "musl_tri/ldiv_tri.c",
     "lldiv.c": "musl_tri/lldiv_tri.c",
     "imaxdiv.c": "musl_tri/imaxdiv_tri.c",
+    "qsort.c": "musl_tri/qsort_tri.c",
 }
 
 ok, fail, skip = [], [], []
