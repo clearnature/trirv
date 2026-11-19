@@ -1498,11 +1498,11 @@ static void emit_rel_u(const char*op,int dst,int a,int b,int uns){
 
 /* 具名 syscall -> 编号 */
 static int syscall_no(const char*name){
-    static const char*sys[]={"write","read","exit","brk","getcwd","openat","close",
+    static const char*sys[]={"write","read","read8","write8","exit","brk","getcwd","openat","close",
         "lseek","readv","writev","newfstatat","fstat","exit_group","set_tid_address",
         "futex","clock_gettime","sched_yield","rt_sigaction","rt_sigprocmask",
         "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",NULL};
-    static const int num[]={64,63,93,214,17,56,57,62,65,66,79,80,94,96,98,113,124,
+    static const int num[]={64,63,5000,5001,93,214,17,56,57,62,65,66,79,80,94,96,98,113,124,
         134,135,139,160,172,178,215,222,226,278};
     for(int i=0;sys[i];i++) if(!strcmp(name,sys[i])) return num[i];
     return -1;
@@ -2453,7 +2453,7 @@ static void collect_decls(Node*n){
 
 /* 判断表达式/语句里是否含"真实函数调用"（非 syscall）。syscall 用 ECALL 不改 ra。 */
 static int is_syscall_name(const char*s){
-    static const char*sys[]={"write","read","exit","brk","getcwd","openat","close",
+    static const char*sys[]={"write","read","read8","write8","exit","brk","getcwd","openat","close",
         "lseek","readv","writev","newfstatat","fstat","exit_group","set_tid_address",
         "futex","clock_gettime","sched_yield","rt_sigaction","rt_sigprocmask",
         "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",NULL};

@@ -608,8 +608,12 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
    ④ 多文件链接（mini linker，2026-11-19）：`trirv_cc 主文件 -l 库...` 按序拼接，
    跨文件调用 / 先原型后定义 / 重复定义检测（link error 退出码 1）；busybox 已用
    正式分层构建（`-l trirv_musl.c -l trirv_crt.c`），e2e 14 项锁定。
-   真 musl 源码移植仍为后续目标（前置：目标文件符号表/弱符号/归档、arch 层、
-   CHAR_BIT 决策）。
+   ⑤ 8-bit 视图层（2026-11-19）：`read8`/`write8`（syscall 5000/5001，TriRV
+   扩展区）——octet(0..255) ↔ 双 tryte [lo=o%243, hi=o/243] 边界编解码，
+   内存保持纯三进制，CHAR_BIT==8 的 musl 依赖由此满足（全 256 值无损往返，
+   `trirv_octet_e2e.py` 13 项双 VM 锁定）。直通 read/write 语义不变。
+   真 musl 源码移植仍为后续目标（前置：目标文件符号表/弱符号/归档、
+   arch 层内联汇编改写为 read8/write8 形态）。
 
 ---
 

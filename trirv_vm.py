@@ -38,6 +38,9 @@ SYS_RT_SIGRETURN = 139
 SYS_UNAME        = 160
 SYS_GETPID       = 172
 SYS_GETTID       = 178
+# ---- TriRV 扩展区：8-bit 视图（octet <-> 双 tryte [lo=o%243, hi=o/243]）----
+SYS_READ8        = 5000
+SYS_WRITE8       = 5001
 SYS_MUNMAP       = 215
 SYS_MMAP         = 222
 SYS_MPROTECT     = 226
@@ -253,6 +256,29 @@ class VM:
                 ret = n
             else:
                 ret = 0               # EOF / 非法 fd
+        elif num == SYS_READ8:
+            # read8(fd, buf, n_octets)：每 octet 编 2 tryte [lo=o%243, hi=o/243]
+            if a0 == 0 and 0 <= a1 and a1 + 2 * a2 <= len(self.mem):
+                n = min(a2, len(self.stdin))
+                for i in range(n):
+                    o = self.stdin[i]
+                    self.mem[a1 + 2 * i] = o % 243
+                    self.mem[a1 + 2 * i + 1] = o // 243
+                del self.stdin[:n]
+                ret = n
+            else:
+                ret = 0
+        elif num == SYS_WRITE8:
+            # write8(fd, buf, n_octets)：每 2 tryte [lo,hi] 解 1 octet
+            if a0 in (1, 2) and 0 <= a1 and a1 + 2 * a2 <= len(self.mem):
+                for i in range(a2):
+                    lo = self.mem[a1 + 2 * i] % 243
+                    hi = self.mem[a1 + 2 * i + 1] % 243
+                    o = lo + 243 * hi
+                    self.output.append(o & 0xFF)   # 视图契约：非法 hi 截断到 octet
+                ret = a2
+            else:
+                ret = -9               # E_BADF
         elif num in (SYS_EXIT, SYS_EXIT_GROUP):
             # exit / exit_group：停机并记录退出码
             self.exit_code = a0 & 0xFF

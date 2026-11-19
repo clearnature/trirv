@@ -601,7 +601,11 @@ enum{SYS_GETCWD=17,SYS_OPENAT=56,SYS_CLOSE=57,SYS_LSEEK=62,SYS_READ=63,SYS_WRITE
 SYS_READV=65,SYS_WRITEV=66,SYS_FSTATAT=79,SYS_FSTAT=80,SYS_EXIT=93,SYS_EXIT_GROUP=94,
 SYS_SET_TID=96,SYS_FUTEX=98,SYS_CLOCK=113,SYS_YIELD=124,SYS_SIGACTION=134,
 SYS_SIGPROCMASK=135,SYS_SIGRETURN=139,SYS_UNAME=160,SYS_GETPID=172,SYS_GETTID=178,
-SYS_MUNMAP=215,SYS_MMAP=222,SYS_MPROTECT=226,SYS_BRK=214,SYS_GETRANDOM=278};
+SYS_MUNMAP=215,SYS_MMAP=222,SYS_MPROTECT=226,SYS_BRK=214,SYS_GETRANDOM=278,
+/* ---- TriRV 扩展区（Linux 编号空间之外的自定义原语）----
+ * read8/write8：8-bit 视图层。octet(0..255) <-> 双 tryte [lo=o%243, hi=o/243]，
+ * 内存保持纯三进制（tryte 仍 0..242），musl 的 CHAR_BIT==8 依赖由边界编解码满足。 */
+SYS_READ8=5000,SYS_WRITE8=5001};
 #define E_BADF  (-9)
 #define E_INVAL (-22)
 #define E_NOMEM (-12)
@@ -624,6 +628,29 @@ static void syscall_vm(VM *v){
             if((size_t)(a1+n)>MEMSZ)n=MEMSZ-(size_t)a1;
             memcpy(v->mem_ref+a1,v->stdin_data+v->stdin_pos,n);v->stdin_pos+=n;ret=(__int128_t)n;
         } else ret=0;
+    } else if(num==SYS_READ8){
+        /* a0=fd(0=stdin) a1=tryte缓冲地址 a2=octet数；每个 octet 编 2 tryte */
+        if(a0==0&&a1>=0&&a1+2*a2<=MEMSZ&&a2>=0){
+            size_t want=(size_t)a2, left=v->stdin_len-v->stdin_pos;
+            size_t n=want<left?want:left;
+            if((size_t)(a1+2*( __int128_t)n)>MEMSZ)n=(size_t)((MEMSZ-a1)/2);
+            for(size_t i=0;i<n;i++){
+                uint8_t o=v->stdin_data[v->stdin_pos+i];
+                v->mem_ref[a1+2*i]=(uint8_t)(o%243);
+                v->mem_ref[a1+2*i+1]=(uint8_t)(o/243);
+            }
+            v->stdin_pos+=n;ret=(__int128_t)n;
+        } else ret=0;
+    } else if(num==SYS_WRITE8){
+        /* a0=fd(1=stdout,2=stderr) a1=tryte缓冲地址 a2=octet数；[lo,hi] 解 1 octet */
+        if(a2<0) ret=E_INVAL;
+        else if((a0==1||a0==2)&&a1>=0&&a1+2*a2<=MEMSZ){
+            for(__int128_t i=0;i<a2;i++){
+                uint32_t lo=v->mem_ref[a1+2*i]%243, hi=v->mem_ref[a1+2*i+1]%243;
+                vm_out(v,(uint8_t)(lo+243*hi));      /* hi∈{0,1}：合法视图要求，越界值截断 */
+            }
+            ret=a2;
+        } else ret=E_BADF;
     } else if(num==SYS_EXIT||num==SYS_EXIT_GROUP){v->exit_code=a0&0xFF;v->halted=1;ret=a0;}
     else if(num==SYS_BRK){
         if(a0==0)ret=v->brk_ptr;
