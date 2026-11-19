@@ -45,6 +45,7 @@ GLOBAL_BASE   = 262144          # 全局变量区
 STACK_BASE    = 270336          # 栈起点（向上增长）
 WORD          = 9               # 1 word = 9 tryte
 MOD45         = 3 ** 45
+P2_BASE       = 266240          # 2^k 表（k=0..31，32 个字），gp 常驻指向它
 
 I31, I32, NI31 = 2**31, 2**32, -(2**31)
 
@@ -286,6 +287,7 @@ class Gen:
         self.lines = []
         self.uid = 0
         self.frames = []                 # [(行号, 帧字节数)]
+        self.used_bits = False           # 用到二进制视图 -> 需要 2^k 表与 gp 初始化
         self.nimp = sum(1 for i in mod["imports"] if i[0] == "func")
         self.ftype = []
         self.callee = {}
@@ -517,6 +519,189 @@ class Gen:
             return
         self.li("s6", offset)
         self.L(f"    ADD {r}, {r}, s6")
+
+    # -- 二进制视图 --------------------------------------------------
+    # 三进制寄存器里**不存在二进制位**。第 k 位只能这样取：
+    #     残差 r 从值本身出发，拿 2^k 逐个比；r >= 2^k 该位为 1，同时 r -= 2^k。
+    # 这就是二进制长除法的展开式，但一次 DIV 都不用 —— 本机最省的拆位方式。
+    # gp 常驻指向 P2_BASE 的 2^k 表（32 个字，_start 装好，只读）。
+    # 临时只用 s3-s8，s1/s2 是局部变量驻留，不可碰。
+    def _bits(self):
+        self.used_bits = True
+
+    def _bit_of(self, k, res, bit, tag):
+        """剥出残差 res 的第 k 位 -> bit（0/1）。s7 = 2^k，s3..s8 之外不碰。
+
+        必须从高位往低位走：剥掉第 k 位后残差 < 2^k，下一位的比较才有意义。
+        反过来（低位先走）要先把低位移出去，那就得除法了。"""
+        skip = self.lab(tag)
+        self.L(f"    LW s7, {k * WORD}(gp)")
+        self.L(f"    SLT {bit}, {res}, s7")       # 1 表示该位为 0
+        self.L(f"    BNE {bit}, zero, {skip}")
+        self.L(f"    SUB {res}, {res}, s7")
+        self.L(f"{skip}:")
+
+    def gen_bitop(self, op):
+        """i32.and / or / xor —— 双残差同步走查，高位到低位。
+
+        每位的两个标志位 ta/tb 都是 0/1，于是 0/1 值域内：
+            Kleene TAND = min = 二进制 AND
+            Kleene TOR  = max = 二进制 OR
+            XOR = |ta - tb| = (max - min)
+        所以 32 次走查之后，三进制 ISA 也能给出精确的二进制结果。"""
+        self._bits()
+        self.h -= 2
+        i0, i1 = self.h, self.h + 1
+        a = self.get(i0)
+        b2 = self.read(i1, "s4")
+        self.L(f"    ADDI s3, {a}, 0")            # 残差 a
+        self.L(f"    ADDI s4, {b2}, 0")           # 残差 b
+        self.to_unsigned("s3")                    # 位模式按无符号看：负数要加回 2^32
+        self.to_unsigned("s4")
+        self.L("    ADDI s8, zero, 0")            # 结果累加器
+        for k in range(31, -1, -1):
+            self.L(f"    LW s7, {k * WORD}(gp)")
+            la, lb = self.lab("ba"), self.lab("bb")
+            self.L("    SLT s5, s3, s7")
+            self.L(f"    BNE s5, zero, {la}")
+            self.L("    SUB s3, s3, s7")
+            self.L(f"{la}:")
+            self.L("    SLT s6, s4, s7")
+            self.L(f"    BNE s6, zero, {lb}")
+            self.L("    SUB s4, s4, s7")
+            self.L(f"{lb}:")
+            if op == 0x71:                        # and = 1 - max(ta,tb)
+                self.L("    TOR s5, s5, s6")
+                self.L("    SLTI s5, s5, 1")
+            elif op == 0x72:                      # or = 1 - min(ta,tb)
+                self.L("    TAND s5, s5, s6")
+                self.L("    SLTI s5, s5, 1")
+            else:                                 # xor = |ta - tb|
+                self.L("    SUB s5, s5, s6")
+                self.L("    TMAX s6, s5, zero")
+                self.L("    TMIN s5, s5, zero")
+                self.L("    SUB s5, s6, s5")
+            lc = self.lab("bc")
+            self.L(f"    BEQ s5, zero, {lc}")
+            self.L("    ADD s8, s8, s7")
+            self.L(f"{lc}:")
+        self.wrap("s8")
+        self.kill(i1)
+        self.set(i0, "s8")
+        self.h += 1
+
+    def gen_bitcount(self, op):
+        """clz / ctz / popcnt —— 同一条走查，只是换个累加方式。"""
+        self._bits()
+        self.h -= 1
+        i0 = self.h
+        a = self.get(i0)
+        self.L(f"    ADDI s3, {a}, 0")
+        self.to_unsigned("s3")                    # 位模式按无符号看
+        if op == 0x67:                            # clz：从最高位往下找第一个 1
+            self.L("    ADDI s8, zero, 32")
+            end = self.lab("clz")
+            for k in range(31, -1, -1):
+                skip = self.lab("clz")
+                self.L(f"    LW s7, {k * WORD}(gp)")
+                self.L("    SLT s5, s3, s7")
+                self.L(f"    BNE s5, zero, {skip}")
+                self.L("    SUB s3, s3, s7")
+                self.L(f"    ADDI s8, zero, {31 - k}")
+                self.jmp(end)
+                self.L(f"{skip}:")
+            self.L(f"{end}:")
+        elif op == 0x68:                          # ctz：最低位的 1（高位先写，低位覆盖）
+            self.L("    ADDI s8, zero, 32")
+            for k in range(31, -1, -1):
+                skip = self.lab("ctz")
+                self.L(f"    LW s7, {k * WORD}(gp)")
+                self.L("    SLT s5, s3, s7")
+                self.L(f"    BNE s5, zero, {skip}")
+                self.L("    SUB s3, s3, s7")
+                self.L(f"    ADDI s8, zero, {k}")
+                self.L(f"{skip}:")
+        else:                                     # popcnt：数 1 的个数
+            self.L("    ADDI s8, zero, 0")
+            for k in range(31, -1, -1):
+                skip = self.lab("pc")
+                self.L(f"    LW s7, {k * WORD}(gp)")
+                self.L("    SLT s5, s3, s7")
+                self.L(f"    BNE s5, zero, {skip}")
+                self.L("    SUB s3, s3, s7")
+                self.L("    ADDI s8, s8, 1")
+                self.L(f"{skip}:")
+        self.set(i0, "s8")
+        self.h += 1
+
+    def _pow2(self):
+        """按 s5 的值做倍增，构造 2^s5 到 s6；s5 归零。最多 32 次。"""
+        loop, done = self.lab("pw"), self.lab("pw")
+        self.L("    ADDI s6, zero, 1")
+        self.L(f"{loop}:")
+        self.L(f"    BEQ s5, zero, {done}")
+        self.L("    ADD s6, s6, s6")
+        self.L("    ADDI s5, s5, -1")
+        self.jmp(loop)
+        self.L(f"{done}:")
+
+    def gen_shift(self, op):
+        """shl / shr_s / shr_u / rotl / rotr。
+
+        注意 SLL/SRL 在本 ISA 里是**三进制**移位（×3^k），与 wasm 的二进制移位无关，
+        所以这里一律走乘除 2^k：shl = ×2^k 后取模，shr = ÷2^k。"""
+        self._bits()                              # 需要 2^k 表
+        self.h -= 2
+        i0, i1 = self.h, self.h + 1
+        x = self.get(i0)
+        b2 = self.read(i1, "s4")
+        self.L(f"    ADDI s3, {x}, 0")            # 被移位数
+        self.L(f"    ADDI s5, {b2}, 0")           # 位移量
+        self.L("    ADDI s6, zero, 32")
+        self.to_unsigned("s5")                    # wasm：位移量按无符号取
+        self.L("    REM s5, s5, s6")              # 再对 32 取模
+        self.L("    ADDI s4, s5, 0")              # s4 = k（旋转要用 32-k）
+        self._pow2()                              # s6 = 2^k，s5 归零
+
+        if op == 0x74:                            # shl
+            self.L("    MUL s8, s3, s6")
+            self.wrap_mul("s8")
+        elif op == 0x76:                          # shr_u
+            self.to_unsigned("s3")
+            self.L("    DIV s8, s3, s6")
+            self.wrap("s8")
+        elif op == 0x75:                          # shr_s：向下取整，负残差补 1
+            neg = self.lab("ss")
+            self.L("    SLT s7, s3, zero")
+            self.L(f"    BEQ s7, zero, {neg}")
+            self.L("    ADDI s7, s6, -1")         # x - (2^k - 1) 再截断除 = 向下取整
+            self.L("    SUB s3, s3, s7")
+            self.L(f"{neg}:")
+            self.L("    DIV s8, s3, s6")
+            self.wrap("s8")
+        elif op == 0x77:                          # rotl：左段 + 右段，两段位不重叠
+            self.L("    MUL s8, s3, s6")          # x << k
+            self.wrap_mul("s8")
+            self.to_unsigned("s3")
+            self.L("    ADDI s5, zero, 32")
+            self.L("    SUB s5, s5, s4")          # 32 - k
+            self._pow2()                          # s6 = 2^(32-k)
+            self.L("    DIV s7, s3, s6")          # x >>u (32-k)
+            self.L("    ADD s8, s8, s7")
+            self.wrap("s8")
+        else:                                     # 0x78 rotr：右段 + 左段
+            self.to_unsigned("s3")
+            self.L("    DIV s8, s3, s6")          # x >>u k
+            self.L("    ADDI s5, zero, 32")
+            self.L("    SUB s5, s5, s4")          # 32 - k
+            self._pow2()                          # s6 = 2^(32-k)
+            self.L("    MUL s5, s3, s6")          # x << (32-k)；不能用 s7：wrap 会拿它当临时
+            self.wrap_mul("s5")
+            self.L("    ADD s8, s8, s5")
+            self.wrap("s8")
+        self.kill(i1)
+        self.set(i0, "s8")
+        self.h += 1
 
     # -- 函数 ------------------------------------------------------
     def gen_func(self, fidx):
@@ -867,7 +1052,12 @@ class Gen:
             inl = self.inline_target(b, p, i0)
             rd = inl[2] if inl else self.get(i0)
             b2 = self.read(i1, "s4")
-            self.L(f"    BEQ {b2}, zero, __wasm_trap")
+            # __wasm_trap 在程序最前面，函数体越长离它越远。B 型只有 ±1093 条指令，
+            # 所以走"近跳 + JAL"：不除零时只多花 1 步，除零时仍然跳得出去。
+            ok = self.lab("dv")
+            self.L(f"    BNE {b2}, zero, {ok}")
+            self.L("    JAL zero, __wasm_trap")
+            self.L(f"{ok}:")
             if op in (0x6E, 0x70):
                 self.to_unsigned(rd)
                 self.to_unsigned(b2)
@@ -886,12 +1076,12 @@ class Gen:
                 self.h += 1
             return p
 
-        if op in (0x71, 0x72, 0x73):
-            raise Unsupported("i32.and/or/xor：三进制没有二进制位运算的免费映射")
-        if op in (0x74, 0x75, 0x76, 0x77, 0x78):
-            raise Unsupported("i32 移位/旋转：需按 2 的幂展开，本切片未实现")
-        if op in (0x67, 0x68, 0x69):
-            raise Unsupported("clz/ctz/popcnt 未实现")
+        if op in (0x71, 0x72, 0x73):              # and / or / xor
+            self.gen_bitop(op); return p
+        if op in (0x74, 0x75, 0x76, 0x77, 0x78):  # shl / shr_s / shr_u / rotl / rotr
+            self.gen_shift(op); return p
+        if op in (0x67, 0x68, 0x69):              # clz / ctz / popcnt
+            self.gen_bitcount(op); return p
 
         # ---- 内存 ----
         if 0x28 <= op <= 0x35:
@@ -1051,7 +1241,8 @@ def compile_wasm(data, entry=None):
         entry = fns[entry]
 
     body = g.finish(entry)
-    boot = li_lines("sp", STACK_BASE) + li_lines("s9", NI31) + \
+    boot = (li_lines("gp", P2_BASE) if g.used_bits else []) + \
+        li_lines("sp", STACK_BASE) + li_lines("s9", NI31) + \
         li_lines("s10", I32) + li_lines("s11", I31)
     head = RUNTIME.replace("{BOOT}", "\n".join(boot)).replace("{ENTRY}", str(entry))
     asm = head + body + "\n"
@@ -1070,6 +1261,13 @@ def compile_wasm(data, entry=None):
         for k in range(WORD):
             segs[base + k] = bytes([u % 243])
             u //= 243
+    if g.used_bits:
+        # 2^k 表：拆位走查要用 32 个 2 的幂。放寄存器里不可能（32 个值），
+        # 每次现算又要 DIV，所以做成数据表让 gp 常驻指向，一位一条 LW。
+        for k in range(32):
+            u = 2 ** k
+            digits = bytes((u // 3 ** (5 * i)) % 243 for i in range(WORD))
+            segs[P2_BASE + k * WORD] = digits
     return asm, segs, f"wasm_f{entry}"
 
 

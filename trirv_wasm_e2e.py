@@ -147,6 +147,9 @@ EQZ, EQ, NE = b"\x45", b"\x46", b"\x47"
 LTS, LTU, GTS, GTU = b"\x48", b"\x49", b"\x4a", b"\x4b"
 LES, LEU, GES, GEU = b"\x4c", b"\x4d", b"\x4e", b"\x4f"
 SELECT = b"\x1b"
+BAND, BOR, BXOR = b"\x71", b"\x72", b"\x73"
+SHL, SHRS, SHRU, ROTL, ROTR = b"\x74", b"\x75", b"\x76", b"\x77", b"\x78"
+CLZ, CTZ, POPCNT = b"\x67", b"\x68", b"\x69"
 
 
 # ---------------------------------------------------------------- 参考解释器
@@ -159,7 +162,8 @@ class Ref:
         self.mem = bytearray(trirv_wasm.WASM_MEM_SIZE)
         for a, d in segs.items():
             for i, c in enumerate(bytes(d)):
-                self.mem[a + i] = c % 243
+                if a + i < len(self.mem):        # 全局变量与 2^k 表不在线性内存里
+                    self.mem[a + i] = c % 243
         self.glob = [g[2] & (M32 - 1) for g in mod["globals"]]
         self.out = bytearray()
         self.ftype = [mod["types"][t] for k, m, f, t in mod["imports"] if k == "func"]
@@ -301,6 +305,32 @@ class Ref:
                     st.append(s32(a - q * b))
                 else:
                     st.append(s32(u32(a) % u32(b)))
+            elif op in (0x71, 0x72, 0x73):
+                b = st.pop(); a = st.pop()
+                x, y = u32(a), u32(b)
+                r = (x & y) if op == 0x71 else (x | y) if op == 0x72 else (x ^ y)
+                st.append(s32(r))
+            elif op in (0x74, 0x75, 0x76, 0x77, 0x78):
+                b = st.pop(); a = st.pop()
+                k = u32(b) % 32
+                if op == 0x74:
+                    st.append(s32(u32(a) << k))
+                elif op == 0x75:
+                    st.append(s32(a >> k))          # Python 的 >> 对负数是向下取整
+                elif op == 0x76:
+                    st.append(s32(u32(a) >> k))
+                elif op == 0x77:
+                    st.append(s32(((u32(a) << k) | (u32(a) >> (32 - k))) & (M32 - 1)))
+                else:
+                    st.append(s32(((u32(a) >> k) | (u32(a) << (32 - k))) & (M32 - 1)))
+            elif op in (0x67, 0x68, 0x69):
+                x = u32(st.pop())
+                if op == 0x67:
+                    st.append(32 - x.bit_length())
+                elif op == 0x68:
+                    st.append(32 if x == 0 else (x & -x).bit_length() - 1)
+                else:
+                    st.append(bin(x).count("1"))
             elif op == 0x45:
                 st.append(1 if st.pop() == 0 else 0)
             elif op in (0x46, 0x47):
@@ -433,6 +463,53 @@ def main():
             case(f"cmp {nm2} {a},{b}", wrap1(LGET(0) + LGET(1) + op + END, [a, b]))
     case("eqz 0", wrap1(LGET(0) + EQZ + END, [0]))
     case("eqz -5", wrap1(LGET(0) + EQZ + END, [-5]))
+
+    # 6b) 二进制位视图：三进制寄存器里没有二进制位，全靠比较走查拆出来
+    #     这组用例既验语义，也验"负数走无符号位模式"和 32 位边界
+    bits = [
+        ("and 0x0F0F", 0x0F0F, 0x00FF), ("and 负数", -1, 0x0FF0),
+        ("and 2^31", 2**31, -1), ("or 高低位", 0x00FF, 0x0F00),
+        ("or 负数", -256, 0x0F), ("xor 同值", 12345, 12345),
+        ("xor 负数", -12345, 0x1234), ("xor 2^31-1", 2**31 - 1, 2**31),
+    ]
+    for nm2, a, b in bits:
+        op = BAND if nm2.startswith("and") else BOR if nm2.startswith("or") else BXOR
+        case(f"bit {nm2} {a},{b}", wrap1(LGET(0) + LGET(1) + op + END, [a, b]))
+
+    sh = [
+        ("shl 1<<31", SHL, 1, 31), ("shl 负数", SHL, -5, 1),
+        ("shl 0", SHL, 7, 0), ("shl 越界 k=33", SHL, 1, 33),
+        ("shr_s -5>>1", SHRS, -5, 1), ("shr_s -4>>1", SHRS, -4, 1),
+        ("shr_s 2^31>>31", SHRS, -(2**31), 31), ("shr_u -1>>1", SHRU, -1, 1),
+        ("shr_u 0>>31", SHRU, 0, 31), ("rotl 1,1", ROTL, 1, 1),
+        ("rotl 2^31,1", ROTL, -(2**31), 1), ("rotl 0 位", ROTL, 0x12345678, 0),
+        ("rotr 1,1", ROTR, 1, 1), ("rotr 负数", ROTR, -12345, 7),
+        ("rotr 0 位", ROTR, 0x12345678, 0),
+    ]
+    for nm2, op, a, b in sh:
+        case(f"bit {nm2}", wrap1(LGET(0) + LGET(1) + op + END, [a, b]))
+
+    cnt = [("clz 1", CLZ, 1), ("clz 0", CLZ, 0), ("clz -1", CLZ, -1),
+           ("clz 0x00FF", CLZ, 0x00FF),
+           ("ctz 1", CTZ, 1), ("ctz 0", CTZ, 0), ("ctz -8", CTZ, -8),
+           ("ctz 0x100", CTZ, 0x100),
+           ("popcnt -1", POPCNT, -1), ("popcnt 0", POPCNT, 0),
+           ("popcnt 0x0F0F", POPCNT, 0x0F0F)]
+    for nm2, op, a in cnt:
+        case(f"bit {nm2}", wrap1(LGET(0) + op + END, [a]))
+
+    # 6c) 端到端：FNV-1a 哈希一段内存字节 —— load8_u + xor + mul + 循环 一起走
+    blob = b"ternary wasm on trirv"
+    fnv = (I32C(s32(2166136261)) + LSET(2) +
+           BLOCK + LOOP +
+           LGET(1) + LGET(0) + GEU + IF + BR(2) + END +
+           LGET(2) + LGET(1) + LOAD8U() + BXOR + LSET(2) +
+           LGET(2) + I32C(16777619) + MUL + LSET(2) +
+           LGET(1) + I32C(1) + ADD + LSET(1) +
+           BR(0) + END + END + LGET(2) + END)
+    w = wrap1(fnv, [0, len(blob)], nlocals=1)
+    w.data(0, blob)
+    case("FNV-1a 哈希内存字节", w)
 
     # 7) 递归调用：fib
     w = W()

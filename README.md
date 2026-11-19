@@ -109,8 +109,9 @@ TRV_CC=py python3 export_trv.py foo.c foo.trv   # 强制 Python 参考后端做�
 ./trirv_vm -o 1000 foo.trv                  # dump 地址 1000 起的 9 tryte
 
 python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 参数可选，输出汇编）
-python3 trirv_wasm_e2e.py                      # 58 例三路差分（参考解释器 / PyVM / C VM）
+python3 trirv_wasm_e2e.py                      # 93 例三路差分（参考解释器 / PyVM / C VM）
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
+python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 ```
 
 实测一条完整链路（2026-11-19 验证）：
@@ -133,7 +134,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `*_e2e.py`（C 编译到执行全链路） | 14/14 套（`TRV_CC_STRICT=1` 下 12/14，缺 struct 按值） |
-| `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **58/58** |
+| `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |
 
 性能（对比 Python 栈式后端，32 寄存器 + LB/LH 对齐后复测）：
@@ -169,14 +170,16 @@ $ ./trirv_vm /tmp/t.trv
 
 - `trirv_wasm.py`：Wasm 二进制 → TriRV 汇编。**操作数栈驻留寄存器**（t0–t6），
   leaf 函数的局部变量驻留 s1/s2，`local.get x … op … local.set x` 就地更新
-- 三路差分 58/58：参考解释器 × Python VM × C VM，含 hello world 中文输出字节一致
+- 三路差分 93/93：参考解释器 × Python VM × C VM，含 hello world 中文输出字节一致
 - 关键选择：**1 wasm byte = 1 tryte，地址零偏移**（寻址零换算指令）；
   值域差（243 vs 256）属定义层，不计成本，**成本只算"模拟 mod 2^32 / mod 2^8 的规整指令"**
 - 实测（求和 1..100000）：动态步数 4,700,071 → **2,245,770（−52.2%）**
   - 对 C 寄存器式（int=45 trit）：4.49× 动态 / 2.99× 墙钟 —— **含语义税，非对等比较**
   - 对 C 寄存器式（手写 i32 归正）：**1.50× 动态 / 1.45× 墙钟** —— 公平对照
   - 单步成本 7.7 vs 8.0 ns，差距全在指令条数，VM 没变慢
-- 不支持：按位运算（三进制无免费映射）、i16/i64、br_table、call_indirect
+- **位运算已支持**（and/or/xor/shl/shr/rot/clz/ctz/popcnt）：32 轮无除法拆位，
+  代价 372–436 条/op —— 基数转换的物理成本，实测见 `bench_bitops.py`
+- 不支持：i16/i64、br_table、call_indirect
 - 详见 `WASM_ROUTE_A.md`
 
 ## 八、最近话题（2026-11-19）
