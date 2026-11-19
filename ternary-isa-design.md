@@ -622,7 +622,15 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
    （`trirv_musl_real_e2e.py` 11 项）。预处理器取 `#else` 纯 C 回退分支
    （避开 8-bit 字长打包优化）。为此编译器补齐：for 逗号 step、空语句、
    for-init 声明、前/后缀 ++--、const-unsigned 任意序、声明符基类型隔离、
-   cast 类型传播。剩余：更多 musl 文件语法覆盖、arch 层内联汇编、弱符号。
+   cast 类型传播。
+   ⑧ **musl string/ 全目录覆盖（2026-11-20）**：src/string/ 46 个非宽字符
+   文件批量管线——40 编译成功、6 个语义不适用（strcspn/strspn/memmem/
+   strstr/explicit_bzero 的字节位图/打包技巧依赖二进制位运算，strsignal
+   依赖信号子系统——SKIP 而非 FAIL，语义层面不可适用）、0 失败。
+   为此补齐：goto/label 语句、表达式语句与 for-init 的逗号链、
+   (void) 空形参守卫修正（void* 形参被误吞）、函数式宏展开、
+   weak_alias/static/数字后缀的预处理剥离。剩余：stdlib/stdio 目录、
+   arch 层内联汇编、弱符号。
 
 ---
 

@@ -167,11 +167,11 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 04:40 全量复测：`run_all_tests.py` 33 套全 PASS；**真 musl 源码已在 TriRV 上编译执行**）
+## 五、当前状态（2026-11-20 05:10 全量复测：`run_all_tests.py` 34 套全 PASS；**真 musl string/ 全目录 40/46 编译执行**）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **33/33 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **34/34 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
@@ -180,6 +180,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_octet_e2e.py`（**8-bit 视图层**：read8/write8 边界编解码，octet↔双 tryte，全 256 值无损往返，musl 的 CHAR_BIT 依赖在此满足） | **13/13** |
 | `trirv_trvo_e2e.py`（**TRVO 目标文件**：中间格式导出/导入、未定义引用检测、跨单元标签改写 `_L*`→`_X<单元>_<n>`、musl+crt 预编译为 .trvo 增量链接） | **10/10** |
 | `trirv_musl_real_e2e.py`（**真 musl 源码编译试点**：musl 1.2.5 官方源码 string/stdlib 6 文件原样编译（仅预处理），15 项行为断言 + strstr 集成场景，双 VM） | **11/11** |
+| `trirv_musl_wide_e2e.py`（**musl string/ 全目录覆盖**：46 文件批量管线——40 编译成功 / 6 语义不适用 SKIP（字节位图打包依赖二进制位运算）/ 0 失败；strsep/strlcpy/memmove/strcasecmp/memccpy 功能断言） | **7/7** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |

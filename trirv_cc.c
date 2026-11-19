@@ -203,7 +203,7 @@ static void tok_push(Token t){
 }
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
-        "if","else","while","do","for","return","break","continue","typedef","const",NULL};
+        "if","else","while","do","for","return","break","continue","typedef","const","goto",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -272,7 +272,7 @@ typedef enum {
     N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,
     N_PREINC,N_POSTINC,N_DEREF,N_ADDR,
     N_BLOCK,N_DECL,N_IF,N_WHILE,N_FOR,N_RETURN,N_EXPR,N_BREAK,N_CONT,
-    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST
+    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST,N_LABEL,N_GOTO
 } NodeKind;
 typedef struct Node Node;
 struct Node {
@@ -626,6 +626,14 @@ static int is_decl_start(void){
 }
 
 static Node* parse_stmt(void){
+    /* C 标签语句 name:（musl strlcpy 的 finish: 惯用法）——
+       TK_ID + ":" 且非 case/default 形态 */
+    if(atk(TK_ID)&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,":")
+       &&strcmp(cur()->s,"case")&&strcmp(cur()->s,"default")){
+        Node*n=nnew(N_LABEL); n->s=strdup(cur()->s);
+        take(); take();                       /* name : */
+        return n;
+    }
     if(at("{")) return parse_block();
     if(accept("if")){
         expect("("); Node*n=nnew(N_IF); n->cond=parse_expr(); expect(")");
@@ -652,7 +660,11 @@ static Node* parse_stmt(void){
         if(!at(";")){
             if(is_decl_start()){
                 n->init=parse_decl_nosemi();
-            } else n->init=parse_expr();
+            } else {
+                n->init=parse_assign();
+                Node*ci=n->init;
+                while(accept(",")){ ci->els=parse_assign(); ci=ci->els; }
+            }
         }
         expect(";");
         if(!at(";")) n->cond=parse_expr();
@@ -669,6 +681,9 @@ static Node* parse_stmt(void){
         }
         expect(")"); n->stmt=parse_stmt(); return n;
     }
+    if(accept("goto")){
+        Node*n=nnew(N_GOTO); n->s=take()->s; expect(";"); return n;
+    }
     if(accept("return")){
         Node*n=nnew(N_RETURN);
         if(!at(";")) n->expr=parse_expr();
@@ -678,7 +693,13 @@ static Node* parse_stmt(void){
     if(accept("break")){ expect(";"); return nnew(N_BREAK); }
     if(accept("continue")){ expect(";"); return nnew(N_CONT); }
     if(is_decl_start()) return parse_decl();
-    Node*n=nnew(N_EXPR); n->expr=parse_expr(); expect(";"); return n;
+    Node*n=nnew(N_EXPR); n->expr=parse_expr();
+    /* 逗号表达式语句 n--, d[n]=s[n];：沿 els 链逐个求值 */
+    {
+        Node*cur=n->expr;
+        while(accept(",")){ cur->els=parse_assign(); cur=cur->els; }
+    }
+    expect(";"); return n;
 }
 static Node* parse_block(void){
     expect("{"); Node*n=nnew(N_BLOCK); int cap=0;
@@ -991,7 +1012,9 @@ static void parse_program(void){
         f->ptypes=malloc(sizeof(char*)*32);
         f->params =malloc(sizeof(char*)*32);
         if(!at(")")){
-            if(!(strcmp(ret,"void")==0&&at("void"))){
+            int void_only = strcmp(ret,"void")==0 && at("void")
+                            && TOKS[IPOS+1].s && !strcmp(TOKS[IPOS+1].s,")");
+            if(!void_only){
                 do{
                     if(accept("...")){ f->variadic=1; break; }
                     if(at("void") && TOKS[IPOS+1].s && !strcmp(TOKS[IPOS+1].s,")")) {
@@ -1438,6 +1461,7 @@ static void collect_fn_consts(Node*n){
 
 static int has_call(Node*n);   /* forward */
 
+static const char* DBG_PT;
 static void too_deep(int off){
     (void)off;
     fprintf(stderr,"UNSUPPORTED: expression nesting needs more than 7 temps\n");
@@ -2387,6 +2411,8 @@ static void gen_stmt(Node*n){
     if(!n) return;
     switch(n->k){
     case N_BLOCK: for(int i=0;i<n->nitems;i++) gen_stmt(n->body[i]); break;
+    case N_LABEL: lbl(n->s); break;
+    case N_GOTO:  emitf("JAL zero, %s",n->s); break;
     case N_DECL:
         for(int i=0;i<n->ndecls;i++){
             if(!n->dinit[i]) continue;
@@ -2417,7 +2443,9 @@ static void gen_stmt(Node*n){
             TDN=0;
         }
         break;
-    case N_EXPR: TDN=0; eval(n->expr); TDN=0; break;
+    case N_EXPR: TDN=0;
+        for(Node*s=n->expr; s; s=s->els){ TDN=0; eval(s); }
+        TDN=0; break;
     case N_IF: {
         if(!n->els){ char*end=newlbl("endif");
             gen_brfalse(n->cond,end); gen_stmt(n->then); lbl(end);
@@ -2450,7 +2478,10 @@ static void gen_stmt(Node*n){
     }
     case N_FOR: {
         TDN=0;
-        if(n->init){ if(n->init->k==N_DECL) gen_stmt(n->init); else eval(n->init); }
+        if(n->init){
+            if(n->init->k==N_DECL) gen_stmt(n->init);
+            else for(Node*s=n->init; s; s=s->els){ TDN=0; eval(s); }
+        }
         TDN=0;
         char*start=newlbl("for"),*cont=newlbl("cont"),*end=newlbl("end");
         lbl(start);
@@ -3102,6 +3133,7 @@ static void gate_check(Node*n){
     case N_UN:     if(n->s&&!strcmp(n->s,"~")) GATE_BIT=1; gate_check(n->e); return;
     case N_ASSIGN: gate_check(n->l); gate_check(n->r); return;
     case N_PREINC: gate_check(n->e); return;
+    case N_LABEL: case N_GOTO: return;
     case N_POSTINC: gate_check(n->e); return;
     case N_DEREF:  gate_check(n->e); return;
     case N_ADDR:   gate_check(n->e); return;
