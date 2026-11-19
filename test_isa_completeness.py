@@ -314,17 +314,21 @@ check("D2 方案 = 显式 3 补码规整", "3's-complement" in D.get("D2", {}).g
 check("D2 全 2 的 7-trit 立即数符号扩展为 -1",
       isa.sign_extend_imm(3**7 - 1) == (-1) % isa.MOD_X)
 check("D2 正数符号扩展保持原值", isa.sign_extend_imm(5) == 5)
-# D3：32 寄存器 / 4-trit 字段
+# D3（2026-11-19 撤销 27 方案）：32 寄存器 / 4-trit 字段，对齐 RISC-V x0-x31
 import trirv_asm as _asm
-check("D3 寄存器数决策 = 汇编器唯一寄存器号 = 27",
-      D.get("D3", {}).get("regs") == len(set(_asm.REG.values())) == isa.NREG == 27)
-check("D3 字段宽度决策 = 实现 rd 字段 3 trit",
-      D.get("D3", {}).get("field_trits") == isa.F["rd"][1] - isa.F["rd"][0] + 1 == 3)
+check("D3 寄存器数决策 = 汇编器唯一寄存器号 = 32",
+      D.get("D3", {}).get("regs") == len(set(_asm.REG.values())) == isa.NREG == 32)
+check("D3 字段宽度决策 = 实现 rd 字段 4 trit",
+      D.get("D3", {}).get("field_trits") == isa.F["rd"][1] - isa.F["rd"][0] + 1 == 4)
+check("D3 4-trit 字段恰好填满 20 trit（3+4+2+4+4+3）", 3 + 4 + 2 + 4 + 4 + 3 == isa.W == 20)
 check("D3 立即数布局未动: I=13..19 / S,B=3..6+17..19 / U,J=7..19",
-      isa.F["rs2"] == (13, 15) and isa.F["rs1"] == (9, 11) and isa.F["rd"] == (3, 5))
-check("D3 ABI 别名保留: t0-t6/a0-a7/s0 均 < 27",
-      all(_asm.REG[k] < 27 for k in
-          ["t0","t1","t2","t3","t4","t5","t6","a0","a7","s0","sp","ra","zero"]))
+      isa.F["rs2"] == (13, 16) and isa.F["rs1"] == (9, 12) and isa.F["rd"] == (3, 6))
+check("D3 ABI 别名对齐 RISC-V: t3-t6=28..31, s2-s11=18..27",
+      all(_asm.REG[k] < 32 for k in
+          ["t0","t1","t2","t3","t4","t5","t6","a0","a7","s0","sp","ra","zero"])
+      and _asm.REG["t3"] == 28 and _asm.REG["t6"] == 31
+      and _asm.REG["s2"] == 18 and _asm.REG["s11"] == 27
+      and _asm.REG["a0"] == 10 and _asm.REG["a7"] == 17)
 # D4：I 型 7-trit / U 型 13-trit 立即数
 check("D4 I 型立即数决策 = 实现 7 trit",
       D.get("D4", {}).get("i_imm_trits") == 7 and isa.decode(e("ADDI", imm=3**7-1))["imm"] == 3**7-1)

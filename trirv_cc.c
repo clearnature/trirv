@@ -19,7 +19,7 @@
 
 /* ===================== ISA 常量（对齐 trirv_isa.py）===================== */
 #define XLEN 45
-#define NREG 27
+#define NREG 32
 #define TRV_W 20
 
 /* 物理寄存器编号（3-trit 字段 0..26）*/
@@ -35,12 +35,12 @@
 #define S1   9
 #define A0   10
 #define A7   17
-#define T3   18
-#define T4   19
-#define T5   20
-#define T6   21
-#define S2   22
-#define S6   26
+#define T3   28
+#define T4   29
+#define T5   30
+#define T6   31
+#define S2   18
+#define S11  27
 
 /* opcode */
 #define O_OP 0
@@ -76,14 +76,14 @@ static uint32_t putf(uint32_t v,int lo,int hi,int x){
 }
 static uint32_t encR(int op,int f2,int rs2,int rs1,int funct,int rd){
     uint32_t v=0;
-    v=putf(v,0,2,op); v=putf(v,3,5,rd); v=putf(v,7,8,funct);
-    v=putf(v,9,11,rs1); v=putf(v,13,15,rs2); v=putf(v,17,19,f2);
+    v=putf(v,0,2,op); v=putf(v,3,6,rd); v=putf(v,7,8,funct);
+    v=putf(v,9,12,rs1); v=putf(v,13,16,rs2); v=putf(v,17,19,f2);
     return v;
 }
 static uint32_t encI(int op,int imm7,int rs1,int funct,int rd){
     uint32_t v=0;
-    v=putf(v,0,2,op); v=putf(v,3,5,rd); v=putf(v,7,8,funct);
-    v=putf(v,9,11,rs1);
+    v=putf(v,0,2,op); v=putf(v,3,6,rd); v=putf(v,7,8,funct);
+    v=putf(v,9,12,rs1);
     int m=((imm7%2187)+2187)%2187;
     v=putf(v,13,19,m);
     return v;
@@ -91,14 +91,14 @@ static uint32_t encI(int op,int imm7,int rs1,int funct,int rd){
 static uint32_t encS(int op,int imm7,int rs2,int rs1,int funct){
     uint32_t v=0;
     v=putf(v,0,2,op); v=putf(v,7,8,funct);
-    v=putf(v,9,11,rs1); v=putf(v,13,15,rs2);
+    v=putf(v,9,12,rs1); v=putf(v,13,16,rs2);
     int m=((imm7%2187)+2187)%2187;
     v=putf(v,3,6,m%81); v=putf(v,17,19,m/81);
     return v;
 }
 static uint32_t encU(int op,int imm13,int rd){
     uint32_t v=0;
-    v=putf(v,0,2,op); v=putf(v,3,5,rd);
+    v=putf(v,0,2,op); v=putf(v,3,6,rd);
     int m=((imm13%1594323)+1594323)%1594323;
     v=putf(v,7,19,m);
     return v;
@@ -136,8 +136,12 @@ static RegDef REGTAB[] = {
     {"t0",T0},{"x5",5},{"t1",T1},{"x6",6},{"t2",T2},{"x7",7},
     {"s0",FP},{"fp",FP},{"x8",8},{"s1",S1},{"x9",9},
     {"a0",10},{"a1",11},{"a2",12},{"a3",13},{"a4",14},{"a5",15},{"a6",16},{"a7",17},
+    {"s2",S2},{"s3",19},{"s4",20},{"s5",21},{"s6",22},
+    {"s7",23},{"s8",24},{"s9",25},{"s10",26},{"s11",S11},
     {"t3",T3},{"t4",T4},{"t5",T5},{"t6",T6},
-    {"s2",22},{"s3",23},{"s4",24},{"s5",25},{"s6",26},
+    {"x10",10},{"x11",11},{"x12",12},{"x13",13},{"x14",14},{"x15",15},{"x16",16},{"x17",17},
+    {"x18",18},{"x19",19},{"x20",20},{"x21",21},{"x22",22},{"x23",23},{"x24",24},{"x25",25},
+    {"x26",26},{"x27",27},{"x28",28},{"x29",29},{"x30",30},{"x31",31},
     {NULL,0}
 };
 static int find_reg(const char*n){
@@ -153,9 +157,10 @@ static const char* regname(int r){
         case 8:return "s0"; case 9:return "s1";
         case 10:return "a0"; case 11:return "a1"; case 12:return "a2"; case 13:return "a3";
         case 14:return "a4"; case 15:return "a5"; case 16:return "a6"; case 17:return "a7";
-        case 18:return "t3"; case 19:return "t4"; case 20:return "t5"; case 21:return "t6";
-        case 22:return "s2"; case 23:return "s3"; case 24:return "s4";
-        case 25:return "s5"; case 26:return "s6";
+        case 18:return "s2"; case 19:return "s3"; case 20:return "s4"; case 21:return "s5";
+        case 22:return "s6"; case 23:return "s7"; case 24:return "s8"; case 25:return "s9";
+        case 26:return "s10"; case 27:return "s11";
+        case 28:return "t3"; case 29:return "t4"; case 30:return "t5"; case 31:return "t6";
     }
     snprintf(buf,sizeof(buf),"x%d",r); return buf;
 }
@@ -711,7 +716,7 @@ static void drop_jump_to_next(void){
 }
 
 static int reg_free(int r){ return !USEDREG[r]; }
-static void reg_take(int r){ if(r>0&&r<27) USEDREG[r]=1; }
+static void reg_take(int r){ if(r>0&&r<32) USEDREG[r]=1; }
 /* 持久化寄存器池
  * ---------------
  * 有调用的函数只能用 callee-saved 的 s1,s2..s6——被调者不会破坏它们，
@@ -720,7 +725,7 @@ static void reg_take(int r){ if(r>0&&r<27) USEDREG[r]=1; }
  * 于是可以直接用 caller-saved 的 a 系列，一个字节的保存/恢复都不用付。
  * 池从 a_nparams 开始，避开形参占用的 a0..a(n-1)，装载时不会互相覆盖。
  * 只避开 t0-t5(表达式临时)、t6(变参块基址)、s0(帧指针)、sp/ra/zero。 */
-static int PP_POOL[8]={22,23,24,25,26,9,-1,-1};
+static int PP_POOL[8]={18,19,20,21,22,9,-1,-1};
 static int PP_N=6, PP_SAVED=1;      /* PP_SAVED: 池里的寄存器是否需要存/恢复 */
 static void pp_set(int leaf,int nparams){
     static int cpup[6]={22,23,24,25,26,9};
@@ -744,7 +749,7 @@ static int tmp_alloc(void){
     static int pool[]={5,6,7};
     for(unsigned i=0;i<sizeof(pool)/sizeof(pool[0]);i++) if(reg_free(pool[i])){return pool[i];}
     /* 兜底：任意空闲且非持久局部 */
-    for(int r=10;r<27;r++) if(reg_free(r)) return r;
+    for(int r=10;r<32;r++) if(reg_free(r)) return r;
     return 5; /* 极端情况复用 t0（表达式树深度有限，实践中不会） */
 }
 static int is_tmp(int r){ for(int i=0;i<NTMP;i++) if(TMPREG[i]==r) return 1; return 0; }
@@ -797,7 +802,7 @@ static void load_imm128(int reg, __int128 n){
  * 于是 7*3+8/2-4 被算成 8。现在改为 LIFO 池——深度 d 用 TPOOL[d]，
  * 二元运算直接写回左操作数所在寄存器，既不覆盖也不产生搬运指令。
  */
-static const int TPOOL[6]={5,6,7,18,19,20};      /* t0 t1 t2 t3 t4 t5 */
+static const int TPOOL[6]={5,6,7,28,29,30};      /* t0 t1 t2 t3 t4 t5 */
 static int TDN;                                   /* 已占用的临时深度 */
 static int CSAVE_OFF, ARG_OFF;                    /* 跨调用保存区 / 实参暂存区基址 */
 static int NFIXED;                                /* 当前函数固定参数个数（va_start 用） */
@@ -852,7 +857,7 @@ static int tacq(void){ if(TDN>=6) too_deep(0); return TPOOL[TDN++]; }
  *   - 在 TPOOL 里   -> 本次表达式的私有临时，可以当目标寄存器随手写
  *   - 不在 TPOOL 里 -> 变量/参数的常驻寄存器，只能读
  * 任何"要往结果里写"的地方都必须先过 dstof()，否则会写坏变量。
- * 两个集合不相交（TPOOL={5,6,7,18,19,20}，s 系={9,22..26}），判定是精确的。 */
+ * 两个集合不相交（TPOOL={5,6,7,28,29,30}，s 系={9,18..27}），判定是精确的。 */
 static int in_tpool(int r){ for(int i=0;i<6;i++) if(TPOOL[i]==r) return 1; return 0; }
 /* 为 src 的结果挑一个可写目标：src 本身可写就复用，否则另取临时。
    注意它只分配目标、不搬值——适合 "dst = op(src)" 这种 dst 由指令写入的场合。 */
@@ -1816,17 +1821,17 @@ static int parse_mov(const char*line,int*rd,int*rs){
     *rd=d;*rs=s; return 1;
 }
 static void peephole(void){
-    int canon[27]; for(int i=0;i<27;i++)canon[i]=-1;
+    int canon[32]; for(int i=0;i<32;i++)canon[i]=-1;
     char **NEW=malloc(sizeof(char*)*(NOUT?NOUT:1)); int NNEW=0;
     for(int i=0;i<NOUT;i++){
         char*line=OUT[i];
         char*s=line; while(*s==' '||*s=='\t')s++;
         /* 标签或控制流指令：清空复制链 */
-        if(*s=='_'||*s=='.'||strchr(s,':')){ for(int k=0;k<27;k++)canon[k]=-1; NEW[NNEW++]=line; continue; }
+        if(*s=='_'||*s=='.'||strchr(s,':')){ for(int k=0;k<32;k++)canon[k]=-1; NEW[NNEW++]=line; continue; }
         char op[32]; sscanf(s,"%31s",op);
         if(!strcmp(op,"JAL")||!strcmp(op,"JALR")||!strcmp(op,"BEQ")||!strcmp(op,"BNE")||
            !strcmp(op,"ECALL")||!strcmp(op,"BLT")||!strcmp(op,"BGE")){
-            for(int k=0;k<27;k++)canon[k]=-1; NEW[NNEW++]=line; continue;
+            for(int k=0;k<32;k++)canon[k]=-1; NEW[NNEW++]=line; continue;
         }
         int rd,rs;
         if(parse_mov(line,&rd,&rs)){

@@ -14,14 +14,16 @@
 import re
 import trirv_isa as isa
 
-# D3: 27 个物理寄存器 (x0..x26, 3-trit 字段)。别名重排保留 t0-t6/a0-a7/s0-s6。
-REG = {f"x{i}": i for i in range(27)}
+# 32 个物理寄存器（x0..x31，4-trit 字段），别名**严格对齐 RISC-V 标准 ABI**，
+# 以便直接复用 RISC-V 的汇编语法、ABI 文档与 LLVM 后端。
+REG = {f"x{i}": i for i in range(32)}
 REG.update({"zero":0,"ra":1,"sp":2,"gp":3,"tp":4,
-            **{f"t{i}":5+i for i in range(3)},      # t0-t2 = 5,6,7
-            **{f"s{i}":8+i for i in range(2)},      # s0/s1 = 8,9 (fp=s0)
-            **{f"a{i}":10+i for i in range(8)},     # a0-a7 = 10..17
-            **{f"t{i+3}":18+i for i in range(4)},   # t3-t6 = 18,19,20,21
-            **{f"s{i+2}":22+i for i in range(5)}})  # s2-s6 = 22..26
+            **{f"t{i}":5+i for i in range(3)},      # t0-t2  = 5,6,7
+            **{f"s{i}":8+i for i in range(2)},      # s0/s1  = 8,9
+            **{f"a{i}":10+i for i in range(8)},     # a0-a7  = 10..17
+            **{f"s{i+2}":18+i for i in range(10)},  # s2-s11 = 18..27
+            **{f"t{i+3}":28+i for i in range(4)}})  # t3-t6  = 28..31
+REG["fp"] = 8
 
 def parse_int(tok, ntrits=7):
     """解析立即数为 ntrits-trit 的 3 补码位模式。

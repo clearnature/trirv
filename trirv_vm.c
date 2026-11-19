@@ -22,7 +22,7 @@
 
 /* ---------------- ISA 常量 ---------------- */
 #define XLEN 45
-#define NREG 27   /* D3: 3-trit 寄存器字段 (0..26) */
+#define NREG 32   /* 4-trit 寄存器字段 (0..31)，对齐 RISC-V x0-x31 */
 #define MEMSZ (1u << 20)
 /* ---- Zicsr + 特权最小集常量（对齐 trirv_isa.CSR）---- */
 #define CSR_MSTATUS  768   /* 0x300 */
