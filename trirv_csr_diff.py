@@ -61,13 +61,16 @@ p = [e("ADDI", rd=1, rs1=0, imm=isa.MSTATUS_MIE % (3**7)),
 pe, _ = py_exit(p); ce = c_exit(p)
 chk("CSRRS/CSRRC", pe, ce)
 
-# --- D3: 非法指令 trap + MRET（handler 在末尾）---
+# --- D3: 非法指令 trap + MRET（handler 在槽8 = tryte 地址 32）---
+# 注意：mtvec/mepc 均为 tryte 地址（指令 i 在 4*i）。原版写 mtvec=8 指向槽2
+# 的非法指令自身，形成自陷循环（48 次 trap 后两版退出路径不同）；
+# 且 mepc 应 +4 跳到下一条指令（原写 +1 会 floor 回槽2 再陷）。
 bad = 26
-p = [e("ADDI", rd=1, rs1=0, imm=8), e("CSRRW", rd=0, rs1=1, imm=C["mtvec"]),
+p = [e("ADDI", rd=1, rs1=0, imm=32), e("CSRRW", rd=0, rs1=1, imm=C["mtvec"]),
      bad,
      e("ADDI", rd=10, rs1=0, imm=7), e("ADDI", rd=17, rs1=0, imm=SYS_EXIT % (3**7)), e("ECALL"),
      e("ADDI", rd=0, rs1=0, imm=0), e("ADDI", rd=0, rs1=0, imm=0),
-     e("CSRRS", rd=3, rs1=0, imm=C["mepc"]), e("ADDI", rd=3, rs1=3, imm=1),
+     e("CSRRS", rd=3, rs1=0, imm=C["mepc"]), e("ADDI", rd=3, rs1=3, imm=4),
      e("CSRRW", rd=0, rs1=3, imm=C["mepc"]), e("MRET")]
 pe, pv = py_exit(p); ce = c_exit(p)
 chk("非法指令trap+MRET", pe, ce)
