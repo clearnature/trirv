@@ -101,7 +101,16 @@ def assemble(src):
             else:  # B
                 rs1 = reg(ops[0]); rs2 = reg(ops[1])
                 tgt = ops[2].strip()
-                imm = (labels[tgt] - idx) % (3**7) if tgt in labels else parse_int(tgt)
+                if tgt in labels:
+                    d = labels[tgt] - idx
+                    # 7 trit 的 B 型偏移只有 ±1093 条指令。超范围必须报错：
+                    # 静默 % 2187 会跳到一个"看起来合法"的错误位置，比崩溃危险得多。
+                    if not -1093 <= d <= 1093:
+                        raise ValueError(
+                            f"{idx}: 条件跳转 {mn} -> {tgt} 超出 B 型范围 {d}（限 ±1093 条指令）")
+                    imm = d % (3**7)
+                else:
+                    imm = parse_int(tgt)
             v = isa.encode(mn, rs1=rs1, rs2=rs2, imm=imm)
         elif fmt in ("U", "J"):
             rd = reg(ops[0]); tgt = ops[1].strip()
