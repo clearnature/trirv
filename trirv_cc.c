@@ -270,7 +270,7 @@ static void lex(const char*src){
 /* ===================== AST ===================== */
 typedef enum {
     N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,
-    N_PREINC,N_DEREF,N_ADDR,
+    N_PREINC,N_POSTINC,N_DEREF,N_ADDR,
     N_BLOCK,N_DECL,N_IF,N_WHILE,N_FOR,N_RETURN,N_EXPR,N_BREAK,N_CONT,
     N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST
 } NodeKind;
@@ -353,12 +353,17 @@ static char* parse_type(void){
      * 与 TriRV 的 tryte 值域 0..242 天然吻合。故 char/unsigned char 走 LBU 零扩展，
      * 只有显式 signed char 走 LB 符号扩展取 -121..121。 */
     if(accept("unsigned")){
+        while(accept("const")){ }              /* unsigned const char 顺序 */
         if(accept("char")) snprintf(base,sizeof(base),"uchar");
         else { accept("int"); snprintf(base,sizeof(base),"unsigned"); }
     } else if(accept("signed")){
+        while(accept("const")){ }
         if(accept("char")) snprintf(base,sizeof(base),"schar");
         else { accept("int"); snprintf(base,sizeof(base),"int"); }
-    } else if(accept("int")) snprintf(base,sizeof(base),"int");
+    } else if(accept("int")){
+        while(accept("const")){ }
+        snprintf(base,sizeof(base),"int");
+    }
     else if(accept("char")) snprintf(base,sizeof(base),"char");
     else if(accept("void")) snprintf(base,sizeof(base),"void");
     else if(accept("struct")){ char*nm=take()->s; snprintf(base,sizeof(base),"struct %s",nm); }
@@ -475,13 +480,15 @@ static Node* parse_postfix(void){
             char*mt=take()->s;
             Node*x=nnew(N_MEMBER); x->l=n; x->s=mt; x->arrow=arrow; n=x;
         }
-        else if(accept("++")){ Node*x=nnew(N_PREINC); x->e=n; x->num=1; n=x; }
-        else if(accept("--")){ Node*x=nnew(N_PREINC); x->e=n; x->num=-1; n=x; }
+        else if(accept("++")){ Node*x=nnew(N_POSTINC); x->e=n; x->num=1; n=x; }
+        else if(accept("--")){ Node*x=nnew(N_POSTINC); x->e=n; x->num=-1; n=x; }
         else break;
     }
     return n;
 }
 static Node* parse_unary(void){
+    if(accept("++")){ Node*x=nnew(N_PREINC); x->num=1; x->e=parse_unary(); return x; }
+    if(accept("--")){ Node*x=nnew(N_PREINC); x->num=-1; x->e=parse_unary(); return x; }
     if(accept("-")){ Node*x=nnew(N_UN); x->s="-"; x->e=parse_unary(); return x; }
     if(accept("+")){ return parse_unary(); }
     if(accept("!")){ Node*x=nnew(N_UN); x->s="!"; x->e=parse_unary(); return x; }
@@ -558,16 +565,32 @@ static Node* parse_initval(void){
     return parse_expr();
 }
 
+static Node* parse_decl_nosemi(void);   /* for(init) 用：声明不吃分号 */
+static int DECL_KEEP_SEMI;
 static Node* parse_decl(void){
     /* 声明: type name[=init], name[=init], ... ; */
     char*ty=parse_type();
+    /* base = ty 去掉全部尾部 '*'：后续声明符各自的星号独立叠加
+     * （int *a, *b 的 b 也是 int*；若叠加则会错成 int**） */
+    char base[256]; snprintf(base,sizeof(base),"%s",ty);
+    { int bl=strlen(base);
+      while(bl>0&&base[bl-1]=='*') base[--bl]=0; }
     Node*n=nnew(N_DECL);
     n->dnames=malloc(sizeof(char*)*64);
     n->dtypes=malloc(sizeof(char*)*64);
     n->dinit =malloc(sizeof(Node*)*64);
     do{
+        char*dty;
+        /* 首声明符的星号已在 parse_type 并入 ty；后续声明符从 base 起步 */
+        if(n->ndecls==0) dty=ty;
+        else {
+            dty=base;
+            while(at("*")){ take();
+                char buf[256]; snprintf(buf,sizeof(buf),"%s*",dty);
+                dty=strdup(buf);
+            }
+        }
         char*name=take()->s;
-        char*dty=ty;
         /* 数组维度并入类型: int a[100] -> "int[100]" */
         while(at("[")){
             take(); char cnt[32]; dim_text(cnt,sizeof(cnt)); expect("]");
@@ -581,7 +604,12 @@ static Node* parse_decl(void){
         n->dinit [n->ndecls]=init;
         n->ndecls++;
     } while(accept(","));
-    expect(";");
+    if(!DECL_KEEP_SEMI) expect(";");
+    return n;
+}
+/* for(init;...) 的声明：分号属于 for 语法，声明本身不吃 */
+static Node* parse_decl_nosemi(void){
+    DECL_KEEP_SEMI=1; Node*n=parse_decl(); DECL_KEEP_SEMI=0;
     return n;
 }
 static int is_decl_start(void){
@@ -621,11 +649,24 @@ static Node* parse_stmt(void){
     }
     if(accept("for")){
         expect("("); Node*n=nnew(N_FOR);
-        if(!at(";")) n->init=is_decl_start()?parse_decl():parse_expr();
+        if(!at(";")){
+            if(is_decl_start()){
+                n->init=parse_decl_nosemi();
+            } else n->init=parse_expr();
+        }
         expect(";");
         if(!at(";")) n->cond=parse_expr();
         expect(";");
-        if(!at(")")) n->step=parse_expr();
+        if(!at(")")){
+            /* step 段支持逗号列表 i++, r++（musl 双指针惯用法）：
+               首个进 n->step，其余挂 n->els 链（gen FOR 分支逐个 eval）。 */
+            n->step=parse_assign();
+            Node*cur=n->step;
+            while(accept(",")){
+                Node*nx=parse_assign();
+                cur->els=nx; cur=nx;
+            }
+        }
         expect(")"); n->stmt=parse_stmt(); return n;
     }
     if(accept("return")){
@@ -633,6 +674,7 @@ static Node* parse_stmt(void){
         if(!at(";")) n->expr=parse_expr();
         expect(";"); return n;
     }
+    if(accept(";")) return nnew(N_BLOCK);   /* 空语句 ";"（for(...); 惯用法） */
     if(accept("break")){ expect(";"); return nnew(N_BREAK); }
     if(accept("continue")){ expect(";"); return nnew(N_CONT); }
     if(is_decl_start()) return parse_decl();
@@ -1630,6 +1672,7 @@ static char* expr_type(Node*n){
     switch(n->k){
     case N_NUM: return "int";
     case N_STR: return "char*";
+    case N_CAST: return n->s ? n->s : "int";   /* cast 后类型=目标类型 */
     case N_VAR: { LocVar*v=findloc(n->s);
         if(!v){ Global*g=global_find(n->s); if(g) return g->ty; }
         return v&&v->ty?v->ty:"int"; }
@@ -1649,6 +1692,7 @@ static char* expr_type(Node*n){
     case N_ADDR:  return ty_cat(expr_type(n->e),"*");
     case N_ASSIGN:
     case N_PREINC: return expr_type(n->k==N_ASSIGN?n->l:n->e);
+    case N_POSTINC: return expr_type(n->e);
     case N_CALL:  return (char*)fn_ret_type(n->s);
     case N_BIN: {
         const char*op=n->s;
@@ -1981,6 +2025,41 @@ static int eval(Node*n){
         }
         TDN=d1;                                          /* 丢弃地址临时，保留值 */
         return v;
+    }
+    case N_POSTINC: {
+        /* 后缀：表达式值为【旧值】，副作用是 +d 写回。 */
+        Node*lv=n->e; int d=(int)n->num;
+        int oldv;
+        if(lv->k==N_VAR){
+            LocVar*l=findloc(lv->s);
+            oldv=tacq();
+            if(!l){
+                Global*gg=global_find(lv->s);
+                if(gg){
+                    load_glob(oldv,gg);
+                    int r2=tacq();
+                    emitf("ADDI %s, %s, %d",regname(r2),regname(oldv),d);
+                    store_glob(r2,gg);
+                    return oldv;
+                }
+            } else if(!l->spilled){
+                emitf("ADDI %s, %s, 0",regname(oldv),regname(l->reg));
+                emitf("ADDI %s, %s, %d",regname(l->reg),regname(l->reg),d);
+            } else {
+                load_mem(oldv,8,l->off,l->ty);
+                int r2=tacq();
+                emitf("ADDI %s, %s, %d",regname(r2),regname(oldv),d);
+                store_mem(r2,8,l->off,l->ty);
+            }
+            return oldv;
+        }
+        int pa=eval(lv);
+        oldv=tacq();
+        emitf("LW %s, 0(%s)",regname(oldv),regname(pa));
+        int r2=tacq();
+        emitf("ADDI %s, %s, %d",regname(r2),regname(oldv),d);
+        emitf("SW %s, 0(%s)",regname(r2),regname(pa));
+        return oldv;
     }
     case N_PREINC: {
         Node*lv=n->e; int d=(int)n->num;
@@ -2379,7 +2458,10 @@ static void gen_stmt(Node*n){
         GROW(LOOPEND,CAPLOOP,NLOOP,char*); GROW(LOOPCONT,CAPLOOPC,NLOOP,char*);
         LOOPEND[NLOOP]=end; LOOPCONT[NLOOP]=cont; NLOOP++;
         gen_stmt(n->stmt); lbl(cont);
-        if(n->step){ TDN=0; eval(n->step); TDN=0; }
+        if(n->step){
+            /* 逗号 step 链：沿 els 逐个求值（值丢弃） */
+            for(Node*s=n->step; s; s=s->els){ TDN=0; eval(s); TDN=0; }
+        }
         NLOOP--;
         emitf("JAL zero, %s",start); lbl(end); break;
     }
@@ -2442,6 +2524,7 @@ static void collect_decls(Node*n){
     case N_BIN: collect_decls(n->l); collect_decls(n->r); break;
     case N_UN: collect_decls(n->e); break;
     case N_PREINC: collect_decls(n->e); break;
+    case N_POSTINC: collect_decls(n->e); break;
     case N_DEREF: collect_decls(n->e); break;
     case N_INDEX: collect_decls(n->l); collect_decls(n->r); break;
     case N_MEMBER: collect_decls(n->l); break;
@@ -3019,6 +3102,7 @@ static void gate_check(Node*n){
     case N_UN:     if(n->s&&!strcmp(n->s,"~")) GATE_BIT=1; gate_check(n->e); return;
     case N_ASSIGN: gate_check(n->l); gate_check(n->r); return;
     case N_PREINC: gate_check(n->e); return;
+    case N_POSTINC: gate_check(n->e); return;
     case N_DEREF:  gate_check(n->e); return;
     case N_ADDR:   gate_check(n->e); return;
     case N_VASTART: case N_VAARG: case N_VAEND: gate_check(n->e); return;

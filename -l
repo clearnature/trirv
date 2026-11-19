@@ -1,0 +1,467 @@
+_start:
+LW a0, 0(zero)
+LW a1, 9(zero)
+JAL ra, main
+ADDI a7, zero, 93
+ECALL
+strstr_nm:
+SW s0, 0(sp)
+SW ra, 9(sp)
+ADDI s0, sp, 18
+SW s6, 0(s0)
+SW s7, 9(s0)
+SW s8, 18(s0)
+SW s9, 27(s0)
+SW s10, 36(s0)
+ADDI sp, sp, 189
+ADDI s6, a0, 0
+ADDI s7, a1, 0
+ADDI a0, s7, 0
+JAL ra, strlen
+ADDI t0, a0, 0
+ADDI s8, t0, 0
+ADDI t0, zero, 0
+SUB t0, s8, t0
+BNE t0, zero, _L2
+ADDI a0, s6, 0
+JAL zero, _L1
+_L2:
+ADDI a0, s6, 0
+JAL ra, strlen
+ADDI t0, a0, 0
+ADDI s9, t0, 0
+ADDI s10, zero, 0
+_L3:
+ADD t0, s10, s8
+SLT t0, s9, t0
+BNE t0, zero, _L5
+ADD t0, s6, s10
+SW t0, 99(s0)
+SW s7, 108(s0)
+SW s8, 117(s0)
+LW a0, 99(s0)
+LW a1, 108(s0)
+LW a2, 117(s0)
+JAL ra, strncmp
+ADDI t0, a0, 0
+ADDI t1, zero, 0
+SUB t0, t0, t1
+BNE t0, zero, _L6
+ADD t0, s6, s10
+ADDI a0, t0, 0
+JAL zero, _L1
+_L6:
+_L4:
+ADDI t0, s10, 0
+ADDI s10, s10, 1
+JAL zero, _L3
+_L5:
+ADDI t0, zero, 0
+ADDI a0, t0, 0
+_L1:
+LW s6, 0(s0)
+LW s7, 9(s0)
+LW s8, 18(s0)
+LW s9, 27(s0)
+LW s10, 36(s0)
+LW ra, -9(s0)
+ADDI sp, s0, -18
+LW s0, 0(sp)
+JALR zero, 0(ra)
+main:
+SW s0, 0(sp)
+SW ra, 9(sp)
+ADDI s0, sp, 18
+SW s6, 0(s0)
+SW s7, 9(s0)
+ADDI sp, sp, 194
+ADDI s6, zero, 0
+ADDI t0, zero, 200
+SW t0, 104(s0)
+ADDI t0, zero, 219
+SW t0, 113(s0)
+LW a0, 104(s0)
+LW a1, 113(s0)
+JAL ra, strstr_nm
+ADDI t0, a0, 0
+ADDI s7, t0, 0
+ADDI t0, zero, 0
+SUB t0, s7, t0
+BNE t0, zero, _L8
+ADDI t0, s6, 0
+ADDI s6, s6, 1
+JAL zero, _L9
+_L8:
+SW s7, 104(s0)
+ADDI t0, zero, 226
+SW t0, 113(s0)
+ADDI t0, zero, 5
+SW t0, 122(s0)
+LW a0, 104(s0)
+LW a1, 113(s0)
+LW a2, 122(s0)
+JAL ra, strncmp
+ADDI t0, a0, 0
+ADDI t1, zero, 0
+SUB t0, t0, t1
+BEQ t0, zero, _L10
+ADDI t0, s6, 0
+ADDI s6, s6, 1
+_L10:
+_L9:
+ADDI t0, zero, 233
+SW t0, 104(s0)
+ADDI t0, zero, 246
+SW t0, 113(s0)
+LW a0, 104(s0)
+LW a1, 113(s0)
+JAL ra, strstr_nm
+ADDI t0, a0, 0
+ADDI t1, zero, 0
+SUB t0, t0, t1
+BEQ t0, zero, _L11
+ADDI t0, s6, 0
+ADDI s6, s6, 1
+_L11:
+ADDI t0, s0, 18
+SW t0, 104(s0)
+ADDI t0, zero, 0
+SW t0, 113(s0)
+ADDI t0, zero, 32
+SW t0, 122(s0)
+LW a0, 104(s0)
+LW a1, 113(s0)
+LW a2, 122(s0)
+JAL ra, memset
+ADDI t0, a0, 0
+ADDI t0, s0, 18
+SW t0, 104(s0)
+ADDI t0, zero, 251
+SW t0, 113(s0)
+ADDI t0, zero, 14
+SW t0, 122(s0)
+LW a0, 104(s0)
+LW a1, 113(s0)
+LW a2, 122(s0)
+JAL ra, memcpy
+ADDI t0, a0, 0
+ADDI t0, s0, 18
+SW t0, 104(s0)
+ADDI t0, zero, 266
+SW t0, 113(s0)
+LW a0, 104(s0)
+LW a1, 113(s0)
+JAL ra, strcmp
+ADDI t0, a0, 0
+ADDI t1, zero, 0
+SUB t0, t0, t1
+BEQ t0, zero, _L12
+ADDI t0, s6, 0
+ADDI s6, s6, 1
+_L12:
+ADDI t0, s0, 18
+SW t0, 104(s0)
+LW a0, 104(s0)
+JAL ra, strlen
+ADDI t0, a0, 0
+ADDI t1, zero, 13
+SUB t0, t0, t1
+BEQ t0, zero, _L13
+ADDI t0, s6, 0
+ADDI s6, s6, 1
+_L13:
+ADDI a0, s6, 0
+_L7:
+LW s6, 0(s0)
+LW s7, 9(s0)
+LW ra, -9(s0)
+ADDI sp, s0, -18
+LW s0, 0(sp)
+JALR zero, 0(ra)
+strcmp:
+_X1_2:
+LBU t0, 0(a0)
+LBU t1, 0(a1)
+SUB t0, t0, t1
+SLTIU t0, t0, 1
+SLTU t0, zero, t0
+BEQ t0, zero, _X1_5
+LBU t1, 0(a0)
+SLTU t1, zero, t1
+ADDI t0, t1, 0
+JAL zero, _X1_6
+_X1_5:
+ADDI t0, zero, 0
+_X1_6:
+BEQ t0, zero, _X1_4
+_X1_3:
+ADDI t0, a0, 0
+ADDI a0, a0, 1
+ADDI t0, a1, 0
+ADDI a1, a1, 1
+JAL zero, _X1_2
+_X1_4:
+LBU t0, 0(a0)
+LBU t1, 0(a1)
+SUB t0, t0, t1
+ADDI a0, t0, 0
+_X1_1:
+JALR zero, 0(ra)
+strncmp:
+ADDI a3, a0, 0
+ADDI a4, a1, 0
+ADDI t0, a2, 0
+ADDI a2, a2, -1
+SLTIU t0, t0, 1
+BEQ t0, zero, _X2_2
+ADDI t0, zero, 0
+ADDI a0, t0, 0
+JAL zero, _X2_1
+_X2_2:
+_X2_3:
+LBU t0, 0(a3)
+SLTU t0, zero, t0
+BEQ t0, zero, _X2_6
+LBU t1, 0(a4)
+SLTU t1, zero, t1
+ADDI t0, t1, 0
+JAL zero, _X2_7
+_X2_6:
+ADDI t0, zero, 0
+_X2_7:
+SLTU t0, zero, t0
+BEQ t0, zero, _X2_8
+SLTU t1, zero, a2
+ADDI t0, t1, 0
+JAL zero, _X2_9
+_X2_8:
+ADDI t0, zero, 0
+_X2_9:
+SLTU t0, zero, t0
+BEQ t0, zero, _X2_10
+LBU t1, 0(a3)
+LBU t2, 0(a4)
+SUB t1, t1, t2
+SLTIU t1, t1, 1
+SLTU t1, zero, t1
+ADDI t0, t1, 0
+JAL zero, _X2_11
+_X2_10:
+ADDI t0, zero, 0
+_X2_11:
+BEQ t0, zero, _X2_5
+_X2_4:
+ADDI t0, a3, 0
+ADDI a3, a3, 1
+ADDI t0, a4, 0
+ADDI a4, a4, 1
+ADDI t0, a2, 0
+ADDI a2, a2, -1
+JAL zero, _X2_3
+_X2_5:
+LBU t0, 0(a3)
+LBU t1, 0(a4)
+SUB t0, t0, t1
+ADDI a0, t0, 0
+_X2_1:
+JALR zero, 0(ra)
+strlen:
+ADDI a1, a0, 0
+_X3_2:
+LBU t0, 0(a0)
+BEQ t0, zero, _X3_4
+_X3_3:
+ADDI t0, a0, 0
+ADDI a0, a0, 1
+JAL zero, _X3_2
+_X3_4:
+SUB t0, a0, a1
+ADDI a0, t0, 0
+_X3_1:
+JALR zero, 0(ra)
+abs:
+ADDI t0, zero, 0
+SLT t0, t0, a0
+BEQ t0, zero, _X4_2
+ADDI t0, a0, 0
+JAL zero, _X4_3
+_X4_2:
+SUB t1, zero, a0
+ADDI t0, t1, 0
+_X4_3:
+ADDI a0, t0, 0
+_X4_1:
+JALR zero, 0(ra)
+memset:
+SW s0, 0(sp)
+ADDI s0, sp, 18
+SW s7, 0(s0)
+SW s8, 9(s0)
+SW s9, 18(s0)
+SW s10, 27(s0)
+SW s11, 36(s0)
+ADDI sp, sp, 63
+ADDI a3, a0, 0
+SLTIU t0, a2, 1
+BEQ t0, zero, _X5_2
+JAL zero, _X5_1
+_X5_2:
+ADDI t0, a3, 0
+ADDI t1, zero, 0
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, a3, 0
+ADDI t1, zero, 1
+SUB t1, a2, t1
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, zero, 2
+SLT t0, t0, a2
+BNE t0, zero, _X5_3
+JAL zero, _X5_1
+_X5_3:
+ADDI t0, a3, 0
+ADDI t1, zero, 1
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, a3, 0
+ADDI t1, zero, 2
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, a3, 0
+ADDI t1, zero, 2
+SUB t1, a2, t1
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, a3, 0
+ADDI t1, zero, 3
+SUB t1, a2, t1
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, zero, 6
+SLT t0, t0, a2
+BNE t0, zero, _X5_4
+JAL zero, _X5_1
+_X5_4:
+ADDI t0, a3, 0
+ADDI t1, zero, 3
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, a3, 0
+ADDI t1, zero, 4
+SUB t1, a2, t1
+ADD t0, t0, t1
+SB a1, 0(t0)
+ADDI t0, zero, 8
+SLT t0, t0, a2
+BNE t0, zero, _X5_5
+JAL zero, _X5_1
+_X5_5:
+SUB t0, zero, a3
+ADDI t1, zero, 3
+ADDI s7, t0, 0
+ADDI s8, t1, 0
+ADDI s9, zero, 0
+ADDI s10, zero, 194
+SLLI s10, s10, 20
+LUI tp, 340451
+ADDI tp, tp, 25
+ADD s10, s10, tp
+SLLI s10, s10, 20
+LUI tp, 570416
+ADDI tp, tp, 500
+ADD s10, s10, tp
+ADDI s11, zero, 2
+_X5_6:
+SLTU tp, s7, s10
+SLTIU tp, tp, 1
+BEQ tp, zero, _X5_7
+SUB s7, s7, s10
+_X5_7:
+SLTU t0, s8, s10
+SLTIU t0, t0, 1
+BEQ t0, zero, _X5_8
+SUB s8, s8, s10
+_X5_8:
+TMIN tp, tp, t0
+BEQ tp, zero, _X5_9
+ADD s9, s9, s10
+_X5_9:
+DIVU s10, s10, s11
+BNE s10, zero, _X5_6
+ADDI t0, s9, 0
+ADDI a4, t0, 0
+ADD t0, a3, a4
+ADDI a3, t0, 0
+SUB a2, a2, a4
+ADDI t0, zero, 4
+SUB t0, zero, t0
+ADDI s7, a2, 0
+ADDI s8, t0, 0
+ADDI s9, zero, 0
+ADDI s10, zero, 194
+SLLI s10, s10, 20
+LUI tp, 340451
+ADDI tp, tp, 25
+ADD s10, s10, tp
+SLLI s10, s10, 20
+LUI tp, 570416
+ADDI tp, tp, 500
+ADD s10, s10, tp
+ADDI s11, zero, 2
+_X5_10:
+SLTU tp, s7, s10
+SLTIU tp, tp, 1
+BEQ tp, zero, _X5_11
+SUB s7, s7, s10
+_X5_11:
+SLTU t0, s8, s10
+SLTIU t0, t0, 1
+BEQ t0, zero, _X5_12
+SUB s8, s8, s10
+_X5_12:
+TMIN tp, tp, t0
+BEQ tp, zero, _X5_13
+ADD s9, s9, s10
+_X5_13:
+DIVU s10, s10, s11
+BNE s10, zero, _X5_10
+ADDI t0, s9, 0
+ADDI a2, t0, 0
+_X5_14:
+BEQ a2, zero, _X5_16
+SB a1, 0(a3)
+_X5_15:
+ADDI t0, a2, 0
+ADDI a2, a2, -1
+ADDI t0, a3, 0
+ADDI a3, a3, 1
+JAL zero, _X5_14
+_X5_16:
+_X5_1:
+LW s7, 0(s0)
+LW s8, 9(s0)
+LW s9, 18(s0)
+LW s10, 27(s0)
+LW s11, 36(s0)
+ADDI sp, s0, -18
+LW s0, 0(sp)
+JALR zero, 0(ra)
+memcpy:
+ADDI a3, a0, 0
+ADDI a4, a1, 0
+_X6_2:
+BEQ a2, zero, _X6_4
+ADDI t0, a4, 0
+ADDI a4, a4, 1
+LBU t0, 0(t0)
+ADDI t1, a3, 0
+ADDI a3, a3, 1
+SB t0, 0(t1)
+_X6_3:
+ADDI t0, a2, 0
+ADDI a2, a2, -1
+JAL zero, _X6_2
+_X6_4:
+_X6_1:
+JALR zero, 0(ra)

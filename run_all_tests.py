@@ -89,6 +89,7 @@ SUITES = [
     ("trirv_link_e2e.py",         "多文件链接 14 项",         False, None),
     ("trirv_octet_e2e.py",        "8-bit 视图层 13 项",       False, None),
     ("trirv_trvo_e2e.py",         "TRVO 目标文件 10 项",      False, None),
+    ("trirv_musl_real_e2e.py",    "真 musl 源码编译试点 11 项", False, None),
     ("trirv_mdiff.py",            "M 扩展差分 700 项",        True,  None),
     ("trirv_wasm_e2e.py",         "Wasm 三路差分 93 例",      True,  None),
     ("trirv_tritref_test.py",     "tryte 参考实现 46164 项",  True,  None),

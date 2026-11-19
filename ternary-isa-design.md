@@ -617,7 +617,12 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
    一次多次链接（增量构建）；可执行 .trv 链接期 undefined reference 检测
    （目标文件豁免 UNDEF）；跨单元 `_L*` → `_X<单元>_<n>` 标签改写防冲突；
    重复定义检测覆盖 TRVO 导入（`trirv_trvo_e2e.py` 10 项锁定）。
-   真 musl 源码移植仍为后续目标（前置：arch 层内联汇编改写、弱符号语义）。
+   ⑦ **真 musl 源码编译试点通过（2026-11-20）**：musl 1.2.5 官方源码
+   string/stdlib 6 文件原样编译 → TRVO → 链接 → 双 VM 行为断言全过
+   （`trirv_musl_real_e2e.py` 11 项）。预处理器取 `#else` 纯 C 回退分支
+   （避开 8-bit 字长打包优化）。为此编译器补齐：for 逗号 step、空语句、
+   for-init 声明、前/后缀 ++--、const-unsigned 任意序、声明符基类型隔离、
+   cast 类型传播。剩余：更多 musl 文件语法覆盖、arch 层内联汇编、弱符号。
 
 ---
 
