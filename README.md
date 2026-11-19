@@ -7,12 +7,30 @@
 
 | 层次 | 是什么 | 在哪 |
 | --- | --- | --- |
-| 规范 | TriRV ISA：45-trit 字、27 寄存器、20-trit 定长指令、六种格式、27 syscall | `ternary-isa-design.md`、`ternary-abi-minimal.md` |
+| 规范 | TriRV ISA：45-trit 字、32 寄存器（x0–x31，与 RV32I 同名同号）、20-trit 定长指令、六种格式、27 syscall | `ternary-isa-design.md`、`ternary-abi-minimal.md` |
 | 实现 | 虚拟机（"硅片"就是解释器）：取指/译码/执行 | `trirv_vm.py`、`trirv_vm.c`、`trirv_isa.py` |
 | 工具链 | C 编译器、汇编器、编码器、libc | `trirv_cc.c`、`trirv_asm.py`、`trirv_encoder.py`、`trirv_libc.c` |
 
 编译器的"栈式 vs 寄存器式"是**工具链内部**的代码生成策略，不是 TriRV 的属性。
 TriRV 从第一天就是 Load-Store 架构，没有"栈机器"模式。
+
+**"实现"这一层跑在二进制宿主上，不污染"规范"那一层。** 指令执行的四个步骤：
+
+```
+取指  4 个 tryte（每个 0..242）→ 合成 20 trit 指令字
+译码  按 t19..t0 切字段
+执行  寄存器值是 __uint128_t 容器里的 0..3^45-1，按 3 的幂做运算
+写回  rd = 结果 mod 3^45
+```
+
+`__uint128_t` 是**载体的容器**，不是语义——宿主只有二进制整数类型，只好用它装
+一个三进制数值；所有进出容器的运算都按 3 的幂定义（`divmod243`、`p *= 243`、
+`mod 3^45`）。换成三值电路，这套语义一个字都不用改。逐条审计见规范 §1.2，
+**结论：语义层已无二进制依赖**（历史上唯一一处 `AND/OR/XOR` 直调宿主 `& | ^`
+已于 2026-11-19 改为逐 trit）。
+
+> 测成本必须用 **C VM**。Python VM 单条 ~76 ns 是解释器开销，C VM 同一条 ~1.9 ns；
+> 逐 trit 的 `AND` 在 C VM 上只比 `ADD` 贵 3.7%（1.95 vs 1.88 ns），几乎免费。
 
 ## 二、定位与技术路线（重要）
 
