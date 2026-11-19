@@ -3425,6 +3425,9 @@ int main(int argc,char**argv){
             fprintf(out,"\n");
         }
         for(int i=0;i<NFN;i++){
+            /* TRVO 导入的函数（fbody==NULL）不转发导出——它们属于
+             * 上游 .trvo，下游链接时应直接 -l 上游文件，否则重复定义 */
+            if(!FNS[i]->fbody) continue;
             fprintf(out,"FUNC %s %d\n",FNS[i]->s,FNS[i]->nparams);
             for(int p=0;p<FNS[i]->nparams;p++)
                 fprintf(out,"PARAM %d %s %s\n",p,FNS[i]->params[p],FNS[i]->ptypes[p]);

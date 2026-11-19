@@ -14,6 +14,10 @@ DIRS = ["/Users/zesheng/ai-lab/musl/src/string",
 TRI_REWRITE = {
     "memset.c": "musl_tri/memset_tri.c",
     "memcpy.c": "musl_tri/memcpy_tri.c",
+    "strcspn.c": "musl_tri/strcspn_tri.c",
+    "strspn.c": "musl_tri/strspn_tri.c",
+    "strstr.c": "musl_tri/strstr_tri.c",
+    "memmem.c": "musl_tri/memmem_tri.c",
 }
 
 ok, fail, skip = [], [], []
