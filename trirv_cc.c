@@ -122,6 +122,8 @@ static InstDef ITAB[] = {
     {"BGE",O_BRANCH,3,0,2},{"BLTU",O_BRANCH,4,0,2},{"BGEU",O_BRANCH,5,0,2},
     {"JAL",O_JAL,0,0,3},{"JALR",O_JALR,0,0,1},{"LUI",O_LUI,0,0,3},
     {"SEQ",O_TLOGIC,3,0,0},{"SNE",O_TLOGIC,3,1,0},  /* 占位, 用 SUB+SLTIU 代替 */
+    {"TMIN",O_TLOGIC,0,0,0},{"TMAX",O_TLOGIC,0,1,0},   /* R 型：逐 trit min/max，供位运算适配层 */
+    {"TAND",O_TLOGIC,1,0,0},{"TOR",O_TLOGIC,1,1,0},
     {"ECALL",O_SYSTEM,0,0,1},
     {NULL,0,0,0,0}
 };
@@ -277,6 +279,7 @@ struct Node {
     char *rettype; int variadic;
     int arrow;          /* member -> */
     int deref;          /* parse 辅助 */
+    int uses_bitop;     /* 本函数体含 & | ^ ~（需要 5 个 callee-saved 工作寄存器）*/
 };
 static Node* nnew(NodeKind k){
     Node*n=calloc(1,sizeof(Node)); n->k=k; return n;
@@ -809,6 +812,80 @@ static void load_imm128(int reg, __int128 n){
     }
 }
 
+/* ============ 二进制位运算适配层（方案 A：精确 72 位视图） ============
+ * 规范 §5.1.1 / §11.2。ISA 是纯三进制的，"第 k 个二进制位"在 ISA 里没有位置，
+ * 所以 C 的 & | ^ ~ 属于**外来语义适配层**：用三进制指令模拟二进制语义。
+ *
+ * ABI（2026-11-19 拍板 = 方案 A）：
+ *   bits(x) = x>=0 ? x : x + 3^45          无符号位模式，值域 [0, 3^45)
+ *   val(v)  = v<=HALF45 ? v : v - 3^45     映回 45-trit 有符号域
+ *   视图宽度 W = 72 —— 最小 W 使 2^W > 3^45-1（2^71=2.36e21 < 3^45=2.95e21 < 2^72）
+ *   回绕在 3^45 而非 2^k：运算结果按 45-trit 域截断，而三进制截断是免费的。
+ *
+ * 逐位走查用**递推权重 p**（p=2^71 起，每轮 p/=2），不用 72 项常量表：
+ * p 归零即循环结束，顺带省掉计数器。ta/tb 都落在 {0,1} 内，于是三值 min/max
+ * 恰好就是二进制 AND/OR；XOR 用 |ta-tb|。
+ */
+static const __int128 P345  = (__int128)3486784401LL*3486784401LL*243;      /* 3^45 = 模数 */
+static const __int128 B71   = (__int128)1<<71;                              /* 2^71 */
+static const __int128 M72   = ((__int128)1<<72)-1;                          /* 2^72-1 */
+static const __int128 TILDE = (((__int128)1<<72)-1) % ((__int128)3486784401LL*3486784401LL*243);
+static int BIT_R[5];        /* va, vb, acc, p, two —— s7..s11 */
+static int BITOP_ON;        /* 本函数是否已分配位运算工作寄存器 */
+static int GATE_BIT;        /* gate_check 扫到的位运算标记（按函数） */
+
+/* dst = a op b；kind 0=& 1=| 2=^
+ * 关键：45-trit 寄存器的 raw 值**就是**位模式——负数的 raw 是 3^45-|x|，
+ * 与 bits(x)=x+3^45 完全一致。所以既不用"无符号化"也不用"映回"，
+ * 全程在模 3^45 域里做（SUB/ADD 天然回绕），只需把比较换成无符号、除法换成 DIVU。
+ * 另注：3^45 本身装不进寄存器（它就是模数，装进去等于 0），所以任何
+ * "x + 3^45" 的写法都必须避免。 */
+static void emit_bitop3(int dst,int aR,int bR,int kind){
+    int va=BIT_R[0],vb=BIT_R[1],ac=BIT_R[2],pp=BIT_R[3],two=BIT_R[4];
+    emitf("ADDI %s, %s, 0",regname(va),regname(aR));
+    emitf("ADDI %s, %s, 0",regname(vb),regname(bR));
+    emitf("ADDI %s, zero, 0",regname(ac));
+    load_imm128(pp,B71);                       /* p = 2^71，逐位递推权重 */
+    emitf("ADDI %s, zero, 2",regname(two));
+    char*loop=newlbl("bl"),*s1=newlbl("b1"),*s2=newlbl("b2"),*s3=newlbl("b3");
+    lbl(loop);
+    /* ta = (va >=u p)，同时把 va 的该位剥掉 */
+    emitf("SLTU %s, %s, %s",regname(SCRATCH),regname(va),regname(pp));
+    emitf("SLTIU %s, %s, 1",regname(SCRATCH),regname(SCRATCH));
+    emitf("BEQ %s, zero, %s",regname(SCRATCH),s1);
+    emitf("SUB %s, %s, %s",regname(va),regname(va),regname(pp));
+    lbl(s1);
+    /* tb 借 dst 当临时（a、b 已拷出，dst 此刻空闲） */
+    emitf("SLTU %s, %s, %s",regname(dst),regname(vb),regname(pp));
+    emitf("SLTIU %s, %s, 1",regname(dst),regname(dst));
+    emitf("BEQ %s, zero, %s",regname(dst),s2);
+    emitf("SUB %s, %s, %s",regname(vb),regname(vb),regname(pp));
+    lbl(s2);
+    if(kind==0)      emitf("TMIN %s, %s, %s",regname(SCRATCH),regname(SCRATCH),regname(dst));
+    else if(kind==1) emitf("TMAX %s, %s, %s",regname(SCRATCH),regname(SCRATCH),regname(dst));
+    else {           /* xor = |ta - tb|，ta/tb ∈{0,1} */
+        emitf("SUB %s, %s, %s",regname(SCRATCH),regname(SCRATCH),regname(dst));
+        emitf("TMAX %s, %s, zero",regname(dst),regname(SCRATCH));
+        emitf("TMIN %s, %s, zero",regname(SCRATCH),regname(SCRATCH));
+        emitf("SUB %s, %s, %s",regname(SCRATCH),regname(dst),regname(SCRATCH));
+    }
+    emitf("BEQ %s, zero, %s",regname(SCRATCH),s3);
+    emitf("ADD %s, %s, %s",regname(ac),regname(ac),regname(pp));
+    lbl(s3);
+    emitf("DIVU %s, %s, %s",regname(pp),regname(pp),regname(two));
+    emitf("BNE %s, zero, %s",regname(pp),loop);
+    if(dst!=ac) emitf("ADDI %s, %s, 0",regname(dst),regname(ac));
+}
+/* dst = ~a = ((2^72-1) - bits(a)) mod 3^45。((2^72-1) mod 3^45) 是 1.77e21，
+ * 落在 45-trit 可表示范围内，于是整个式子退化成一条 SUB（模域天然回绕）。
+ * 注意这个定义下 ~0 ≠ -1——这是方案 A"回绕在 3^45"的必然结果。 */
+static void emit_bitnot(int dst,int aR){
+    int ac=BIT_R[2];
+    load_imm128(ac,TILDE);
+    emitf("SUB %s, %s, %s",regname(ac),regname(ac),regname(aR));
+    if(dst!=ac) emitf("ADDI %s, %s, 0",regname(dst),regname(ac));
+}
+
 /* ===================== 表达式求值：带深度的临时寄存器池 =====================
  * 旧实现把结果固定放 t0/t1：嵌套表达式里右子树的 "ADDI t1, t0, 0" 会覆盖左值，
  * 于是 7*3+8/2-4 被算成 8。现在改为 LIFO 池——深度 d 用 TPOOL[d]，
@@ -1103,7 +1180,10 @@ static int eval(Node*n){
         int d=dstof(a);                                  /* -x 不能原地改写 x */
         if(!strcmp(n->s,"-")) emitf("SUB %s, zero, %s",regname(d),regname(a));
         else if(!strcmp(n->s,"!")) emitf("SLTIU %s, %s, 1",regname(d),regname(a));
-        else if(!strcmp(n->s,"~")) emitf("TNOT %s, %s",regname(d),regname(a));
+        else if(!strcmp(n->s,"~")){
+            if(!BITOP_ON){ fprintf(stderr,"internal: 位运算未分配工作寄存器\n"); exit(2); }
+            emit_bitnot(d,a);
+        }
         return d;
     }
     case N_BIN: {
@@ -1175,6 +1255,12 @@ static int eval(Node*n){
             TDN=d0+1;
             return d;
         }
+        if(!strcmp(op,"&")||!strcmp(op,"|")||!strcmp(op,"^")){
+            if(!BITOP_ON){ fprintf(stderr,"internal: 位运算未分配工作寄存器\n"); exit(2); }
+            emit_bitop3(d,a,b, op[0]=='&'?0:(op[0]=='|'?1:2));
+            TDN=d0+1;
+            return d;
+        }
         int uns = ty_uns(lt)||ty_uns(rt);
         const char*ins=binop_insn(op);
         if(ins){
@@ -1228,11 +1314,10 @@ static int eval(Node*n){
                         return tg->reg;
                     }
                 }
-                /* x = x op y（只取无符号/移位歧义的 + - & | ^） */
+                /* x = x op y（只取无符号/移位歧义的 + -；& | ^ 走通用路径的适配层） */
                 if(r->k==N_BIN&&r->l&&r->l->k==N_VAR&&!strcmp(r->l->s,lv->s)&&r->r){
                     const char*op=r->s;
-                    if(!strcmp(op,"+")||!strcmp(op,"-")||
-                       !strcmp(op,"&")||!strcmp(op,"|")||!strcmp(op,"^")){
+                    if(!strcmp(op,"+")||!strcmp(op,"-")){
                         int b=eval(r->r);
                         emitf("%s %s, %s, %s",binop_insn(op),R,R,regname(b));
                         TDN=0;
@@ -1683,6 +1768,20 @@ static void gen_func(Node*f){
         if(r<0) LOC[i].spilled=1; else LOC[i].reg=r;
     }
     int spill=0; for(int i=0;i<NLOC;i++) if(LOC[i].spilled){ LOC[i].off=spill; spill+=ty_size(LOC[i].ty,NULL); }
+    /* 位运算工作寄存器 s7..s11（23..27）：必须赶在常量缓存之前占位，
+       否则 CC_R 会先把它们挑走。5 个位置对应 va/vb/acc/p/cinfo。 */
+    BITOP_ON=0;
+    if(f->uses_bitop){
+        static int bscout[5]={23,24,25,26,27};
+        int got=0;
+        for(int i=0;i<5;i++) if(!USEDREG[bscout[i]]){ USEDREG[bscout[i]]=1; BIT_R[got++]=bscout[i]; }
+        if(got<5){
+            fprintf(stderr,"UNSUPPORTED: 位运算需要 5 个空闲 callee-saved 寄存器（s7-s11），"
+                           "本函数只空出 %d 个\n",got);
+            exit(2);
+        }
+        BITOP_ON=1;
+    } else for(int i=0;i<5;i++) BIT_R[i]=-1;
     /* 大常量预装到空闲的 callee-saved 寄存器（仅叶子函数：那里 s 系是空的） */
     CC_N=0;
     collect_fn_consts(f->fbody);
@@ -1694,12 +1793,13 @@ static void gen_func(Node*f){
         CC_N=got;                       /* 寄存器不够就少缓存几个 */
     } else CC_N=0;
     /* 收集实际用到的、需要保存的寄存器（caller-saved 池无需保存） */
-    int sregs[8],ns=0;
+    int sregs[16],ns=0;
     if(PP_SAVED){
         for(int k=0;k<PP_N;k++) if(USEDREG[PP_POOL[k]]) sregs[ns++]=PP_POOL[k];
     } else {
         for(int k=0;k<CC_N;k++) sregs[ns++]=CC_R[k];   /* 常量缓存用的 s 寄存器同样要存 */
     }
+    if(BITOP_ON) for(int k=0;k<5;k++) sregs[ns++]=BIT_R[k];   /* 位运算工作寄存器也要存 */
     int need_frame = hascall || spill>0 || ns>0;
     if(getenv("TRV_DUMP_CC")) fprintf(stderr,"[cc] %s: CC_N=%d ns=%d spill=%d hascall=%d need_frame=%d\n",f->s,CC_N,ns,spill,hascall,need_frame);
     /* 帧布局: s0 = 原sp+18; 原sp[0]=old fp, [9]=ra; saved s 寄存器从 s0+0 起;
@@ -1980,8 +2080,9 @@ static void gate_check(Node*n){
     case N_FOR:    gate_check(n->init); gate_check(n->cond); gate_check(n->step); gate_check(n->stmt); return;
     case N_RETURN: gate_check(n->expr); return;
     case N_EXPR:   gate_check(n->expr); return;
-    case N_BIN:    gate_check(n->l); gate_check(n->r); return;
-    case N_UN:     gate_check(n->e); return;
+    case N_BIN:    if(n->s&&(n->s[0]=='&'||n->s[0]=='|'||n->s[0]=='^')&&n->s[1]==0) GATE_BIT=1;
+                   gate_check(n->l); gate_check(n->r); return;
+    case N_UN:     if(n->s&&!strcmp(n->s,"~")) GATE_BIT=1; gate_check(n->e); return;
     case N_ASSIGN: gate_check(n->l); gate_check(n->r); return;
     case N_PREINC: gate_check(n->e); return;
     case N_DEREF:  gate_check(n->e); return;
@@ -2007,7 +2108,9 @@ int main(int argc,char**argv){
             if(ty_is_struct_val(FNS[i]->ptypes[k])){ GATE_WHY="struct param by value (未实现)"; break; }
         }
         if(ty_is_struct_val(FNS[i]->rettype)){ GATE_WHY="struct return by value (未实现)"; break; }
+        GATE_BIT=0;
         gate_check(FNS[i]->fbody);
+        FNS[i]->uses_bitop=GATE_BIT;      /* 位运算工作寄存器按函数分配 */
     }
     if(GATE_WHY){ fprintf(stderr,"UNSUPPORTED: %s\n",GATE_WHY); return 2; }
     /* 函数名表 */
