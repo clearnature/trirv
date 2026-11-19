@@ -135,10 +135,15 @@ J-type (jal):
 
 `LB, LH, LW, LBU, LHU` —— 按 tryte/2tryte/9tryte 取数。
 
-> **符号性约定（与 ABI 一致）**：本项目 `char = 1 tryte = 0..242`（无符号，见
-> `trirv-unified-memory-abi.md §2`），ABI 用 `LB/SB` 存取 char。因此 **`LB`≡`LBU`、
-> `LH`≡`LHU` 均为零扩展**——这与二进制 RISC-V 的"LB 有符号"不同，是有意设计。
-> 需要把 tryte 解释为有符号小整数时，用 `TSEXT` 显式完成。
+> **符号性约定（与 RISC-V 完全一致）**：`LB`/`LH` **符号扩展**，`LBU`/`LHU` **零扩展**。
+> 5-trit tryte 的符号区间是 −121..121（半阈值 `(3⁵−1)/2 = 121`），
+> 10-trit 半字是 −29524..29524（半阈值 `(3¹⁰−1)/2 = 29524`）。
+>
+> 至于 `char` 本身：**它是无符号的 0..242**，但这不是对 RISC-V 的偏离——RISC-V psABI
+> 同样规定 plain `char` 无符号（GCC riscv 后端 `DEFAULT_SIGNED_CHAR = 0`），TriRV 的
+> tryte 值域与之天然吻合。因此编译器对 `char`/`unsigned char` 发 `LBU`，
+> 只有显式 `signed char` 才发 `LB`。`TSEXT` 因此退化为可选的便利指令（TT 扩展成员），
+> 不再是 char 语义的必需品。
 
 ### 4.4 Store（S-type，opcode=3）
 
@@ -176,7 +181,7 @@ J-type (jal):
 | `TNEG` | 3 补码取负 | 算术求反 |
 | `TPACK` | 5 trit → 1 byte | 方案 C 打包 |
 | `TUNPACK` | 1 byte → 5 trit | 方案 C 解包 |
-| `TSEXT` | 取 rs1 **低 5 trit（1 tryte）**按 3 补码符号扩展到 45 trit | 需要把无符号 tryte 解释为有符号小整数时使用 |
+| `TSEXT` | 取 rs1 **低 5 trit（1 tryte）**按 3 补码符号扩展到 45 trit | 便利指令（`LB` 已能直接符号扩展）；保留供 TT 扩展与手工位操作使用 |
 
 **Kleene 真值表**（AND = min, OR = max, NOT = 2−x）：
 

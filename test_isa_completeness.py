@@ -110,15 +110,23 @@ try:
 except RuntimeError as ex:
     ebreak_ok = False
 check("EBREAK 不再抛未实现异常", ebreak_ok)
-# LB/LH 按 ABI 为零扩展（char=tryte=0..242 无符号）；符号扩展由 TSEXT 提供
-for raw in (242, 100):
+# LB/LH 与 RISC-V 完全一致：LB/LH 符号扩展，LBU/LHU 零扩展。
+# 5 trit 半阈值 (3^5-1)//2 = 121；10 trit 半阈值 (3^10-1)//2 = 29524。
+for raw, exp in [(242, -1), (122, -121), (121, 121), (100, 100), (0, 0)]:
     v = run_py([e("LB", rd=1, rs1=2, imm=0), e("ECALL")], {2: 100}, {100: raw})
-    check(f"LB({raw})={raw} 零扩展(char ABI)", v.regs[1] == raw, f"got {v.regs[1]}")
-v = run_py([e("LBU", rd=1, rs1=2, imm=0), e("ECALL")], {2: 100}, {100: 242})
-check("LBU(242)=242", v.regs[1] == 242)
-lo10 = 59048 % 243; hi10 = 59048 // 243  # 3^10-1 = 59048 -> 10-trit 全 2
-v = run_py([e("LH", rd=1, rs1=2, imm=0), e("ECALL")], {2: 100}, {100: lo10, 101: hi10})
-check("LH 零扩展 = 59048", v.regs[1] == 59048, f"got {v.regs[1]}")
+    check(f"LB({raw})={exp} 符号扩展", s(v.regs[1]) == exp, f"got {s(v.regs[1])}")
+for raw in (242, 200, 121):
+    v = run_py([e("LBU", rd=1, rs1=2, imm=0), e("ECALL")], {2: 100}, {100: raw})
+    check(f"LBU({raw})={raw} 零扩展", v.regs[1] == raw, f"got {v.regs[1]}")
+for w, exp_lh, exp_lhu in [(59048, -1, 59048),        # 10 trit 全 2
+                           (29524, 29524, 29524),     # 正半区上界
+                           (29525, -29524, 29525),    # 负半区下界
+                           (12345, 12345, 12345)]:
+    lo10, hi10 = w % 243, w // 243
+    v = run_py([e("LH", rd=1, rs1=2, imm=0), e("ECALL")], {2: 100}, {100: lo10, 101: hi10})
+    check(f"LH({w})={exp_lh} 符号扩展", s(v.regs[1]) == exp_lh, f"got {s(v.regs[1])}")
+    v = run_py([e("LHU", rd=1, rs1=2, imm=0), e("ECALL")], {2: 100}, {100: lo10, 101: hi10})
+    check(f"LHU({w})={exp_lhu} 零扩展", v.regs[1] == exp_lhu, f"got {v.regs[1]}")
 # MULH 负数: (-1)*2 高半 = -1 (floor)
 v = run_py([e("MULH", rd=1, rs1=2, rs2=3), e("ECALL")], {2: -1, 3: 2})
 check("MULH(-1,2)=-1 (floor)", s(v.regs[1]) == -1, f"got {s(v.regs[1])}")

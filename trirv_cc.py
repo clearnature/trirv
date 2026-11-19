@@ -31,7 +31,7 @@ TOKEN_RE = re.compile(r"""
   | (?P<op>\.\.\.|==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\.|[-+*/%=<>!&|^~?,;(){}\[\]:])
 """, re.X)
 
-KEYWORDS = {"int","char","void","struct","va_list","unsigned",
+KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed",
             "if","else","while","for","return","break","continue"}
 
 class Tok:
@@ -89,7 +89,7 @@ def type_size(ty, structs):
     m = re.match(r"^(.+)\[(\d+)\]$", ty)
     if m: return int(m.group(2)) * type_size(m.group(1), structs)
     if ty.endswith("*"): return WORD_TRYTES
-    if ty == "char": return 1
+    if ty in ("char", "uchar", "schar"): return 1
     if ty.startswith("struct "):
         name = ty[len("struct "):]
         info = structs.get(name)
@@ -98,8 +98,12 @@ def type_size(ty, structs):
     return WORD_TRYTES                      # int / unsigned / void
 
 def is_unsigned(ty):
-    """是否为无符号整型（unsigned 与 unsigned int 归一化为 'unsigned'）。"""
-    return ty == "unsigned"
+    """是否为无符号整型（unsigned / unsigned int 归一化为 'unsigned'）。
+
+    注意 char 也是无符号——RISC-V psABI 规定 plain char 无符号（GCC
+    DEFAULT_SIGNED_CHAR=0），TriRV 的 tryte 值域 0..242 与之天然吻合。
+    """
+    return ty in ("unsigned", "char", "uchar")
 
 def is_struct(ty):
     return ty.startswith("struct ") and not ty.endswith("*")
@@ -159,8 +163,18 @@ class Parser:
         """解析类型 + 0+ 个 *，返回类型字符串（int / char* / struct S / struct S*）。"""
         if self.at("unsigned"):
             self.take("unsigned")
-            self.accept("int")                          # unsigned 与 unsigned int 等价
-            base = "unsigned"
+            if self.accept("char"):
+                base = "uchar"                          # unsigned char：1 tryte，零扩展
+            else:
+                self.accept("int")                      # unsigned 与 unsigned int 等价
+                base = "unsigned"
+        elif self.at("signed"):
+            self.take("signed")
+            if self.accept("char"):
+                base = "schar"                          # signed char：1 tryte，符号扩展
+            else:
+                self.accept("int")
+                base = "int"
         elif self.at("int") or self.at("char") or self.at("void"):
             base = self.take().val
         elif self.at("va_list"):
@@ -236,7 +250,7 @@ class Parser:
             self.take("break"); self.take(";"); return Node("break")
         if self.at("continue"):
             self.take("continue"); self.take(";"); return Node("continue")
-        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned"):
+        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed"):
             ty = self.parse_type()
             decls = []
             while True:
@@ -465,10 +479,13 @@ class CodeGen:
 
     def load_ty(self, ty, base, off, dst):
         b, o = self._mem_addr(base, off)
-        self.emit(f"{'LB' if ty == 'char' else 'LW'}   {dst}, {o}({b})")
+        # char 无符号（RISC-V psABI 默认），走 LBU 零扩展；仅 signed char 用 LB 符号扩展。
+        op = "LBU" if ty in ("char", "uchar") else ("LB" if ty == "schar" else "LW")
+        self.emit(f"{op}   {dst}, {o}({b})")
     def store_ty(self, ty, base, off, src):
         b, o = self._mem_addr(base, off)
-        self.emit(f"{'SB' if ty == 'char' else 'SW'}   {src}, {o}({b})")
+        op = "SB" if ty in ("char", "uchar", "schar") else "SW"
+        self.emit(f"{op}   {src}, {o}({b})")
 
     # ---- 结构体整块拷贝（按字，struct 大小恒为 9 的倍数）----
     def copy_struct(self, ty, dst_base, dst_off, src_base, src_off):
@@ -681,7 +698,7 @@ class CodeGen:
             lty = self.gen_addr(n.lv)            # 栈顶 = 左值地址
             self.pop("t0")                       # t0 = 地址
             self.load_ty(lty, "t0", 0, "t1")     # t1 = 旧值
-            step = 1 if lty == "char" else (self.ty_size(self.ty_pointee(lty)) if self.ty_ptr(lty) else 1)
+            step = 1 if lty in ("char","uchar","schar") else (self.ty_size(self.ty_pointee(lty)) if self.ty_ptr(lty) else 1)
             step *= n.d
             self.load_imm("t2", step)
             self.emit("ADD  t1, t1, t2")         # 新值

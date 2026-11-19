@@ -469,17 +469,26 @@ class VM:
             addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
             self.regs[rd] = self._load_word(addr)
         elif name in ("LB","LBU","LH","LHU"):
-            # 本 ISA 的 char = 1 tryte = 0..242（无符号），ABI 规定 LB/SB 存取 char。
-            # 因此 LB≡LBU、LH≡LHU 均为零扩展——这是项目有意设计，与 ISA 设计文档
-            # 照搬 RISC-V 的"LB 有符号"表述不同。需要符号扩展时用 TSEXT 显式完成。
+            # 与 RISC-V 完全一致：LB/LH 符号扩展，LBU/LHU 零扩展。
+            # 5-trit tryte 的有符号范围是 -121..121（半阈值 (3^5-1)//2 = 121）；
+            # 10-trit 半字是 -29524..29524（(3^10-1)//2 = 29524）。
+            # char 本身无符号（RISC-V psABI 亦如此），故编译器对 char 用 LBU，
+            # 只有 signed char 才用 LB。
             addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
             if name in ("LB","LBU"):
                 t = self._load_tryte(addr)         # 0..242，1 tryte = 5 trit
-                self.regs[rd] = u(t)
+                if name == "LBU":
+                    self.regs[rd] = u(t)
+                else:
+                    self.regs[rd] = u(t - 243 if t > 121 else t)
             else:  # LH / LHU = 2 tryte = 10 trit
                 lo = self._load_tryte(addr)
                 hi = self._load_tryte(addr + 1)
-                self.regs[rd] = u(lo + hi * 243)
+                t = lo + hi * 243                   # 0..59048
+                if name == "LHU":
+                    self.regs[rd] = u(t)
+                else:
+                    self.regs[rd] = u(t - 59049 if t > 29524 else t)
         elif name == "TMAX":
             self.regs[rd] = self._tritwise("max", self.regs[rs1], self.regs[rs2])
         elif name == "TMIN":

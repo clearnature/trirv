@@ -186,7 +186,7 @@ static void tok_push(Token t){
     TOKS[NTOK++]=t;
 }
 static int is_kw(const char*s){
-    static const char*kw[]={"int","char","void","unsigned","struct","va_list",
+    static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
         "if","else","while","for","return","break","continue",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
@@ -310,9 +310,15 @@ static Node *parse_block(void);
 static char* parse_type(void){
     if(!(atk(TK_KW)||atk(TK_ID))){ fprintf(stderr,"parse_type: bad token '%s'\n",cur()->s); exit(1); }
     char base[128];
+    /* char 的符号性：RISC-V psABI 规定 char 默认无符号（GCC DEFAULT_SIGNED_CHAR=0），
+     * 与 TriRV 的 tryte 值域 0..242 天然吻合。故 char/unsigned char 走 LBU 零扩展，
+     * 只有显式 signed char 走 LB 符号扩展取 -121..121。 */
     if(accept("unsigned")){
-        if(accept("int")) snprintf(base,sizeof(base),"unsigned");
-        else snprintf(base,sizeof(base),"unsigned");
+        if(accept("char")) snprintf(base,sizeof(base),"uchar");
+        else { accept("int"); snprintf(base,sizeof(base),"unsigned"); }
+    } else if(accept("signed")){
+        if(accept("char")) snprintf(base,sizeof(base),"schar");
+        else { accept("int"); snprintf(base,sizeof(base),"int"); }
     } else if(accept("int")) snprintf(base,sizeof(base),"int");
     else if(accept("char")) snprintf(base,sizeof(base),"char");
     else if(accept("void")) snprintf(base,sizeof(base),"void");
@@ -464,7 +470,7 @@ static Node* parse_decl(void){
 static int is_decl_start(void){
     Token*t=cur();
     if(t->kind==TK_KW){
-        static const char*dt[]={"int","char","void","unsigned","struct","va_list",NULL};
+        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list",NULL};
         for(int i=0;dt[i];i++) if(!strcmp(t->s,dt[i])){
             /* struct X; 与 struct X f() 区分：先看后面 */
             return 1;
@@ -540,6 +546,12 @@ static StructDef* struct_find(const char*ty){
 }
 static int ty_uns(const char*ty){ return ty && !strcmp(ty,"unsigned"); }
 static int is_ptr(const char*ty){ return ty&&ty[0]&&ty[strlen(ty)-1]=='*'; }
+/* 三种 1-tryte 整数类型：char（无符号，RISC-V psABI 默认）、unsigned char、signed char。
+ * 尺寸都是 1 tryte；区别只在载入用 LBU（零扩展）还是 LB（符号扩展）。 */
+static int is_char_ty(const char*ty){
+    return ty && (!strcmp(ty,"char")||!strcmp(ty,"uchar")||!strcmp(ty,"schar"));
+}
+static int char_signed(const char*ty){ return ty && !strcmp(ty,"schar"); }
 /* 真数组：带维度且不是"指向数组的指针"（int[3]* 是指针，大小仍是 9） */
 static int is_array(const char*ty){
     return ty && strchr(ty,'[') && ty[strlen(ty)-1]!='*';
@@ -601,7 +613,7 @@ static int ty_bytes(const char*ty){
     if(!ty) return 9;
     if(is_ptr(ty)) return 9;
     if(is_array(ty)){ char*el=array_elem(ty); int n=array_count(ty); return n*ty_bytes(el); }
-    if(!strcmp(ty,"char")) return 1;
+    if(is_char_ty(ty)) return 1;
     StructDef*sd=struct_find(ty);
     if(sd) return sd->size;
     return 9;
@@ -981,12 +993,15 @@ static char* expr_type(Node*n){
 }
 static void load_mem(int dst,int base,int off,const char*ty){
     chk_off(off);
-    if(ty&&!strcmp(ty,"char")) emitf("LB %s, %d(%s)",regname(dst),off,regname(base));
+    /* 载入按符号性选指令：signed char 用 LB（符号扩展），其余 char 用 LBU（零扩展）。
+     * 与 RISC-V 语义一致——LB/LH 符号扩展、LBU/LHU 零扩展。 */
+    if(is_char_ty(ty))
+        emitf("%s %s, %d(%s)", char_signed(ty)?"LB":"LBU", regname(dst),off,regname(base));
     else emitf("LW %s, %d(%s)",regname(dst),off,regname(base));
 }
 static void store_mem(int src,int base,int off,const char*ty){
     chk_off(off);
-    if(ty&&!strcmp(ty,"char")) emitf("SB %s, %d(%s)",regname(src),off,regname(base));
+    if(is_char_ty(ty)) emitf("SB %s, %d(%s)",regname(src),off,regname(base));
     else emitf("SW %s, %d(%s)",regname(src),off,regname(base));
 }
 /* 把"元素的起始地址"算进寄存器并返回 */
@@ -1064,7 +1079,7 @@ static int eval(Node*n){
         if(v&&!v->spilled&&v->reg>0) return v->reg;
         int r=tacq();
         if(!v) emitf("ADDI %s, zero, 0",regname(r));           /* 未知符号兜底 */
-        else { chk_off(v->off); emitf("LW %s, %d(s0)",regname(r),v->off); }
+        else load_mem(r,8,v->off,v->ty);                       /* 按类型选 LB/LBU/LW */
         return r;
     }
     case N_UN: {
@@ -1225,7 +1240,7 @@ static int eval(Node*n){
         int d1=TDN;
         if(lv->k==N_VAR){
             LocVar*l=findloc(lv->s);
-            if(l&&l->spilled){ chk_off(l->off); emitf("SW %s, %d(s0)",regname(v),l->off); }
+            if(l&&l->spilled){ store_mem(v,8,l->off,l->ty); }
             else if(l&&l->reg!=v) emitf("ADDI %s, %s, 0",regname(l->reg),regname(v));
         } else if(lv->k==N_DEREF){
             char*ty=(char*)pointee(expr_type(lv->e));
@@ -1251,10 +1266,9 @@ static int eval(Node*n){
                 emitf("ADDI %s, %s, %d",regname(l->reg),regname(l->reg),d);
                 if(l->reg!=r) emitf("ADDI %s, %s, 0",regname(r),regname(l->reg));
             } else if(l){
-                chk_off(l->off);
-                emitf("LW %s, %d(s0)",regname(r),l->off);
+                load_mem(r,8,l->off,l->ty);
                 emitf("ADDI %s, %s, %d",regname(r),regname(r),d);
-                emitf("SW %s, %d(s0)",regname(r),l->off);
+                store_mem(r,8,l->off,l->ty);
             }
             return r;
         }
@@ -1551,7 +1565,11 @@ static void collect_decls(Node*n){
             if(findloc(n->dnames[i])) continue;
             LocVar*v=loc_new(); v->name=n->dnames[i]; v->ty=n->dtypes[i];
             int isarr; ty_size(v->ty,&isarr);
-            v->spilled = isarr || struct_find(v->ty)!=NULL || !strcmp(v->ty,"va_list");
+            /* 1-tryte 整数必须落栈：赋值要按 tryte 截断（SB mod 243），读取要按符号性
+             * 扩展（LB/LBU）。放在寄存器里就没有这个归一化点，signed char c=200
+             * 会原样返回 200 而不是 -43。 */
+            v->spilled = isarr || struct_find(v->ty)!=NULL || !strcmp(v->ty,"va_list")
+                       || is_char_ty(v->ty);
         }
         /* 初始化式里可能取址/调用，需要继续扫描（&x 必须把 x 赶到栈上） */
         for(int i=0;i<n->ndecls;i++) collect_decls(n->dinit[i]);
@@ -1631,10 +1649,12 @@ static void gen_func(Node*f){
     pp_set(!anycall&&!f->variadic, f->nparams);   /* 必须在寄存器分配之前定池 */
     for(int i=0;i<f->nparams;i++){
         LocVar*v=loc_new(); v->name=f->params[i]; v->ty=f->ptypes[i];
-        int isarr; ty_size(v->ty,&isarr); v->spilled=isarr;
+        int isarr; ty_size(v->ty,&isarr);
+        /* 形参同理：char 类形参必须在入口按 tryte 归一化，故落栈后用 LB/LBU 读回。 */
+        v->spilled = isarr || is_char_ty(v->ty);
         /* 叶子函数没有调用会踩 a0-a7，形参可以直接留在它到达时的寄存器里，
            省掉 `ADDI sN, aM, 0` 这次搬运。池从 a_nparams 起，不会与它们冲突。 */
-        if(!anycall&&!isarr&&!struct_find(v->ty)&&i<8){
+        if(!anycall&&!isarr&&!is_char_ty(v->ty)&&!struct_find(v->ty)&&i<8){
             v->reg=10+i; reg_take(v->reg);
         }
     }
@@ -1700,7 +1720,7 @@ static void gen_func(Node*f){
     for(int i=8;i<f->nparams;i++){
         LocVar*v=&LOC[i]; chk_off(i*9);
         int r=tacq(); emitf("LW %s, %d(t6)",regname(r),i*9);
-        if(v->spilled) emitf("SW %s, %d(s0)",regname(r),v->off);
+        if(v->spilled) store_mem(r,8,v->off,v->ty);
         else emitf("ADDI %s, %s, 0",regname(v->reg),regname(r));
         TDN=0;
     }
@@ -1708,7 +1728,14 @@ static void gen_func(Node*f){
     /* 参数装载（在帧建立后） */
     for(int i=0;i<f->nparams&&i<8;i++){
         LocVar*v=&LOC[i];
-        if(v->spilled){ chk_off(v->off); emitf("SW a%d, %d(s0)",i,v->off); }
+        if(v->spilled){
+            /* 形参落栈时也按类型写：char 形参用 SB 把入参截到 1 tryte，
+             * 后续 LB/LBU 读回时符号性才与 C 一致。 */
+            if(is_char_ty(v->ty)){
+                int r=tacq(); emitf("ADDI %s, a%d, 0",regname(r),i);
+                store_mem(r,8,v->off,v->ty); TDN=0;
+            } else { chk_off(v->off); emitf("SW a%d, %d(s0)",i,v->off); }
+        }
         else if(v->reg!=10+i) emitf("ADDI %s, a%d, 0",regname(v->reg),i);
     }
     gen_stmt(f->fbody);

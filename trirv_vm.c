@@ -462,6 +462,11 @@ static inline __uint128_t shl3(__uint128_t word, long sh){
 static inline __uint128_t tsext(__uint128_t word){
     return u(sx(word % 243, 5));                       /* 243=3^5 */
 }
+/* LH 的符号扩展：取 word 低 10 trit（2 tryte）按 3 补码扩展到 45 trit。
+ * 半阈值 (3^10-1)//2 = 29524；RISC-V 的 LH 就是符号扩展，本 ISA 与之对齐。 */
+static inline __uint128_t sx10(__uint128_t word){
+    return u(sx(word % 59049, 10));                    /* 59049=3^10 */
+}
 /* 优化版三值运算：无除法器取 tryte + 查表 + 正向累加。
  * 相比原来 unpack(9×128位除法)+SIMD-min+pack(45×乘加)：tryte 提取由 9 次硬件 div
  * 改为 9 次 magic mul+shift（零除指令），运算由 45 次逐 trit 降为 9 次查表。
@@ -710,10 +715,12 @@ static inline void step(VM *v){
         case OP_AMOOR:case OP_AMOXOR:case OP_AMOMIN:case OP_AMOMAX:
             amo_exec(v,in->op,rd,rs1,rs2);break;
         case OP_LW:v->reg[rd]=load_word(v,a+imm);break;
-        /* char=1 tryte=0..242（无符号），ABI 用 LB/SB 存取 char：LB≡LBU、LH≡LHU 均零扩展；
-         * 需要符号扩展用 TSEXT。见 trirv-unified-memory-abi.md §2。 */
-        case OP_LB:case OP_LBU:v->reg[rd]=u(load_tryte(v,a+imm));break;
-        case OP_LH:case OP_LHU:v->reg[rd]=(__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243;break;
+        /* 与 RISC-V 一致：LB/LH 符号扩展，LBU/LHU 零扩展。
+         * char 本身无符号（RISC-V psABI 亦然），编译器对 char 用 LBU，仅 signed char 用 LB。 */
+        case OP_LB:v->reg[rd]=tsext(load_tryte(v,a+imm));break;
+        case OP_LBU:v->reg[rd]=u(load_tryte(v,a+imm));break;
+        case OP_LH:v->reg[rd]=sx10((__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243);break;
+        case OP_LHU:v->reg[rd]=(__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243;break;
         case OP_TMAX:v->reg[rd]=tritwise(1,v->reg[rs1],v->reg[rs2]);break;
         case OP_TMIN:v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]);break;
         case OP_TAND:v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]);break;
@@ -839,9 +846,9 @@ L_AND:   v->reg[rd]=v->reg[rs1]&v->reg[rs2]; NEXT();
 L_XORI:  v->reg[rd]=v->reg[rs1]^immu; NEXT();
 L_ORI:   v->reg[rd]=v->reg[rs1]|immu; NEXT();
 L_ANDI:  v->reg[rd]=v->reg[rs1]&immu; NEXT();
-L_LB:    v->reg[rd]=u(load_tryte(v,a+imm)); NEXT();
+L_LB:    v->reg[rd]=tsext(load_tryte(v,a+imm)); NEXT();
 L_LBU:   v->reg[rd]=u(load_tryte(v,a+imm)); NEXT();
-L_LH:    v->reg[rd]=(__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243; NEXT();
+L_LH:    v->reg[rd]=sx10((__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243); NEXT();
 L_LHU:   v->reg[rd]=(__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243; NEXT();
 L_LW:    v->reg[rd]=load_word(v,a+imm); NEXT();
 L_SB:    store_tryte(v,a+imm,v->reg[rs2]);snoop_store(v,a+imm,1); NEXT();

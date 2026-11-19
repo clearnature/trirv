@@ -13,12 +13,18 @@
 | 类型 | 宽度 | 值域 | 存储指令 |
 | --- | --- | --- | --- |
 | `tryte` | 5 trit | 0\~242 | 内存最小编址单位 |
-| `char` | 1 tryte | 0\~242 | `LB` / `SB` |
+| `char` / `unsigned char` | 1 tryte | 0\~242 | `SB` 写 / `LBU` 读（零扩展） |
+| `signed char` | 1 tryte | −121\~121 | `SB` 写 / `LB` 读（符号扩展） |
 | `int` | 9 tryte (45 trit) | 3 补码 | `LW` / `SW` |
 | 指针 (`int*` `char*` …) | 9 tryte | tryte 地址 | `LW` / `SW` |
 
 - **地址单位 = 1 tryte**（不是 8-bit byte）。这是原生三进制的正确抽象，无 256 值域冲突。
 - `char` = 5-trit tryte（你已确认）：glibc 按此 ABI 重编译，不做 8-bit 兼容。
+- **`char` 无符号，`signed char` 有符号**：plain `char` 无符号与 RISC-V psABI 一致
+  （GCC riscv 后端 `DEFAULT_SIGNED_CHAR = 0`），不是 TriRV 自己的偏离。
+  底层对应 `LBU`/`LB` 两条不同指令——这也是 TriRV 的 `LB`/`LBU` 与 RISC-V 语义完全一致的原因。
+- `SB` 写 1 tryte 时按 mod 243 截断，所以 `signed char c = -43` 实际存的是 200，
+  `LB` 读回再解释为 −43；往返自洽。
 - 45 trit = 9 tryte，int 与指针同宽。
 
 ## 2. 内存布局（统一单一地址空间）
@@ -121,6 +127,8 @@ word     = Σ tryte[i] * 3^(5i)          (mod 3^45)
 - 一维数组 `trirv_array_e2e.py`：**11/11 PASS**（下标写读、循环填充、数组名退化、形参退化、传址修改、多数组共存、char 数组、与 malloc 混用）
 - malloc 端到端 `trirv_malloc_e2e.py`：**16/16 PASS**（含写读、隔离、复用、相邻合并、calloc/realloc、动态链表、字符串、分配失败语义 + brk 查询/增长/收缩/越界专项）
 - 指针/char 专项 `trirv_ptr_e2e.py`：**12/12 PASS**
+- char 符号性/LB-LBU 语义 `trirv_charsign_e2e.py`：**21/21 PASS**（char/unsigned char/signed char 三态、
+  5-trit 与 10-trit 符号边界、形参归一化、struct 成员、`char*` 步长，并用 C VM 交叉验证 21/21）
 - C 编译器 `trirv_cc_e2e.py`：**14/14 PASS**
 - 汇编 e2e `trirv_e2e.py`、VM `trirv_vm.py`：全绿
 
