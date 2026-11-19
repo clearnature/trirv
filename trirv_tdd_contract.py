@@ -331,6 +331,12 @@ def b_and(a, b): return _val(_bits(a) & _bits(b))
 def b_or(a, b):  return _val(_bits(a) | _bits(b))
 def b_xor(a, b): return _val(_bits(a) ^ _bits(b))
 def b_not(a):    return _val(M72 - _bits(a))
+# 移位：左移按位模式乘 2^k 再回绕；右移无符号看位模式、有符号取 floor
+def b_shl(a, k):  return _val((_bits(a) << k) % P45)
+def b_shru(a, k): return _val(_bits(a) >> k)
+def b_shrs(a, k):
+    q = a >> k
+    return q if -HALF45 - 1 <= q <= HALF45 else _val(q % P45)
 
 
 def section_bitlaws():
@@ -461,6 +467,94 @@ def section_nested_calls():
             check(f"{name}（C VM）", cg == want, f"得 {cg}，期望 {want}")
 
 
+def section_shifts():
+    section("§10 二进制移位契约（x<<k = 位模式·2^k 回绕；x>>k = floor(x/2^k)）")
+    import re as _re
+    a_vals = [0, 1, -1, -8, 242, 123456789, -987654321, HALF45]
+
+    # --- 10.1 左移就是乘 2^k（按 3^45 回绕），不是乘 3^k ---
+    bad = 0
+    for a in a_vals:
+        for k in (0, 1, 3, 11, 45, 71):
+            src = f"int main(){{ int a={a}; return a << {k}; }}"
+            got, _p, _s = compile_run_py(src, 800000)
+            want = b_shl(a, k)
+            if got != want:
+                bad += 1
+                print(f"  [FAIL] {a}<<{k}: 得 {got}，期望 {want}"
+                      f"{'（×3 而不是 ×2？）' if got == a * (3 ** k) else ''}")
+    check("左移 = ×2^k 并按 3^45 回绕（48 例）", bad == 0, f"{bad} 例错")
+
+    # --- 10.2 右移：无符号看位模式，有符号是算术右移（floor）---
+    bad = 0
+    for a in a_vals:
+        for k in (1, 3, 45, 71):
+            g1, _p, _s = compile_run_py(f"int main(){{ unsigned a={a}; return a >> {k}; }}", 800000)
+            if g1 != b_shru(a, k):
+                bad += 1; print(f"  [FAIL] (unsigned){a}>>{k}: 得 {g1}，期望 {b_shru(a, k)}")
+            g2, _p, _s = compile_run_py(f"int main(){{ int a={a}; return a >> {k}; }}", 800000)
+            if g2 != b_shrs(a, k):
+                bad += 1; print(f"  [FAIL] (int){a}>>{k}: 得 {g2}，期望 {b_shrs(a, k)}")
+    check("右移：无符号按位模式 / 有符号按算术（64 例）", bad == 0, f"{bad} 例错")
+
+    # -7>>1 = -4（floor），-7/2 = -3（截断）—— 两者必须不同，否则就是拿 DIV 直译
+    g1, _p, _s = compile_run_py("int main(){ int a=-7; return a>>1; }")
+    g2, _p, _s = compile_run_py("int main(){ int a=-7; return a/2; }")
+    check("有符号 >> 是 floor，除法是截断", g1 == -4 and g2 == -3, f">>1 得 {g1}，/2 得 {g2}")
+
+    # --- 10.3 常量路径与变量路径必须逐值一致（两条独立代码路径）---
+    bad = 0
+    for a in (1, -8, 123456789, HALF45):
+        for k in (0, 1, 5, 40, 71):
+            for op, ty in (("<<", "int"), (">>", "unsigned"), (">>", "int")):
+                c1, _p, _s = compile_run_py(f"int main(){{ {ty} a={a}; return a {op} {k}; }}", 800000)
+                c2, _p, _s = compile_run_py(f"int main(){{ {ty} a={a}; int n={k}; return a {op} n; }}", 800000)
+                if c1 != c2:
+                    bad += 1; print(f"  [FAIL] {ty} {a} {op} {k}: 常量 {c1} != 变量 {c2}")
+    check("常量移位与变量移位结果一致（60 组）", bad == 0, f"{bad} 组不一致")
+
+    # --- 10.4 变量移位的循环工作寄存器不得踩到同时在用的变量 ---
+    # 事故：第一版把"a、b 里不是 dst 的那个"当临时，`1<<i` 里的 i 正是常驻寄存器，
+    # 写进去就把循环变量改了（s=Σ2^i 算出 49999）。
+    cases = [
+        ("循环里 1<<i 累加", "int main(){ int s=0; int i; for(i=0;i<5;i++) s=s+(1<<i); return s; }", 31),
+        ("移位量取自数组元素", "int main(){ int n[3]; n[0]=1; n[1]=4; n[2]=8;"
+                                " int s=0; int i; for(i=0;i<3;i++) s=s+(1<<n[i]); return s; }", 274),
+        ("移位后继续用移位量", "int main(){ int n=3; int x=1<<n; return x+n; }", 11),
+    ]
+    bad = 0
+    for label, src, want in cases:
+        got, _p, _s = compile_run_py(src, 800000)
+        if got != want:
+            bad += 1; print(f"  [FAIL] {label}: 得 {got}，期望 {want}")
+    check("变量移位不破坏同时在用的变量（3 例）", bad == 0, f"{bad} 例错")
+
+    # --- 10.5 反悔锁：汇编里绝不能出现三进制移位 ---
+    # 早期把 `<<` 直译成 SLL（×3^k），x=10 时 x<<1 静默返回 30。
+    bad = 0
+    for src in ("int main(){ int a=10; return a<<1; }",
+                "int main(){ int a=10; int n=2; return a<<n; }",
+                "int main(){ unsigned a=10; return a>>1; }",
+                "int main(){ int a=-10; int n=2; return a>>n; }"):
+        p, _l, txt, _s = cc.compile_c(src)
+        if _re.search(r"\b(SLL|SRL|SRA)\b", txt):
+            bad += 1; print(f"  [FAIL] 汇编出现三进制移位：{src}")
+    check("汇编里没有三进制移位 SLL/SRL/SRA", bad == 0, f"{bad} 处")
+
+    # --- 10.6 与其他运算组合时的求值顺序 ---
+    combos = [
+        ("(a<<2)|1", "int main(){ int a=5; return (a<<2)|1; }", b_or(b_shl(5, 2), 1)),
+        ("(a>>1)^a", "int main(){ int a=12; return (a>>1)^a; }", b_xor(b_shrs(12, 1), 12)),
+        ("1<<31 后再右移", "int main(){ unsigned x=1<<31; return x>>31; }", 1),
+    ]
+    bad = 0
+    for label, src, want in combos:
+        got, _p, _s = compile_run_py(src, 800000)
+        if got != want:
+            bad += 1; print(f"  [FAIL] {label}: 得 {got}，期望 {want}")
+    check("移位与位运算混用（3 例）", bad == 0, f"{bad} 例错")
+
+
 # ---------------------------------------------------------------- main
 def main():
     print("TriRV 契约测试（TDD）")
@@ -473,6 +567,7 @@ def main():
     section_bitlaws()
     section_struct_abi()
     section_nested_calls()
+    section_shifts()
 
     print("\n" + "=" * 60)
     print(f"契约测试：{PASS}/{PASS + FAIL} 通过")

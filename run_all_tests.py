@@ -65,9 +65,9 @@ def _build_binaries():
 SUITES = [
     ("trirv_e2e.py",              "汇编端到端",              False, None),
     ("test_isa_completeness.py",  "ISA 完整性 86 项",        False, None),
-    ("trirv_tdd_contract.py",     "契约测试（TDD 59 项）",    False, None),
+    ("trirv_tdd_contract.py",     "契约测试（TDD 83 项）",    False, None),
     ("trirv_tritlogic_e2e.py",    "AND/OR/XOR 逐 trit 锁定",  False, None),
-    ("trirv_bitview_e2e.py",      "C 位运算 方案 A 85 项",    False, None),
+    ("trirv_bitview_e2e.py",      "C 位运算/移位 方案 A",    False, None),
     ("trirv_difftest.py",         "PyVM vs C VM 差分",       False, None),
     ("trirv_csr_diff.py",         "CSR/trap 差分",           False, None),
     ("trirv_charsign_e2e.py",     "char 符号性 21 项",        False, None),

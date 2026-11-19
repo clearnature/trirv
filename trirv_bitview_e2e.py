@@ -1,7 +1,7 @@
-"""TriRV 二进制位运算适配层（方案 A：精确 72 位视图）端到端验证。
+"""TriRV 二进制适配层（方案 A：精确 72 位视图）端到端验证。
 
 规范 §5.1.1 / §11.2。ISA 是纯三进制的，"第 k 个二进制位"在 ISA 里没有位置，
-所以 C 的 & | ^ ~ 属于外来语义适配层——用三进制指令模拟二进制语义。
+所以 C 的 & | ^ ~ << >> 属于外来语义适配层——用三进制指令模拟二进制语义。
 
 ABI（2026-11-19 拍板 = 方案 A）：
     bits(x) = x>=0 ? x : x + 3^45        无符号位模式，值域 [0, 3^45)
@@ -9,12 +9,17 @@ ABI（2026-11-19 拍板 = 方案 A）：
     视图宽度 W = 72（最小 W 使 2^W > 3^45-1）
     回绕在 3^45 而非 2^k
 
+移位（同日落地）：
+    x << k  = val(bits(x)·2^k mod 3^45)       ADD 天然回绕 ⇒ k 次自加/一次 MUL
+    x >> k  = floor(x / 2^k)                 无符号对 raw 做 DIVU；有符号即算术右移
+
 本套件验证：
   1. 参考模型（Python 大整数）与 VM 执行结果一致
   2. C 后端与 Python 后端语义一致（差分锁）
-  3. 边界：0、±1、HALF、负数、超 32 位的值
+  3. 边界：0、±1、HALF、负数、超 32 位的值、越界移位量
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -47,6 +52,14 @@ def b_and(a, b): return val(bits(a) & bits(b))
 def b_or(a, b):  return val(bits(a) | bits(b))
 def b_xor(a, b): return val(bits(a) ^ bits(b))
 def b_not(a):    return val(M - bits(a))
+
+
+# ---- 移位参考模型 ----
+def b_shl(a, k):  return val((bits(a) << k) % P)      # ADD 天然回绕 ⇒ 与硬件一致
+def b_shru(a, k): return val(bits(a) >> k)            # 无符号：对位模式右移
+def b_shrs(a, k):                                     # 有符号：对数学值取 floor
+    q = a >> k
+    return q if -H - 1 <= q <= H else val(q % P)
 
 
 def compile_run_py(src, steps=400000):
@@ -172,18 +185,85 @@ def main():
             print(f"  [FAIL] {label}: want {want}, got {got}")
             fails += 1
 
-    # --- 5. << >> 仍应硬报错（方案 A 只覆盖 & | ^ ~）---
-    for op in ("<<", ">>"):
-        src = f"int main(){{ int a=1; int b=2; return a {op} b; }}"
+    # --- 5. 二进制移位 << >> ---
+    # 左移 = 位模式乘 2^k 再按 3^45 回绕；右移 = 对值取 floor(x/2^k)。
+    # 历史的坑：早期把 `<<` 直译成 ISA 的 SLL（三进制 ×3），x=10 时 `x<<1` 返回 30。
+    CONST_AS = (0, 1, -1, -8, 123456789, H)
+    CONST_KS = (0, 1, 3, 11, 45, 71)
+    for a in CONST_AS:
+        for k in CONST_KS:
+            for op, fn, ty in (("<<", b_shl, "int"), (">>", b_shru, "unsigned"), (">>", b_shrs, "int")):
+                want = fn(a, k)
+                src = f"int main(){{ {ty} a={a}; return a {op} {k}; }}"
+                got, txt = compile_run_py(src)
+                n += 1
+                ok = got == want
+                # 反悔锁：绝不能出现三进制移位 SLL/SRL/SRA
+                if re.search(r"\b(SLL|SRL|SRA)\b", txt):
+                    ok = False
+                    print(f"  [FAIL] {a}{op}{k}: 汇编里出现三进制移位")
+                if not ok:
+                    print(f"  [FAIL] {ty} {a} {op} {k}: want {want}, PyVM {got}")
+                    fails += 1
+                    continue
+                cg = run_c_vm(src, want)
+                if cg is not None and cg != want:
+                    print(f"  [FAIL] {ty} {a} {op} {k}: C VM {cg} != {want}")
+                    fails += 1
+
+    # 变量移位量（运行时循环，1~2 个 callee-saved 工作寄存器）
+    for a in (1, -8, 123456789):
+        for k in (0, 1, 5, 40, 71):
+            for op, fn, ty in (("<<", b_shl, "int"), (">>", b_shru, "unsigned"), (">>", b_shrs, "int")):
+                want = fn(a, k)
+                src = f"int main(){{ {ty} a={a}; int n={k}; return a {op} n; }}"
+                got, _ = compile_run_py(src)
+                n += 1
+                if got != want:
+                    print(f"  [FAIL] {ty} {a} {op} n({k}): want {want}, got {got}")
+                    fails += 1
+
+    # 定点回归：早期 bug 的原始形态 + 有符号/无符号右移必须分道
+    fixed = [
+        ("x<<1 是 ×2 不是 ×3（历史 bug 返回 30）",
+         "int main(){ int a=10; return a<<1; }", 20, "ADD"),
+        ("无符号 >>1 走 DIVU", "int main(){ unsigned a=10; return a>>1; }", 5, "DIVU"),
+        ("有符号 >>1 是 floor", "int main(){ int a=-7; return a>>1; }", -4, "DIV"),
+        ("有符号 -7/2 是截断（对照）", "int main(){ int a=-7; return a/2; }", -3, None),
+        ("1<<n 当掩码", "int main(){ int n=4; return (1<<n)-1; }", 15, None),
+        ("移位参与循环累加", "int main(){ int s=0; int i; for(i=0;i<5;i++) s=s+(1<<i); return s; }", 31, None),
+        ("移位与位运算混用", "int main(){ int a=12; return (a<<1)&0xFF; }", 24, None),
+    ]
+    for label, src, want, must in fixed:
+        got, txt = compile_run_py(src)
+        n += 1
+        if got != want:
+            print(f"  [FAIL] {label}: want {want}, got {got}")
+            fails += 1
+            continue
+        if must and must not in txt:
+            print(f"  [FAIL] {label}: 汇编缺 {must}")
+            fails += 1
+            continue
+        cg = run_c_vm(src, want)
+        if cg is not None and cg != want:
+            print(f"  [FAIL] {label}: C VM {cg} != {want}")
+            fails += 1
+
+    # --- 6. 必须仍然拒绝的移位形态 ---
+    for label, src in (("移位量为负", "int main(){ int a=1; return a << -1; }"),
+                       ("移位量过大", "int main(){ int a=1; return a >> 99999; }")):
         n += 1
         try:
             compile_run_py(src)
-            print(f"  [FAIL] {op} 应硬报错，却编译通过了")
+            print(f"  [FAIL] {label}: 应硬报错，却编译通过了")
             fails += 1
         except (SystemExit, ValueError, RuntimeError) as e:
+            if isinstance(e, SystemExit):
+                continue                       # 汇编器/编译器 exit(2) 也算拒绝
             msg = str(e)
-            if "移位运算" not in msg and "UNSUPPORTED" not in msg and not isinstance(e, SystemExit):
-                print(f"  [FAIL] {op} 报错信息不含 UNSUPPORTED: {msg[:80]}")
+            if "UNSUPPORTED" not in msg:
+                print(f"  [FAIL] {label}: 报错信息不含 UNSUPPORTED: {msg[:80]}")
                 fails += 1
 
     print(f"\n{'=' * 56}")

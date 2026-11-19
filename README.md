@@ -152,7 +152,7 @@ python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 �
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
-python3 trirv_tdd_contract.py                  # 契约测试（TDD，59 项：字段/执行/立即数/STRICT/代数律）
+python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
 python3 run_all_tests.py                       # 全量：一条命令跑完 27 套，输出汇总表
 python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
 ```
@@ -173,13 +173,13 @@ $ ./trirv_vm /tmp/t.trv
 | --- | --- |
 | `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **27/27 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
-| `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用） | **76/76** |
+| `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
-| `trirv_bitview_e2e.py`（C 的 `& | ^ ~`，方案 A 72 位视图） | 85/85（PyVM + C VM 双跑） |
+| `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | **14/14 套**（`TRV_CC_STRICT=1` 下同样 14/14） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
@@ -206,11 +206,16 @@ $ ./trirv_vm /tmp/t.trv
    `TRV_CC_STRICT=1` 下通过**（此前是 9/11 与整套失败）。
    > ⚠️ **验证陷阱仍在**：默认模式下 e2e 全绿，可能是因为失败用例悄悄回退到 Python
    > 后端。考核 C 后端必须加 `TRV_CC_STRICT=1`，`run_all_tests.py` 已默认带上。
-2. **VM 的 DIV 慢**：无硬件除法器，走 72 步逐位恢复除法（~150ns）。优化方向是乘法逆元估商，
-   预计 1.5–2×。
-3. **动态指令少 8.4× 但墙钟只快 6.5×**：说明单步成本随指令类型差异极大（MUL ~70ns、DIV ~150ns），
+2. **二进制位运算 / 移位只在 C 后端**：`& | ^ ~ << >>` 的适配层（方案 A）写在
+   `trirv_cc.c`，Python 参考后端（`trirv_cc.py`）仍硬报错。所以 `TRV_CC=py`
+   只能用来对照纯三进制代码，含位运算/移位的程序必须走 C 后端。两套后端的
+   报错文案都写明了这一点，避免语义漂移被当成 bug 追。
+3. **VM 的 DIV 慢**：无硬件除法器，走 72 步逐位恢复除法（~150ns）。`>>` 的
+   代价几乎全在这次除法上（`a>>3` 19 步里 11 步是 `DIVU`）。优化方向是乘法
+   逆元估商，预计 1.5–2×。
+4. **动态指令少 8.4× 但墙钟只快 6.5×**：说明单步成本随指令类型差异极大（MUL ~70ns、DIV ~150ns），
    后续要么优化 VM 除法，要么让编译器继续避开贵指令。
-4. **1-tryte 局部变量一律落栈**：`char`/`signed char`/`unsigned char` 不再走寄存器分配。
+5. **1-tryte 局部变量一律落栈**：`char`/`signed char`/`unsigned char` 不再走寄存器分配。
    原因是寄存器里没有"截断到 5 trit"的归一化点，`signed char c=200` 会原样返回 200 而不是 −43。
    落到栈上后，写用 `SB`（mod 243 截断）、读用 `LB`/`LBU`（按符号性扩展），语义与 C 一致。
    代价是每次读写多一次访存，但这些变量本来就在热循环里很少见。
