@@ -612,8 +612,12 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
    扩展区）——octet(0..255) ↔ 双 tryte [lo=o%243, hi=o/243] 边界编解码，
    内存保持纯三进制，CHAR_BIT==8 的 musl 依赖由此满足（全 256 值无损往返，
    `trirv_octet_e2e.py` 13 项双 VM 锁定）。直通 read/write 语义不变。
-   真 musl 源码移植仍为后续目标（前置：目标文件符号表/弱符号/归档、
-   arch 层内联汇编改写为 read8/write8 形态）。
+   ⑥ TRVO 目标文件（2026-11-19）：`src.c → out.trvo` 文本行式中间格式
+   （FUNC/PARAM/LINE/GLOB/STR），`-l xxx.trvo` 导入链接。musl+crt 预编译
+   一次多次链接（增量构建）；可执行 .trv 链接期 undefined reference 检测
+   （目标文件豁免 UNDEF）；跨单元 `_L*` → `_X<单元>_<n>` 标签改写防冲突；
+   重复定义检测覆盖 TRVO 导入（`trirv_trvo_e2e.py` 10 项锁定）。
+   真 musl 源码移植仍为后续目标（前置：arch 层内联汇编改写、弱符号语义）。
 
 ---
 

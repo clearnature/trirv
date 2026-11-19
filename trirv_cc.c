@@ -2738,7 +2738,132 @@ static uint32_t asm_line(const char*line,int idx){
     return 0;
 }
 
-/* ============ 窥孔优化：基本块内 ADDI 复制链传播 ============
+/* ============ TRVO 中间格式导入 ============
+ * -l xxx.trvo：读回先前导出的目标文件。函数汇编体进独立缓冲 TVO_OUT
+ * （两遍 gen 会清 OUT，TVO_OUT 在 assemble_all 之前统一 append），
+ * 函数登记 FNS（fbody=NULL 标记"体已在 TVO_OUT"，gen_func 跳过），
+ * 标签计数续接（LBLBASE），全局/字符串地址由既有分配器统一排布。 */
+static char **TVO_OUT; static int NTVO, CAPTVO;
+static int TVO_SEQ;                        /* 导入单元序号：标签改写 _L<n> -> _X<seq>_<n> */
+/* 把行内所有 _L<数字> token 改写为 _X<seq>_<数字>（定义与引用同形，全改）。
+ * 标签出现在两种位置：行首 "LABEL:" 与跳转目标操作数。数字边界用
+ * 非字母数字判定，_L1 与 _L12 不会互混。 */
+static char*tvo_relabel(const char*line){
+    size_t cap=strlen(line)*2+32;
+    char*out=malloc(cap); size_t w=0;
+    for(size_t i=0;line[i];){
+        if(line[i]=='_'&&line[i+1]=='L'&&isdigit((unsigned char)line[i+2])){
+            size_t j=i+2;
+            while(isdigit((unsigned char)line[j])) j++;
+            /* 前一个字符不能是标识符字符（避免 xy_L1 误改） */
+            int prev_id=(i>0)&&(isalnum((unsigned char)line[i-1])||line[i-1]=='_');
+            if(!prev_id){
+                int orign=atoi(line+i+2);        /* 原编号，保留进新名 */
+                w+=(size_t)snprintf(out+w,cap-w,"_X%d_%d",TVO_SEQ,orign);
+                i=j; continue;
+            }
+        }
+        out[w++]=line[i++];
+    }
+    out[w]=0;
+    return out;
+}
+static void tvo_import(const char*path){
+    FILE*fp=fopen(path,"r"); if(!fp){perror(path);exit(1);}
+    char line[1024];
+    if(!fgets(line,sizeof line,fp)||strncmp(line,"TRVO",4)!=0){
+        fprintf(stderr,"link error: %s is not TRVO\n",path); exit(1);
+    }
+    int lblbase=0;
+    if(fgets(line,sizeof line,fp)&&sscanf(line,"LBLBASE %d",&lblbase)==1){
+        LBL+=lblbase;                       /* 标签计数续接：单元间 _L* 不冲突 */
+    }
+    /* 第一遍：先扫 FUNC 边界数，给 OUT 行预留单元前缀改写需要原行 */
+    while(fgets(line,sizeof line,fp)){
+        if(!strncmp(line,"GLOB ",5)){
+            char name[128],ty[128];
+            if(sscanf(line,"GLOB %127s %127s",name,ty)==2) global_add(name,ty,ty_bytes(ty),NULL);
+        } else if(!strncmp(line,"STR ",4)){
+            int len; if(sscanf(line,"STR %d",&len)==1){
+                char *buf=malloc((size_t)len+1);
+                const char*hex=line+4; while(*hex==' ')hex++;
+                for(int k=0;k<len;k++){
+                    unsigned b; sscanf(hex+2*k,"%2x",&b); buf[k]=(char)b;
+                }
+                GROW(STRSEG,CAPSTR,NSTR,char*); GROW(STRLEN,CAPSTRLEN,NSTR,int);
+                STRSEG[NSTR]=buf; STRLEN[NSTR]=len; NSTR++;
+            }
+        } else if(!strncmp(line,"FUNC ",5)){
+            char fname[128]; int np=0;
+            if(sscanf(line,"FUNC %127s %d",fname,&np)!=2) continue;
+            {   /* 体首行插函数标签：assemble_all 的标签扫描靠它定位 */
+                char lab[136]; snprintf(lab,sizeof(lab),"%s:",fname);
+                GROW(TVO_OUT,CAPTVO,NTVO,char*); TVO_OUT[NTVO++]=strdup(lab);
+            }
+            TVO_SEQ++;                         /* 每个导入单元一个标签命名空间 */
+            for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,fname)){
+                fprintf(stderr,"link error: duplicate function '%s' (%s)\n",fname,path);
+                exit(1);
+            }
+            Node*f=nnew(N_FUNC); f->rettype=strdup("int"); f->s=strdup(fname);
+            f->ptypes=malloc(sizeof(char*)*32); f->params=malloc(sizeof(char*)*32);
+            f->fbody=NULL;                   /* 体在 TVO_OUT */
+            f->uses_bitop=0; f->shift_regs=0;
+            while(fgets(line,sizeof line,fp)){
+                if(!strncmp(line,"PARAM ",6)){
+                    int pi; char pn[128],pt[128];
+                    if(sscanf(line,"PARAM %d %127s %127s",&pi,pn,pt)==3){
+                        f->params[pi]=strdup(pn); f->ptypes[pi]=strdup(pt);
+                        if(pi+1>f->nparams) f->nparams=pi+1;
+                    }
+                } else if(!strncmp(line,"LINE ",5)){
+                    char *src_line=strdup(line+5);
+                    size_t L=strlen(src_line);
+                    while(L&&(src_line[L-1]=='\n'||src_line[L-1]=='\r')) src_line[--L]=0;
+                    GROW(TVO_OUT,CAPTVO,NTVO,char*); TVO_OUT[NTVO++]=tvo_relabel(src_line);
+                } else if(!strncmp(line,"ENDFUNC",7)) break;
+            }
+            FNS=grow(FNS,&CAPFN,NFN,sizeof(Node*)); FNS[NFN++]=f;
+        } else if(!strncmp(line,"END",3)) break;
+    }
+    fclose(fp);
+}
+
+/* ============ 链接期未定义引用检测 ============
+ * 拼接完成后（所有翻译单元的 FNS 已合表），逐函数扫调用点：
+ * callee 既非 syscall、又无定义、又不是本函数形参（函数指针形参走
+ * 间接调用路径）、也不是全局变量 —— 就是未定义引用。
+ * 对齐 gcc 链接器的 undefined reference 报错。 */
+static const char **UNDEF_PARAMS; static int NUNDEF_PARAMS;
+static void scan_undef_node(Node*n,int *nundef,char (*names)[64]){
+    if(!n) return;
+    switch(n->k){
+    case N_CALL:
+        if(!is_syscall_name(n->s) && strncmp(n->s,"(*target)",9)!=0){
+            int known=0;
+            for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,n->s)){known=1;break;}
+            if(!known){
+                for(int i=0;i<NUNDEF_PARAMS;i++)
+                    if(!strcmp(UNDEF_PARAMS[i],n->s)){known=1;break;}
+            }
+            if(!known && global_find(n->s)) known=1;   /* 全局变量（函数指针表） */
+            if(!known && (*nundef)<60){
+                snprintf(names[*nundef],64,"%s",n->s);
+                (*nundef)++;
+            }
+        }
+        for(int i=0;i<n->nargs;i++) scan_undef_node(n->args[i],nundef,names);
+        return;
+    }
+    Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
+    for(int i=0;i<10;i++) scan_undef_node(all[i],nundef,names);
+    if(n->body) for(int i=0;i<n->nitems;i++) scan_undef_node(n->body[i],nundef,names);
+    if(n->args) for(int i=0;i<n->nargs;i++) scan_undef_node(n->args[i],nundef,names);
+    if(n->items) for(int i=0;i<n->nitems;i++) scan_undef_node(n->items[i],nundef,names);
+    if(n->dinit) for(int i=0;i<n->ndecls;i++) scan_undef_node(n->dinit[i],nundef,names);
+}
+
+/* 窥孔优化：基本块内 ADDI 复制链传播 ============
  * ADDI rd, rs, 0 是寄存器复制。在基本块内维护 canonical[rd]=rs，
  * 把后续对 rd 的源引用替换为 rs，消除冗余 MOVE。
  * 遇到 label / 跳转 / 非复制指令即清空对应链（保守，保证语义）。
@@ -2913,6 +3038,7 @@ int main(int argc,char**argv){
      *   - 顺序：命令行出现顺序（-l 库在前、主文件在后也支持）
      *   - 重复函数定义：parse_program 检测 FNS 重名 -> 报错
      *   - 调用先于定义：两遍代码生成兜底（前向引用已解决） */
+    static char **TRVO_PATHS; static int NTVOP, CAPTVOP;   /* 待导入的 .trvo */
     {   /* 拼接所有源文件 */
         long total=0;
         int *sizes=malloc(sizeof(int)*(size_t)argc);
@@ -2922,6 +3048,14 @@ int main(int argc,char**argv){
             if(!strcmp(argv[ai],"-l")){ ai++;
                 if(ai>=argc){ fprintf(stderr,"-l needs file\n"); return 1; }
             } else if(ai!=1) continue;   /* 只认 argv[1]（主文件）与 -l */
+            {   /* .trvo 输入：不入拼接缓冲，登记延后导入 */
+                size_t L=strlen(argv[ai]);
+                if(L>5&&!strcmp(argv[ai]+L-5,".trvo")){
+                    TRVO_PATHS=grow(TRVO_PATHS,&CAPTVOP,NTVOP,sizeof(char*));
+                    TRVO_PATHS[NTVOP++]=strdup(argv[ai]);
+                    continue;
+                }
+            }
             FILE*fp=fopen(argv[ai],"r"); if(!fp){perror(argv[ai]);return 1;}
             fseek(fp,0,SEEK_END); long sz=ftell(fp); fseek(fp,0,SEEK_SET);
             char*src=malloc((size_t)sz+2);
@@ -2951,6 +3085,10 @@ int main(int argc,char**argv){
         GROW(FNEYS,CAPFNEYS,NFNRET,char*);
         FNRETS[NFNRET]=FNS[i]->rettype; FNVARGS[NFNRET]=FNS[i]->variadic; FNEYS[NFNRET]=FNS[i]->s; NFNRET++;
     }
+    /* TRVO 目标文件导入：FNS/GLOBS/STRSEG 追加（在地址分配之前，
+     * 让导入的全局/字符串参与统一布局；函数汇编体在 assemble 前 append）。 */
+    for(int ti=0;ti<NTVOP;ti++) tvo_import(TRVO_PATHS[ti]);
+
     /* 全局变量：地址分配 -> 字符串段接在其后 -> 数据生成（依赖字符串地址） */
     assign_glob_addrs();
     STRSEG_START = STRBASE;               /* 记录字符串段写出的起点 */
@@ -3010,12 +3148,44 @@ int main(int argc,char**argv){
             }
         }
         for(int i=0;i<NFN;i++){
+            if(pass==1 && !FNS[i]->fbody) continue;  /* TRVO 导入：标签+体在 TVO_OUT */
             emitf("%s:",FNS[i]->s);
             if(pass==0) emitf("JALR zero, 0(ra)");   /* 占位：至少 1 条指令 */
-            else gen_func(FNS[i]);
+            else if(!FNS[i]->fbody){
+                emitf("JALR zero, 0(ra)");           /* TRVO 单元独编（无导入）时占位 */
+            } else {
+                gen_func(FNS[i]);
+                /* 链接期未定义引用检测：此刻 findloc 恰好覆盖本函数的
+                   形参+局部（gen_func 刚填完）。N_CALL 的 callee 四查：
+                   FNS / syscall / 本函数形参（间接调用豁免）/ 全局。
+                   导出 TRVO（目标文件）时跳过——目标文件允许 UNDEF，
+                   检测留给最终产出可执行 .trv 的链接期。 */
+                {
+                    int is_trvo = strlen(argv[2])>5 && !strcmp(argv[2]+strlen(argv[2])-5,".trvo");
+                    if(!is_trvo){
+                        static char undef_names[64][64];
+                        int nundef=0;
+                        const char **pset=malloc(sizeof(char*)*(size_t)(FNS[i]->nparams?FNS[i]->nparams:1));
+                        for(int p=0;p<FNS[i]->nparams;p++) pset[p]=FNS[i]->params[p];
+                        UNDEF_PARAMS=pset; NUNDEF_PARAMS=FNS[i]->nparams;
+                        scan_undef_node(FNS[i]->fbody,&nundef,undef_names);
+                        if(nundef){
+                            for(int u=0;u<nundef;u++)
+                                fprintf(stderr,"link error: undefined reference to '%s' (in %s)\n",
+                                        undef_names[u],FNS[i]->s);
+                            exit(1);
+                        }
+                        free(pset);
+                    }
+                }
+            }
         }
     }
     drop_jump_to_next();
+    /* TRVO 导入的汇编体：两遍 gen 已定稿，append 到 OUT 末尾
+     * （assemble_all 的标签扫描会自动解析它们之间的引用）。
+     * 必须在 asm dump / peephole / assemble_all 之前。 */
+    for(int i=0;i<NTVO;i++) OUT=grow(OUT,&CAPOUT,NOUT,sizeof(char*)),OUT[NOUT++]=TVO_OUT[i];
     if(getenv("TRV_DUMP_ASM")){ for(int i=0;i<NOUT;i++) fprintf(stderr,"%s\n",OUT[i]); }
     /* 第三个参数（可选）：把汇编文本写入文件，供统一后端/差分测试读取，
        避免与 stderr 上的诊断信息混流。 */
@@ -3029,6 +3199,47 @@ int main(int argc,char**argv){
     if(getenv("TRV_PEEP")) peephole();
     int n; uint32_t*prog=assemble_all(&n);
 
+    /* TRVO 导出模式：输出文件以 .trvo 结尾时写中间格式（可再链接）。
+     * 文本行式：FUNC/PARAM/LINE/GLOB/STR/LBLBASE/END。 */
+    if(strlen(argv[2])>5 && !strcmp(argv[2]+strlen(argv[2])-5,".trvo")){
+        FILE*out=fopen(argv[2],"wb"); if(!out){perror("out");return 1;}
+        fprintf(out,"TRVO 1\n");
+        fprintf(out,"LBLBASE %d\n",LBL);          /* 标签计数续接用 */
+        for(int i=0;i<NGLOB;i++)
+            fprintf(out,"GLOB %s %s\n",GLOBS[i].name,GLOBS[i].ty);
+        for(int i=0;i<NSTR;i++){
+            fprintf(out,"STR %d ",STRLEN[i]);
+            for(int k=0;k<STRLEN[i];k++) fprintf(out,"%02x",(unsigned char)STRSEG[i][k]);
+            fprintf(out,"\n");
+        }
+        for(int i=0;i<NFN;i++){
+            fprintf(out,"FUNC %s %d\n",FNS[i]->s,FNS[i]->nparams);
+            for(int p=0;p<FNS[i]->nparams;p++)
+                fprintf(out,"PARAM %d %s %s\n",p,FNS[i]->params[p],FNS[i]->ptypes[p]);
+            /* 该函数的汇编行：OUT 里从 "name:" 之后到下一个顶层标签之前 */
+            int in_fn=0;
+            for(int k=0;k<NOUT;k++){
+                const char*L=OUT[k];
+                size_t len=strlen(L);
+                if(len>0&&L[len-1]==':'){
+                    char tmp[128]; snprintf(tmp,sizeof(tmp),"%.*s",(int)(len-1),L);
+                    /* 边界只认【函数名】标签；局部标签 _L* 照抄为 LINE */
+                    int is_fn_boundary=0;
+                    for(int q=0;q<NFN;q++) if(!strcmp(FNS[q]->s,tmp)){is_fn_boundary=1;break;}
+                    if(in_fn && is_fn_boundary) break;      /* 下一个函数开始 */
+                    if(!in_fn && !strcmp(tmp,FNS[i]->s)){ in_fn=1; continue; }
+                    if(!in_fn) continue;
+                    /* 函数体内局部标签：原样 LINE */
+                }
+                if(in_fn) fprintf(out,"LINE %s\n",L);
+            }
+            fprintf(out,"ENDFUNC\n");
+        }
+        fprintf(out,"END\n");
+        fclose(out);
+        fprintf(stderr,"[trirv_cc.c] exported TRVO %s (fns=%d globs=%d strs=%d)\n",argv[2],NFN,NGLOB,NSTR);
+        return 0;
+    }
     /* 写 TRV1 */
     FILE*out=fopen(argv[2],"wb"); if(!out){perror("out");return 1;}
     fwrite("TRV1",1,4,out);

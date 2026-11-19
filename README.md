@@ -167,17 +167,18 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-19 21:25 全量复测：`run_all_tests.py` 31 套全 PASS）
+## 五、当前状态（2026-11-19 21:55 全量复测：`run_all_tests.py` 32 套全 PASS）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **31/31 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **32/32 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
 | `trirv_musl_e2e.py`（**musl 风格 libc 层 + mini-busybox**：typedef/const/do-while/三目/复合赋值/cast、string+stdlib API、8 个 applet、stdin 文件/管道/argv 三通道） | **48/48** |
 | `trirv_link_e2e.py`（**多文件链接**：`-l` 库文件拼接、跨文件调用、重复定义检测、原型声明、busybox 正式分层 `-l musl -l crt`） | **14/14** |
 | `trirv_octet_e2e.py`（**8-bit 视图层**：read8/write8 边界编解码，octet↔双 tryte，全 256 值无损往返，musl 的 CHAR_BIT 依赖在此满足） | **13/13** |
+| `trirv_trvo_e2e.py`（**TRVO 目标文件**：中间格式导出/导入、未定义引用检测、跨单元标签改写 `_L*`→`_X<单元>_<n>`、musl+crt 预编译为 .trvo 增量链接） | **10/10** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
@@ -213,8 +214,13 @@ $ ./trirv_vm /tmp/t.trv
    5000/5001，TriRV 扩展区）在 syscall 边界做 octet↔双 tryte 编解码
    （o → [lo=o%243, hi=o/243]），内存保持纯三进制，全 256 个 octet 无损往返，
    双 VM 一致。musl 的 `read/write` 内部换用这对原语即可满足 CHAR_BIT==8。
-   与真 musl 的剩余差距：目标文件级的符号表/弱符号/归档（.a）、musl 的
-   arch 层（内联汇编——可与视图层配合改写为 read8/write8 形态）。
+   **TRVO 目标文件已到位（2026-11-19）**：`trirv_cc src.c out.trvo` 导出文本
+   行式中间格式（FUNC/PARAM/LINE/GLOB/STR），`-l xxx.trvo` 导入链接——
+   musl+crt 可**预编译一次、多次链接**（增量构建）；可执行 .trv 链接期做
+   undefined reference 检测（目标文件豁免）；跨单元 `_L*` 标签自动改写
+   `_X<单元>_<n>` 防冲突；重复定义检测对 TRVO 导入同样生效。
+   与真 musl 的剩余差距：musl 的 arch 层（内联汇编——改写为 read8/write8
+   形态 + TRVO 分发）、弱符号语义。
 1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——
    **2026-11-19 已补齐**，C 后端 148/148。约定与 Python 后端一致：调用方传结构体
    源地址、被调方入口逐字拷进本地副本（修改完全隔离）；sret 由调用方在帧内预留缓冲、
