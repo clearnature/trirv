@@ -867,8 +867,14 @@ class CodeGen:
             raise RuntimeError(
                 f"UNSUPPORTED: 二进制位运算 {op} —— 三进制 ISA 的 AND/OR/XOR 是逐 trit "
                 f"三值逻辑（min/max/mod 3 加），C 的二进制位运算需要软件模拟（尚未实现）")
-        simple = {"+":"ADD","-":"SUB","*":"MUL","/":"DIV","%":"REM",
-                  "<<":"SLL",">>":"SRL"}
+        # ISA 的 SLL/SRL/SRA 是三进制移位（×3^k / ÷3^k），C 的 << >> 是二进制（×2^k）。
+        # 直接映射会让 x<<1 静默得到 ×3（实测 x=10 得 30，而 C 语义要求 20）。
+        if op in ("<<", ">>"):
+            raise RuntimeError(
+                f"UNSUPPORTED: 移位运算 {op} —— ISA 的 SLL/SRL 是三进制移位（×3^k），"
+                f"C 的 {op} 要求二进制移位（×2^k），两者不同义。"
+                f"45-trit 字上的二进制视图需先在适配层定义（尚未实现）")
+        simple = {"+":"ADD","-":"SUB","*":"MUL","/":"DIV","%":"REM"}
         if op == "/" and uns: self.emit("DIVU t0, t0, t1"); return
         if op == "%" and uns: self.emit("REMU t0, t0, t1"); return
         if op in simple:

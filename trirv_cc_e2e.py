@@ -56,6 +56,7 @@ def main():
     print("-" * 60)
     print(f"基础用例通过 {passed}/{len(CASES)}")
     passed += test_syscalls()
+    passed += test_rejects()
 
     # 展示一个完整编译产物（阶乘）作为工具链能力样本
     demo = "int fact(int n){ if(n<=1){return 1;} return n*fact(n-1); } int main(){ return fact(5); }"
@@ -64,10 +65,40 @@ def main():
     print("前 12 条汇编:")
     for line in [l for l in txt.splitlines() if l.strip()][:12]:
         print("   " + line.strip())
-    total = len(CASES) + 4
+    total = len(CASES) + 4 + 5
     print(f"\n总计通过 {passed}/{total}")
     assert passed == total, "存在失败用例"
     print("全部通过 ✓ 工具链已具备编译 C + syscall 的 libc 地基能力")
+
+
+def test_rejects():
+    """必须**拒绝编译**的语义：二进制位运算与二进制移位。
+
+    历史教训（2026-11-19）：ISA 的 AND/OR/XOR 改逐 trit 后，C 的 `& | ^` 曾静默
+    算成三值 min；ISA 的 SLL/SRL 本是三进制移位，C 的 `<< >>` 曾静默变成 ×3/÷3
+    （实测 x=10 时 x<<1 返回 30，而 C 语义要求 20）。两类都必须硬报错 ——
+    静默给出错误结果比编译失败危险得多。
+    """
+    print("-" * 60)
+    print("必须拒绝的语义（静默错算 > 编译失败）")
+    bad = [
+        ("二进制按位与 &", "int main(){ int x=12; return x&10; }", "位运算"),
+        ("二进制按位或 |", "int main(){ int x=12; return x|10; }", "位运算"),
+        ("二进制按位异或 ^", "int main(){ int x=12; return x^10; }", "位运算"),
+        ("二进制左移 <<", "int main(){ int x=10; return x<<1; }", "移位"),
+        ("二进制右移 >>", "int main(){ int x=10; return x>>1; }", "移位"),
+    ]
+    ok_count = 0
+    for name, src, kw in bad:
+        try:
+            cc.compile_c(src)
+            print(f"  [FAIL] {name:18s} 竟然编译通过了（应报错）")
+        except Exception as e:
+            msg = str(e)
+            good = "UNSUPPORTED" in msg and kw in msg
+            print(f"  [{'PASS' if good else 'FAIL'}] {name:18s} 已拒绝: {msg.splitlines()[0][:60]}")
+            ok_count += good
+    return ok_count
 
 
 def test_syscalls():

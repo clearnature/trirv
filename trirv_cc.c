@@ -891,9 +891,17 @@ static const char* binop_insn(const char*op){
                        "（min/max/mod 3 加），C 的二进制位运算需要软件模拟（尚未实现）\n",op);
         exit(2);
     }
+    if(!strcmp(op,"<<")||!strcmp(op,">>")){
+        /* ISA 的 SLL/SRL/SRA 是**三进制**移位（×3^k / ÷3^k），C 的 << >> 是二进制（×2^k）。
+         * 直接映射过去会让 x<<1 静默得到 ×3 —— 实测 x=10 时返回 30 而 C 语义要求 20。
+         * 45-trit 字上"左移一位"没有原生含义，必须先定义二进制视图，属外来语义适配层。 */
+        fprintf(stderr,"UNSUPPORTED: 移位运算 %s —— ISA 的 SLL/SRL 是三进制移位（×3^k），"
+                       "C 的 %s 要求二进制移位（×2^k），两者不同义。"
+                       "45-trit 字上的二进制视图需先在适配层定义（尚未实现）\n",op,op);
+        exit(2);
+    }
     static const char*m[]={
-        "+","ADD","-","SUB","*","MUL","/","DIV","%","REM",
-        "<<","SLL",">>","SRL",NULL};
+        "+","ADD","-","SUB","*","MUL","/","DIV","%","REM",NULL};
     for(int i=0;m[i];i+=2) if(!strcmp(op,m[i])) return m[i+1];
     return NULL;
 }
@@ -1172,7 +1180,6 @@ static int eval(Node*n){
         if(ins){
             if(uns&&!strcmp(ins,"DIV")) ins="DIVU";
             else if(uns&&!strcmp(ins,"REM")) ins="REMU";
-            else if(!strcmp(ins,"SRL")&&!uns) ins="SRA";     /* 有符号右移用算术移位 */
             emitf("%s %s, %s, %s",ins,regname(d),regname(a),regname(b));
         }
         else emit_rel_u(op,d,a,b,uns);
