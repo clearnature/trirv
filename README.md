@@ -167,14 +167,15 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-19 18:50 全量复测：`run_all_tests.py` 28 套全 PASS）
+## 五、当前状态（2026-11-19 19:20 全量复测：`run_all_tests.py` 29 套全 PASS）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **28/28 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **29/29 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
+| `trirv_musl_e2e.py`（**musl 风格 libc 层 + mini-busybox**：typedef/const/do-while/三目/复合赋值/cast、string+stdlib API、8 个 applet、stdin 文件/管道/argv 三通道） | **48/48** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
@@ -182,7 +183,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
-| `*_e2e.py`（C 编译到执行全链路） | **15/15 套**（`TRV_CC_STRICT=1` 下同样 15/15） |
+| `*_e2e.py`（C 编译到执行全链路） | **16/16 套**（`TRV_CC_STRICT=1` 下同样 16/16） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |
 
@@ -199,14 +200,13 @@ $ ./trirv_vm /tmp/t.trv
 
 ## 六、已知缺口
 
-0. **musl 仍是"对接点"而非真 musl**（2026-11-19 步骤 7 落地物）：启动链已通
-   （`_start` → `__libc_start_main(argc, argv)` → `main` → `exit`，见
-   `trirv_crt.c`），签名与 musl 有明确偏差（无 main 指针参数、无 init/fini、
-   无 TLS/SSP）；`argc/argv` 走零页固定地址（本 VM 栈向上生长，sp 惯例会被
-   第一帧覆盖），两版 VM 字节级一致（有差分锁定）。要把真 musl 编译进来，
-   还差：链接器（当前多文件靠文本拼接）、编译器支持函数指针以外的
-   musl 前置特性（typedef/复合类型声明等）、以及 `char`=5-trit 与
-   musl 全篇 `CHAR_BIT==8` 的根本冲突 —— 后者是独立的进制层决策。
+0. **musl 是"风格对齐的 libc 层"而非 musl 源码**（2026-11-19 步骤 7 落地）：
+   启动链（`trirv_crt.c`）+ libc API 层（`trirv_musl.c`：string/stdlib/errno）
+   + mini-busybox（`trirv_busybox.c`：echo/cat/wc/head/dirname/basename/true/false，
+   按 argv[1] 分派 applet，退出码 Unix 惯例 0/1/127）已全部打通并有 e2e 锁定。
+   编译器为此补齐：typedef、const、do-while、三目、复合赋值、cast、(void) 形参。
+   与真 musl 的差距：链接器（多文件靠文本拼接）、musl 的 arch 层/弱符号/
+   内联汇编，以及 `char`=5-trit 与 `CHAR_BIT==8` 的根本冲突（独立决策）。
 1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——
    **2026-11-19 已补齐**，C 后端 148/148。约定与 Python 后端一致：调用方传结构体
    源地址、被调方入口逐字拷进本地副本（修改完全隔离）；sret 由调用方在帧内预留缓冲、

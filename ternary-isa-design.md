@@ -597,10 +597,15 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
 4. ~~实现汇编器（编码 20-trit 指令）~~ ✅
 5. ~~跑通最小程序（加法 + 分支 + ECALL 退出）~~ ✅ 13 个 e2e 全通过
 6. ~~加 TT 扩展（三值逻辑 + 打包/解包）~~ ✅ 含 T-LOGIC/T-PACK/TSEXT
-7. 接 crt0 + musl（见 ABI 文档）—— **启动链已通（2026-11-19）**：`_start`（编译器内建）
-   → `__libc_start_main(argc, argv)`（`trirv_crt.c`，TriRV 形态签名）→ `main(argc, argv)`
-   → `exit(ret)`。guest argv 由 VM 构造（`trirv_vm -- prog 参数...`，零页固定地址
-   argc@0/argv@9/envp@18，栈向上生长决定的必要偏差）。真 musl 源码移植仍为后续目标。
+7. 接 crt0 + musl（见 ABI 文档）—— **启动链 + libc 层 + busybox 已通（2026-11-19）**：
+   ① `_start`（编译器内建）→ `__libc_start_main(argc, argv)`（`trirv_crt.c`，TriRV 形态
+   签名）→ `main` → `exit(ret)`；guest argv 走零页固定地址（argc@0/argv@9/envp@18，
+   栈向上生长决定的必要偏差），stdin 文件 / "-" 管道 / guest argv 三通道并存。
+   ② musl 风格 libc API 层（`trirv_musl.c`：memcpy/memset/memcmp/strcpy/strlcpy/
+   strcat/strcmp/strncmp/strchr/abs/atoi/__errno_location）。
+   ③ mini-busybox（`trirv_busybox.c`）：按 argv[1] 分派 applet 的多调用二进制，
+   Alpine 用户空间模型。为此编译器补齐 typedef/const/do-while/三目/复合赋值/cast。
+   真 musl 源码移植仍为后续目标（前置：链接器、arch 层、CHAR_BIT 决策）。
 
 ---
 

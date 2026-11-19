@@ -125,16 +125,15 @@ class VM:
         sp = ((arr - gargc * 9 * 12) // 9) * 9
         for i, s in enumerate(args):
             data = s.encode("latin1") if isinstance(s, str) else bytes(s)
-            if sp < 4096:
+            need = ((len(data) + 1 + 8) // 9) * 9     # 串+NUL，9 对齐
+            if sp - need < 4096:
                 break
-            sentry = sp
+            sentry = sp - need                        # 先减后写：串占 [sentry,sp)
             self._store_word(arr + i * 9, sentry)
             for k, ch in enumerate(data):
-                if sentry + k < arr:
-                    self.mem[sentry + k] = ch % 243
-            if sentry + len(data) < arr:
-                self.mem[sentry + len(data)] = 0
-            sp -= ((len(data) + 1 + 8) // 9) * 9
+                self.mem[sentry + k] = ch % 243
+            self.mem[sentry + len(data)] = 0
+            sp = sentry
         self._store_word(arr + gargc * 9, 0)     # argv[argc] = NULL
 
     # ---- 统一内存：按宽度读写（tryte 为单位）----

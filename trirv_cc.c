@@ -203,7 +203,7 @@ static void tok_push(Token t){
 }
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
-        "if","else","while","for","return","break","continue",NULL};
+        "if","else","while","do","for","return","break","continue","typedef","const",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -254,7 +254,8 @@ static void lex(const char*src){
             t.s=s; t.kind=is_kw(s)?TK_KW:TK_ID; tok_push(t); p=q; continue;
         }
         /* 多字符运算符 */
-        static const char*ops[]={"...","==","!=","<=",">=","&&","||","<<",">>","++","--","->",NULL};
+        static const char*ops[]={"...","==","!=","<=",">=","&&","||","<<",">>","++","--","->",
+            "*=","/=","%=","+=","-=","<<=",">>=","&=","^=","|=",NULL};
         int matched=0;
         for(int i=0;ops[i];i++){ int L=strlen(ops[i]);
             if(!strncmp(p,ops[i],L)){ char*s=malloc(L+1); memcpy(s,ops[i],L); s[L]=0;
@@ -271,7 +272,7 @@ typedef enum {
     N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,
     N_PREINC,N_DEREF,N_ADDR,
     N_BLOCK,N_DECL,N_IF,N_WHILE,N_FOR,N_RETURN,N_EXPR,N_BREAK,N_CONT,
-    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND
+    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST
 } NodeKind;
 typedef struct Node Node;
 struct Node {
@@ -326,8 +327,27 @@ static Node *parse_stmt(void);
 static Node *parse_block(void);
 
 /* 类型：返回 malloc 的字符串, 如 "int","char*","int[3]","struct Foo" */
+/* typedef 名 -> 原类型字符串。C 子集：typedef 只做纯别名（无指针/数组组合声明）。 */
+typedef struct { char*name; char*real; } Typedef;
+static Typedef *TYPEDEFS; static int NTDEF, CAPTDEF;
+static const char* typedef_find(const char*name){
+    for(int i=0;i<NTDEF;i++) if(!strcmp(TYPEDEFS[i].name,name)) return TYPEDEFS[i].real;
+    return NULL;
+}
 static char* parse_type(void){
+    /* typedef 别名先行（TK_ID 形态）；别名可再带 * */
+    if(atk(TK_ID)){
+        const char*real=typedef_find(cur()->s);
+        if(real){
+            take();
+            char*ty=strdup(real);
+            int len=strlen(ty);
+            while(at("*")){ take(); ty[len++]='*'; ty[len]=0; }
+            return ty;
+        }
+    }
     if(!(atk(TK_KW)||atk(TK_ID))){ fprintf(stderr,"parse_type: bad token '%s'\n",cur()->s); exit(1); }
+    while(accept("const")){ }               /* 限定符：解析后丢弃（无写保护检查） */
     char base[128];
     /* char 的符号性：RISC-V psABI 规定 char 默认无符号（GCC DEFAULT_SIGNED_CHAR=0），
      * 与 TriRV 的 tryte 值域 0..242 天然吻合。故 char/unsigned char 走 LBU 零扩展，
@@ -349,12 +369,39 @@ static char* parse_type(void){
     return ty;
 }
 
+static Node* parse_unary(void);   /* forward：cast 在 parse_primary 里递归用 */
+
+/* cast 消歧：当前在 "(" 之后。KW 类型 -> 一定 cast。
+ * （变量名与 KW 不会有交集，无需二义分析） */
+static int is_cast_ambiguous(void){
+    (void)0;
+    return 0;   /* KW 分支总走 cast；此钩子留作将来 (fn)(x) 二义扩展 */
+}
 static Node* parse_primary(void){
     if(atk(TK_NUM)){ Token*tk=take(); Node*n=nnew(N_NUM); n->num=tk->num; n->numw=tk->numw; return n; }
     if(atk(TK_STR)){
         Token*t=take(); Node*n=nnew(N_STR); n->s=t->s; n->slen=t->slen; return n;
     }
-    if(accept("(")){ Node*n=parse_expr(); expect(")"); return n; }
+    if(accept("(")){
+        /* cast 探测： "(" 后是类型关键字/typedef别名 则按 cast 解析。
+         * TriRV 所有标量等宽（45-trit 字），指针 cast 是类型标注；
+         * (char)/(unsigned char) 整数 cast 有 mod 243 截断语义。 */
+        if(atk(TK_KW) && !at("(") && !is_cast_ambiguous()){
+            char*sv = parse_type();
+            expect(")");
+            Node*n=nnew(N_CAST); n->s=sv;
+            n->e=parse_unary();
+            return n;
+        }
+        if(atk(TK_ID) && typedef_find(cur()->s)){
+            char*sv=parse_type();
+            expect(")");
+            Node*n=nnew(N_CAST); n->s=sv;
+            n->e=parse_unary();
+            return n;
+        }
+        Node*n=parse_expr(); expect(")"); return n;
+    }
     if(atk(TK_ID)){
         char*name=take()->s;
         /* 变参内建：va_arg 第二个实参是类型，不能按表达式解析 */
@@ -483,7 +530,20 @@ static Node* parse_assign(void){
     }
     return l;
 }
-static Node* parse_expr(void){ return parse_assign(); }
+static Node* parse_expr(void){
+    /* 三目 cond ? a : b（右结合，优先级在赋值之上、|| 之下） */
+    Node*c=parse_assign();
+    if(at("?")){
+        take();
+        Node*a=parse_expr();
+        expect(":");
+        Node*b=parse_expr();
+        Node*n=nnew(N_IF);
+        n->cond=c; n->then=a; n->els=b;
+        return n;
+    }
+    return c;
+}
 
 /* initlist or expr */
 static Node* parse_initval(void){
@@ -526,8 +586,9 @@ static Node* parse_decl(void){
 }
 static int is_decl_start(void){
     Token*t=cur();
+    if(t->kind==TK_ID && typedef_find(t->s)) return 1;   /* typedef 别名 */
     if(t->kind==TK_KW){
-        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list",NULL};
+        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const",NULL};
         for(int i=0;dt[i];i++) if(!strcmp(t->s,dt[i])){
             /* struct X; 与 struct X f() 区分：先看后面 */
             return 1;
@@ -547,6 +608,16 @@ static Node* parse_stmt(void){
     if(accept("while")){
         expect("("); Node*n=nnew(N_WHILE); n->cond=parse_expr(); expect(")");
         n->stmt=parse_stmt(); return n;
+    }
+    if(accept("do")){
+        /* do body while(cond); —— 用 N_FOR 表示：init=NULL cond=条件
+           step=NULL，stmt=体。执行顺序：体 -> 判条件（do-while 语义）。
+           gen 侧对 N_FOR 是 {init; while(cond){ stmt; step;} }，
+           与 do-while 不符 —— 所以专门发 N_DOWHILE。 */
+        Node*n=nnew(N_DOWHILE);
+        n->stmt=parse_stmt();
+        expect("while"); expect("("); n->cond=parse_expr(); expect(")"); expect(";");
+        return n;
     }
     if(accept("for")){
         expect("("); Node*n=nnew(N_FOR);
@@ -770,6 +841,17 @@ static void global_init_data(const char*ty,Node*init,unsigned char**out_data,
 
 static void parse_program(void){
     while(!atk(TK_EOF)){
+        if(at("typedef")){
+            /* typedef 原类型 名字 ; —— 纯别名（数组/函数指针组合不支持）。
+             * struct 别名也支持：typedef struct P Point; */
+            take();
+            char*real=parse_type();
+            char*nm=take()->s;
+            expect(";");
+            GROW(TYPEDEFS,CAPTDEF,NTDEF,Typedef);
+            TYPEDEFS[NTDEF].name=strdup(nm); TYPEDEFS[NTDEF].real=strdup(real); NTDEF++;
+            continue;
+        }
         if(at("struct")){
             /* 顶层 `struct` 有两种含义，看第三个 token 区分：
              *   struct P { … }   定义（t1=P, t2="{"）
@@ -867,6 +949,9 @@ static void parse_program(void){
             if(!(strcmp(ret,"void")==0&&at("void"))){
                 do{
                     if(accept("...")){ f->variadic=1; break; }
+                    if(at("void") && TOKS[IPOS+1].s && !strcmp(TOKS[IPOS+1].s,")")) {
+                        take(); break;                     /* (void) 形参表：lookahead 再吃 */ 
+                    }
                     char*pt=parse_type();
                     /* 函数指针形参：int (*f)(参数表)。
                      * parse_type 吃掉 "int" 后 cur=="(" 且 next=="*"。
@@ -1483,6 +1568,8 @@ static void eval_target_into(int reg,const char*callee){
 /* 求值 n，结果放在返回的寄存器里；进入时 TDN=d0，返回后 TDN=d0+1 且结果 = TPOOL[d0] */
 /* ===================== 类型推导与左值寻址 ===================== */
 static int eval(Node*n);          /* forward */
+static void gen_brfalse(Node*c,const char*lbl);   /* forward：定义在 gen_stmt 之前 */
+static void gen_brtrue(Node*c,const char*lbl);    /* forward */
 
 /* dst = src * c（c>=2），src 保持不被修改。
  * VM 里一条 MUL 约 70ns、一条 ADD 约 5ns，所以小常量用"加倍累加"展开远快于乘法：
@@ -2026,6 +2113,41 @@ static int eval(Node*n){
         else emitf("LW %s, 0(%s)",regname(d),regname(pa));
         return d;
     }
+    case N_CAST:
+        /* (type)cast：TriRV 标量全部 45-trit 等宽，cast 是类型标注。
+         * 例外是 (char)/(unsigned char) 的截断 —— musl 常用形态是
+         * 指针 cast 与 (unsigned) 取模，指针 cast 无操作；
+         * 整数截断 cast 到 1-tryte 时做 mod 243 归一。 */
+        if(n->s && !strncmp(n->s,"char",4) && !strchr(n->s,'*')){
+            int v=eval(n->e);
+            int d=dstof(v);
+            load_imm(SCRATCH,243);          /* R 型：立即数先进寄存器 */
+            emitf("REM %s, %s, %s",regname(d),regname(d),regname(SCRATCH));
+            return d;
+        }
+        return eval(n->e);
+    case N_DOWHILE:
+    case N_IF: {
+        /* 表达式层的三目 cond ? a : b（parse_expr 产 N_IF）。
+         * 语句层的 if/else 也走这里（gen_stmt 直接处理，不进 eval）。
+         * 生成：cond 假 -> else；then；跳末尾；else：els。 */
+        char*els=newlbl("tern_els"),*end=newlbl("tern_end");
+        gen_brfalse(n->cond,els);
+        /* 结果统一落 TPOOL[d0]：两边求值后显式搬运。
+         * 注意 eval 可能返回常驻寄存器（不占临时池），此时 dstof 会
+         * tacq 一个未初始化的临时——必须先 ADDI 到 TPOOL[d0] 再用。 */
+        int d=TPOOL[d0];
+        TDN=d0+1;                          /* 预留结果槽 */
+        int a=eval(n->then);
+        if(a!=d) emitf("ADDI %s, %s, 0",regname(d),regname(a));
+        emitf("JAL zero, %s",end);
+        lbl(els);
+        int b=eval(n->els);
+        if(b!=d) emitf("ADDI %s, %s, 0",regname(d),regname(b));
+        lbl(end);
+        TDN=d0+1;
+        return d;
+    }
     default:
         too_deep(2);
         return -1;
@@ -2134,6 +2256,36 @@ static void gen_brfalse(Node*c,const char*lbl){
     emitf("BEQ %s, zero, %s",regname(v),lbl);
     TDN=0;
 }
+/* gen_brtrue：条件为真跳 lbl（do-while 尾部判断用）。
+ * 与 gen_brfalse 同构：关系运算直接取反分支，其余 SLTIU+BEQ 翻转。 */
+static void gen_brtrue(Node*c,const char*lbl){
+    TDN=0;
+    if(c&&c->k==N_BIN){
+        const char*op=c->s;
+        int rel = !strcmp(op,"<")||!strcmp(op,">")||!strcmp(op,"<=")||
+                  !strcmp(op,">=")||!strcmp(op,"==")||!strcmp(op,"!=");
+        if(rel){
+            char*lt=expr_type(c->l),*rt=expr_type(c->r);
+            int uns=ty_uns(lt)||ty_uns(rt);
+            const char*SL=uns?"SLTU":"SLT";
+            int a=eval(c->l);
+            int b=eval(c->r);
+            int d=in_tpool(a)? a : (in_tpool(b)? b : tacq());
+            if(d!=TPOOL[0]){ emitf("ADDI %s, %s, 0",regname(TPOOL[0]),regname(d)); d=TPOOL[0]; }
+            if(!strcmp(op,"<")){        emitf("%s %s, %s, %s",SL,regname(d),regname(a),regname(b)); emitf("BNE %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,">=")){  emitf("%s %s, %s, %s",SL,regname(d),regname(a),regname(b)); emitf("BEQ %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,">")){   emitf("%s %s, %s, %s",SL,regname(d),regname(b),regname(a)); emitf("BNE %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,"<=")){  emitf("%s %s, %s, %s",SL,regname(d),regname(b),regname(a)); emitf("BEQ %s, zero, %s",regname(d),lbl); }
+            else if(!strcmp(op,"==")){  emitf("SUB %s, %s, %s",regname(d),regname(a),regname(b));       emitf("BEQ %s, zero, %s",regname(d),lbl); }
+            else {                      emitf("SUB %s, %s, %s",regname(d),regname(a),regname(b));       emitf("BNE %s, zero, %s",regname(d),lbl); }
+            TDN=0;
+            return;
+        }
+    }
+    int v=eval(c);
+    emitf("BNE %s, zero, %s",regname(v),lbl);
+    TDN=0;
+}
 
 static int ends_with_return(Node*n){
     if(!n) return 0;
@@ -2195,6 +2347,18 @@ static void gen_stmt(Node*n){
         gen_stmt(n->stmt); NLOOP--;
         emitf("JAL zero, %s",start); lbl(end); break;
     }
+    case N_DOWHILE: {
+        /* do body while(cond); —— 体先执行，条件放尾部判断。
+         * continue 跳到条件判断处（cont 标签）。 */
+        char*start=newlbl("do"),*cont=newlbl("cont"),*end=newlbl("end");
+        lbl(start);
+        GROW(LOOPEND,CAPLOOP,NLOOP,char*); GROW(LOOPCONT,CAPLOOPC,NLOOP,char*);
+        LOOPEND[NLOOP]=end; LOOPCONT[NLOOP]=cont; NLOOP++;
+        gen_stmt(n->stmt); NLOOP--;
+        lbl(cont);
+        gen_brtrue(n->cond,start);
+        lbl(end); break;
+    }
     case N_FOR: {
         TDN=0;
         if(n->init){ if(n->init->k==N_DECL) gen_stmt(n->init); else eval(n->init); }
@@ -2255,6 +2419,7 @@ static void collect_decls(Node*n){
     case N_BLOCK: for(int i=0;i<n->nitems;i++) collect_decls(n->body[i]); break;
     case N_IF: collect_decls(n->cond);collect_decls(n->then);collect_decls(n->els); break;
     case N_WHILE: collect_decls(n->cond);collect_decls(n->stmt); break;
+    case N_DOWHILE: collect_decls(n->cond);collect_decls(n->stmt); break;
     case N_FOR: collect_decls(n->init);collect_decls(n->cond);collect_decls(n->step);collect_decls(n->stmt); break;
     case N_EXPR: collect_decls(n->expr); break;
     case N_RETURN: collect_decls(n->expr); break;
@@ -2652,7 +2817,7 @@ static void assign_strings(Node*n){
     if(!n) return;
     if(n->k==N_STR){ n->straddr=STRBASE; STRBASE+=n->slen+1; return; }  /* 段数据含结尾 NUL */
     Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
-    for(int i=0;i<10;i++) assign_strings(all[i]);
+    for(int i=0;i<10;i++) assign_strings(all[i]);   /* N_DOWHILE: cond/stmt 已覆盖 */
     if(n->body) for(int i=0;i<n->nitems;i++) assign_strings(n->body[i]);
     if(n->args) for(int i=0;i<n->nargs;i++) assign_strings(n->args[i]);
     if(n->items) for(int i=0;i<n->nitems;i++) assign_strings(n->items[i]);
@@ -2703,6 +2868,7 @@ static void gate_check(Node*n){
     case N_BLOCK:  for(int i=0;i<n->nitems;i++) gate_check(n->body[i]); return;
     case N_IF:     gate_check(n->cond); gate_check(n->then); gate_check(n->els); return;
     case N_WHILE:  gate_check(n->cond); gate_check(n->stmt); return;
+    case N_DOWHILE: gate_check(n->cond); gate_check(n->stmt); return;
     case N_FOR:    gate_check(n->init); gate_check(n->cond); gate_check(n->step); gate_check(n->stmt); return;
     case N_RETURN: gate_check(n->expr); return;
     case N_EXPR:   gate_check(n->expr); return;

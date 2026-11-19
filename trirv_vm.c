@@ -951,13 +951,14 @@ static void vm_init_ex(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_dat
         sp=(sp/9)*9;
         for(int i=0;i<gargc;i++){
             size_t sl=strlen(gargv[i]);
-            if(sp<4096) break;                  /* 安全下界：不碰代码/栈区 */
-            __int128_t sentry=sp;
+            __int128_t need=(((__int128_t)sl+1+8)/9)*9;   /* 串+NUL，9 对齐 */
+            if(sp-need<4096) break;             /* 安全下界：不碰代码/栈区 */
+            __int128_t sentry=sp-need;          /* 先减后写：串占 [sentry,sp)，互不重叠 */
             store_word_nl(v,arr+(__int128_t)i*9,(__uint128_t)sentry);
-            for(size_t k=0;k<sl&&sentry+(__int128_t)k<arr;k++)
+            for(size_t k=0;k<sl;k++)
                 v->mem_ref[sentry+k]=(uint8_t)(gargv[i][k]%243);
-            if(sentry+(__int128_t)sl<arr) v->mem_ref[sentry+sl]=0;
-            sp-=(((__int128_t)sl+1+8)/9)*9;     /* 下一个：9 对齐向下 */
+            v->mem_ref[sentry+sl]=0;
+            sp=sentry;
         }
         store_word_nl(v,arr+(__int128_t)gargc*9,0);    /* argv[argc]=NULL */
     } else {
@@ -990,23 +991,34 @@ int main(int argc,char**argv){
     if(load_trv(argv[argi],&prog,&nprog,segmem))return 1;
     argi++;
     /* guest 命令行参数：
-     *   程序路径之后若有 "--"，其后全部参数作为 guest argv
-     *   （argv[0]=程序名 .trv 路径）；无 "--" 时与旧行为一致：
-     *   下一个参数若存在则作为 stdin 文件（guest 参数 0 个），
-     *   全部既有测试脚本不受影响。 */
+     *   prog [stdin文件] -- guest参数...   （-- 前的下一个参数若不是 --，
+     *   仍按旧行为当 stdin 文件——全部既有测试脚本不受影响）
+     * gargv[0]=程序路径（.trv），其余依序映射 guest argv。 */
     char **gargv=NULL;int gargc=0;
-    if(argi<argc&&!strcmp(argv[argi],"--")){
-        argi++;
-        gargc=argc-argi+1;
-        gargv=malloc(sizeof(char*)*(size_t)gargc);
-        gargv[0]=argv[argi-2];       /* argv[0] = 程序路径（.trv） */
-        for(int i=1;i<gargc;i++) gargv[i]=argv[argi-1+i];
-        argi=argc;                    /* 剩余已全部消费为 guest 参数 */
-    }
     uint8_t *stdin_data=NULL;size_t stdin_len=0;
-    if(!gargv&&argi<argc){
-        FILE *sf=fopen(argv[argi],"rb");
-        if(sf){fseek(sf,0,SEEK_END);stdin_len=ftell(sf);rewind(sf);stdin_data=malloc(stdin_len?stdin_len:1);fread(stdin_data,1,stdin_len,sf);fclose(sf);}
+    {   /* 先认 stdin 文件：从 argi 起到 "--" 之前的非选项参数 */
+        int stop=argi;
+        while(stop<argc&&strcmp(argv[stop],"--")) stop++;
+        if(argi<stop){                      /* [argi, stop) 有 stdin 文件候选 */
+            if(!strcmp(argv[argi],"-")){    /* "-" = 宿主 stdin 管道（unix 惯例） */
+                size_t cap=1<<16;stdin_data=malloc(cap);size_t got=0;
+                if(stdin_data){
+                    size_t r;
+                    while((r=fread(stdin_data+got,1,cap-got,stdin))>0){got+=r;if(got==cap){cap*=2;stdin_data=realloc(stdin_data,cap);}}
+                    stdin_len=got;
+                }
+            } else {
+                FILE *sf=fopen(argv[argi],"rb");
+                if(sf){fseek(sf,0,SEEK_END);stdin_len=ftell(sf);rewind(sf);stdin_data=malloc(stdin_len?stdin_len:1);fread(stdin_data,1,stdin_len,sf);fclose(sf);}
+            }
+        }
+        if(stop<argc){                      /* 有 "--"：其后全部为 guest argv */
+            argi=stop+1;
+            gargc=argc-argi+1;
+            gargv=malloc(sizeof(char*)*(size_t)gargc);
+            gargv[0]=argv[argi-2];          /* argv[0] = 程序路径（.trv） */
+            for(int i=1;i<gargc;i++) gargv[i]=argv[argi-1+i];
+        }
     }
     /* SMP 模式：所有实例共享一段公共内存 + 一把原子锁。
      * 关键：初始内存镜像只能加载一次——若每核都 memcpy 会在串行/并行下反复清零共享计数器。 */
