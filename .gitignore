@@ -3,9 +3,15 @@ trirv_vm
 trirv_vm_portable
 trirv_cc_asan
 trirv_cc_dbg
+trirv_cc
+trirv_vm_nodiv
 *.o
 *.so
 *.dSYM/
+
+# 批量脚本误生成的 '-l' 空文件（反复出现，根治）
+/l
+/-l
 
 # PGO profile 数据
 *.profraw

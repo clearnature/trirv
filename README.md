@@ -153,7 +153,7 @@ python3 bench_bitops.py                        # 位运算在三进制上的真�
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
-python3 run_all_tests.py                       # 全量：一条命令跑完 27 套，输出汇总表
+python3 run_all_tests.py                       # 全量：一条命令跑完 35 套（28 快 + 7 慢），输出汇总表
 python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
 ```
 
@@ -167,11 +167,11 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 05:10 全量复测：`run_all_tests.py` 34 套全 PASS；**真 musl string/ 全目录 40/46 编译执行**）
+## 五、当前状态（2026-11-20 07:05 全量复测：`run_all_tests.py` 35 套全 PASS；真 musl string+stdlib 双目录 49/66 编译、17 项标记 musl_tri 重写待办）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback） | **34/34 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **35/35 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
@@ -181,6 +181,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_trvo_e2e.py`（**TRVO 目标文件**：中间格式导出/导入、未定义引用检测、跨单元标签改写 `_L*`→`_X<单元>_<n>`、musl+crt 预编译为 .trvo 增量链接） | **10/10** |
 | `trirv_musl_real_e2e.py`（**真 musl 源码编译试点**：musl 1.2.5 官方源码 string/stdlib 6 文件原样编译（仅预处理），15 项行为断言 + strstr 集成场景，双 VM） | **11/11** |
 | `trirv_musl_wide_e2e.py`（**musl string/ 全目录覆盖**：46 文件批量管线——40 编译成功 / 6 语义不适用 SKIP（字节位图打包依赖二进制位运算）/ 0 失败；strsep/strlcpy/memmove/strcasecmp/memccpy 功能断言） | **7/7** |
+| `trirv_switch_e2e.py`（**switch 契约**：匹配+break / fall-through / default / 无匹配 / 负 case 值 / 嵌套 switch / 乱序声明 / CVM 一致） | **9/9** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
