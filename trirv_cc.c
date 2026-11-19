@@ -272,7 +272,7 @@ typedef enum {
     N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,
     N_PREINC,N_POSTINC,N_DEREF,N_ADDR,
     N_BLOCK,N_DECL,N_IF,N_WHILE,N_FOR,N_RETURN,N_EXPR,N_BREAK,N_CONT,
-    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST,N_LABEL,N_GOTO,N_SWITCH,N_CASE,N_DEFAULT
+    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST,N_LABEL,N_GOTO,N_SWITCH,N_CASE,N_DEFAULT,N_COMPOUND
 } NodeKind;
 typedef struct Node Node;
 struct Node {
@@ -334,6 +334,7 @@ static const char* typedef_find(const char*name){
     for(int i=0;i<NTDEF;i++) if(!strcmp(TYPEDEFS[i].name,name)) return TYPEDEFS[i].real;
     return NULL;
 }
+static void struct_def_semi(const char*name,int semi);   /* 匿名 struct（typedef 用，semi=0） */
 static char* parse_type(void){
     /* typedef 别名先行（TK_ID 形态）；别名可再带 * */
     if(atk(TK_ID)){
@@ -366,7 +367,18 @@ static char* parse_type(void){
     }
     else if(accept("char")) snprintf(base,sizeof(base),"char");
     else if(accept("void")) snprintf(base,sizeof(base),"void");
-    else if(accept("struct")){ char*nm=take()->s; snprintf(base,sizeof(base),"struct %s",nm); }
+    else if(accept("struct")){
+        if(at("{")){
+            /* 匿名 struct 定义（typedef struct {...} NAME; 用）：
+             * 生成内部名并解析成员体 */
+            static int anon_seq=0;
+            char anm[32]; snprintf(anm,sizeof(anm),"__anon%d",anon_seq++);
+            struct_def_semi(anm,0);
+            snprintf(base,sizeof(base),"struct %s",anm);
+        } else {
+            char*nm=take()->s; snprintf(base,sizeof(base),"struct %s",nm);
+        }
+    }
     else if(accept("va_list")) snprintf(base,sizeof(base),"va_list");
     else { snprintf(base,sizeof(base),"%s",take()->s); }
     int len=strlen(base); char*ty=malloc(256); strcpy(ty,base);
@@ -382,6 +394,9 @@ static int is_cast_ambiguous(void){
     (void)0;
     return 0;   /* KW 分支总走 cast；此钩子留作将来 (fn)(x) 二义扩展 */
 }
+
+static Node* parse_initval(void);       /* 复合字面量 (T){...} 引用 */
+static void gen_init_at(const char*ty,int off,Node*init,int*slot);
 static Node* parse_primary(void){
     if(atk(TK_NUM)){ Token*tk=take(); Node*n=nnew(N_NUM); n->num=tk->num; n->numw=tk->numw; return n; }
     if(atk(TK_STR)){
@@ -391,15 +406,23 @@ static Node* parse_primary(void){
         /* cast 探测： "(" 后是类型关键字/typedef别名 则按 cast 解析。
          * TriRV 所有标量等宽（45-trit 字），指针 cast 是类型标注；
          * (char)/(unsigned char) 整数 cast 有 mod 243 截断语义。 */
-        if(atk(TK_KW) && !at("(") && !is_cast_ambiguous()){
+        if((atk(TK_KW) && !at("(") && !is_cast_ambiguous()) ||
+           (atk(TK_ID) && typedef_find(cur()->s))){
+            /* 统一回溯探测：parse_type 后若紧跟 '{' → 复合字面量
+             * (TYPE){init}；否则回溯按 cast 解析（(char)x 等）。
+             * 注意 C99 语法 (type){init} 的 ')' 在 type 之后、'{' 之前，
+             * 所以 parse_type 返回时 cur==")" 需先回溯再看 "{"。 */
+            int save=IPOS;
             char*sv = parse_type();
+            /* (type){init}：type 之后是 ')' 再 '{'——先吃 ')' 再探测 */
             expect(")");
-            Node*n=nnew(N_CAST); n->s=sv;
-            n->e=parse_unary();
-            return n;
-        }
-        if(atk(TK_ID) && typedef_find(cur()->s)){
-            char*sv=parse_type();
+            if(at("{")){
+                Node*init=parse_initval();
+                Node*n=nnew(N_COMPOUND); n->s=sv; n->e=init;
+                return n;
+            }
+            IPOS=save;   /* 非 {：回溯重走 cast 路径（会再次吃 ')'） */
+            sv = parse_type();
             expect(")");
             Node*n=nnew(N_CAST); n->s=sv;
             n->e=parse_unary();
@@ -779,7 +802,9 @@ static int is_array(const char*ty){
 static const char* pointee(const char*ty);          /* forward */
 static int ty_bytes(const char*ty);
 
-static void struct_def(const char*name){
+static void struct_def_semi(const char*name,int semi);
+static void struct_def(const char*name){ struct_def_semi(name,1); }
+static void struct_def_semi(const char*name,int semi){
     StructDef sd={0}; sd.name=strdup(name);
     expect("{");
     int pos=0;
@@ -796,7 +821,7 @@ static void struct_def(const char*name){
         sd.m[sd.nm].name=mn; sd.m[sd.nm].ty=mty; sd.m[sd.nm].off=off; sd.nm++;
         expect(";");
     }
-    expect("}"); expect(";");
+    expect("}"); if(semi) expect(";");
     sd.size=((pos+8)/9)*9;
     GROW(STRUCTS,CAPSTRUCT,NSTRUCT,StructDef);
     STRUCTS[NSTRUCT++]=sd;
@@ -845,7 +870,7 @@ static int ty_size(const char*ty,int *isarr){
 
 static Node** FNS; static int NFN, CAPFN;
 
-static void struct_def(const char*name);   /* forward：布局在类型系统一节实现 */
+
 
 /* ===================== 全局变量 =====================
  * 布局：全局区从 GBASE=200 起，按地址升序依次分配；字符串段（STRBASE）在
@@ -936,6 +961,7 @@ static void parse_program(void){
         if(getenv("TRV_TOP")) fprintf(stderr,"[top] '%s' kind=%d\n",cur()->s,cur()->kind);
         if(at("typedef")){
             take();
+            if(getenv("TRV_TOP")) fprintf(stderr,"[typedef] cur='%s' IPOS=%d\n",cur()->s,IPOS);
             /* 形态一：typedef ret (*NAME)(params) —— parse_type 吃 ret 后
              * cur=="(" 且 next=="*"。本 ABI 所有指针等宽 45-trit，签名不
              * 参与布局，记 "int*" 即可。 */
@@ -961,6 +987,7 @@ static void parse_program(void){
             }
             /* 形态二：纯别名。struct 别名也支持。 */
             char*real=parse_type();
+            if(getenv("TRV_TOP")) fprintf(stderr,"[alias] real='%s' nm='%s'\n",real,cur()->s);
             char*nm=take()->s;
             expect(";");
             GROW(TYPEDEFS,CAPTDEF,NTDEF,Typedef);
@@ -1569,6 +1596,10 @@ static void sret_slot_walk(Node*n,int*cur){
         const char*rt=fn_ret_type(n->s);
         if(struct_find(rt)){ n->sret_off=*cur; *cur+=ty_bytes(rt); }
     }
+    if(n->k==N_COMPOUND){
+        /* 复合字面量的匿名临时缓冲（帧内，与 sret 缓冲同区） */
+        n->sret_off=*cur; *cur+=ty_bytes(n->s);
+    }
     Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
     for(int i=0;i<10;i++) sret_slot_walk(all[i],cur);
     if(n->body) for(int i=0;i<n->nitems;i++) sret_slot_walk(n->body[i],cur);
@@ -1750,6 +1781,7 @@ static char* expr_type(Node*n){
     case N_NUM: return "int";
     case N_STR: return "char*";
     case N_CAST: return n->s ? n->s : "int";   /* cast 后类型=目标类型 */
+    case N_COMPOUND: return n->s ? n->s : "int";
     case N_VAR: { LocVar*v=findloc(n->s);
         if(!v){ Global*g=global_find(n->s); if(g) return g->ty; }
         return v&&v->ty?v->ty:"int"; }
@@ -1870,6 +1902,21 @@ static int eval(Node*n){
     if(!n){ int r=tacq(); emitf("ADDI %s, zero, 0",regname(r)); return r; }
     int d0=TDN;
     switch(n->k){
+    case N_COMPOUND: {
+        /* 复合字面量：成员初始化写入帧内匿名缓冲，表达式值=缓冲首地址
+         * （struct 表达式求值=首地址语义，与 sret 返回一致） */
+        StructDef*sd=struct_find(n->s);
+        if(!sd){ fprintf(stderr,"UNSUPPORTED: 复合字面量类型 '%s' 不是 struct\n",n->s); exit(2); }
+        int base=SRET_BASE+n->sret_off;
+        for(int i=0;i<sd->nm && i<n->e->nitems;i++){
+            Node*it=n->e->items[i];
+            int sub=0;
+            gen_init_at(sd->m[i].ty, base+sd->m[i].off, it, &sub);
+        }
+        int r=tacq();
+        emitf("ADDI %s, s0, %d",regname(r),base);
+        return r;
+    }
     case N_NUM: {
         for(int i=0;i<CC_N;i++) if(CC_V[i]==n->numw) return CC_R[i];  /* 已预装：只读共享 */
         int r=tacq(); load_imm128(r,n->numw); return r;
@@ -2798,9 +2845,13 @@ static void gen_func(Node*f){
     ARG_OFF   = CSAVE_OFF + 6*9;
     int narg_slots = 8; { int ma=max_args(f->fbody); if(ma>narg_slots) narg_slots=ma+2; }
     /* sret 缓冲跟在实参暂存区之后：每个返回 struct 的调用点各占一块。 */
-    int sret_bytes=0; if(hascall) sret_slot_walk(f->fbody,&sret_bytes);
-    SRET_BASE = ARG_OFF + narg_slots*9;
-    int call_bytes = hascall ? (6*9 + narg_slots*9 + sret_bytes) : 0;
+    /* sret_slot_walk 无条件走：除调用返回缓冲外，复合字面量
+     * (TYPE){...} 的匿名临时缓冲也在此分配（与调用无关）。 */
+    int sret_bytes=0; sret_slot_walk(f->fbody,&sret_bytes);
+    /* 无调用的叶子函数：实参暂存区/跨调用区不存在，sret/compound
+     * 缓冲直接从 CSAVE_OFF 起（不必留 ARG 区） */
+    SRET_BASE = hascall ? (ARG_OFF + narg_slots*9) : CSAVE_OFF;
+    int call_bytes = (hascall ? (6*9 + narg_slots*9) : 0) + sret_bytes;
     int framesize=18+ns*9+spill+call_bytes;   /* sp 抬到帧顶 */
     if(need_frame){
         emitf("SW s0, 0(sp)");
@@ -3230,6 +3281,7 @@ static void gate_check(Node*n){
     case N_PREINC: gate_check(n->e); return;
     case N_SWITCH: gate_check(n->cond); for(int i=0;i<n->nitems;i++) gate_check(n->items[i]); return;
     case N_LABEL: case N_GOTO: return;
+    case N_COMPOUND: for(int i=0;i<n->e&&0;i++){} gate_check(n->e); return;
     case N_POSTINC: gate_check(n->e); return;
     case N_DEREF:  gate_check(n->e); return;
     case N_ADDR:   gate_check(n->e); return;

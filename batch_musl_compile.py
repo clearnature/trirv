@@ -18,6 +18,10 @@ TRI_REWRITE = {
     "strspn.c": "musl_tri/strspn_tri.c",
     "strstr.c": "musl_tri/strstr_tri.c",
     "memmem.c": "musl_tri/memmem_tri.c",
+    "div.c": "musl_tri/div_tri.c",
+    "ldiv.c": "musl_tri/ldiv_tri.c",
+    "lldiv.c": "musl_tri/lldiv_tri.c",
+    "imaxdiv.c": "musl_tri/imaxdiv_tri.c",
 }
 
 ok, fail, skip = [], [], []
