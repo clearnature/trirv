@@ -115,7 +115,15 @@ def assemble(src):
         elif fmt in ("U", "J"):
             rd = reg(ops[0]); tgt = ops[1].strip()
             # U/J 立即数字段为 13 trit：字面量必须用 13-trit 解析，否则大常数被截到 7 trit。
-            imm = (labels[tgt] - idx) % (3**13) if (fmt=="J" and tgt in labels) else parse_int(tgt, 13)
+            if fmt == "J" and tgt in labels:
+                d = labels[tgt] - idx
+                lim = (3**13 - 1) // 2
+                if not (-lim <= d <= lim):
+                    raise ValueError(
+                        f"{idx}: 跳转 {mn} -> {tgt} 超出 J 型范围 {d}（限 ±{lim} 条指令）")
+                imm = d
+            else:
+                imm = parse_int(tgt, 13)
             v = isa.encode(mn, rd=rd, imm=imm)
         out.append(v)
     return out, labels
