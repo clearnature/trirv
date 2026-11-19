@@ -60,7 +60,7 @@ SYS_NAME = {
 class VM:
     WORD_TRYTES = 9                    # int = 45 trit = 9 tryte（每 tryte 5 trit）
 
-    def __init__(self, program, mem_init=None, stdin=b""):
+    def __init__(self, program, mem_init=None, stdin=b"", argv=None):
         self.regs = [0] * isa.NREG
         self.imem = list(program)             # 指令槽
         # 统一内存：tryte 编址，每格存 1 tryte(0..242)；bytearray 容量足够
@@ -98,8 +98,9 @@ class VM:
         self.lr_addr = -1
         self.lr_valid = False
         self.trap_log = []                    # (cause, from_pc, to_pc) 陷入历史
+        # --- crt0 进程信息（零页固定地址，与 C VM 严格一致）---
+        self._setup_argv(argv or [])
 
-    # ---- 统一内存：按宽度读写（tryte 为单位）----
     def _store_word(self, addr, val):
         """写 1 个 45-trit 字 = 9 tryte，小端（低 tryte 在低地址）。"""
         val %= MOD
@@ -108,6 +109,35 @@ class VM:
             if 0 <= addr + i < len(self.mem):
                 self.mem[addr + i] = t
 
+    def _setup_argv(self, args):
+        """零页：argc@0 argv数组地址@9 envp@18；参数串在 mmap 区之下高地址带。
+        与 trirv_vm.c 的 vm_init_ex 保持字节级一致（差分测试依赖）。
+        注意：args 为空时【完全不写内存】—— 零页可能被数据段占用
+        （wasm hello 的 data 段从 0 开始），写了会把段数据清掉。"""
+        gargc = len(args)
+        if gargc == 0:
+            return
+        base = self.mmap_ptr - 16
+        arr = ((base - (gargc + 1) * 9) // 9) * 9
+        self._store_word(0, gargc)
+        self._store_word(9, arr)
+        self._store_word(18, 0)
+        sp = ((arr - gargc * 9 * 12) // 9) * 9
+        for i, s in enumerate(args):
+            data = s.encode("latin1") if isinstance(s, str) else bytes(s)
+            if sp < 4096:
+                break
+            sentry = sp
+            self._store_word(arr + i * 9, sentry)
+            for k, ch in enumerate(data):
+                if sentry + k < arr:
+                    self.mem[sentry + k] = ch % 243
+            if sentry + len(data) < arr:
+                self.mem[sentry + len(data)] = 0
+            sp -= ((len(data) + 1 + 8) // 9) * 9
+        self._store_word(arr + gargc * 9, 0)     # argv[argc] = NULL
+
+    # ---- 统一内存：按宽度读写（tryte 为单位）----
     def _load_word(self, addr):
         val = 0
         for i in range(self.WORD_TRYTES):

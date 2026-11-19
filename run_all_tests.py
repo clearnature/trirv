@@ -84,6 +84,7 @@ SUITES = [
     ("trirv_adiff.py",            "A 扩展原子差分",           False, None),
     ("trirv_byvalue_e2e.py",      "按值返回",                False, None),
     ("trirv_stackargs_e2e.py",    "栈上传参",                False, None),
+    ("trirv_crt_e2e.py",          "crt0+musl 启动链 29 项",   False, None),
     ("trirv_mdiff.py",            "M 扩展差分 700 项",        True,  None),
     ("trirv_wasm_e2e.py",         "Wasm 三路差分 93 例",      True,  None),
     ("trirv_tritref_test.py",     "tryte 参考实现 46164 项",  True,  None),

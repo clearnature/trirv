@@ -586,7 +586,10 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
 
 ## 10. 实现顺序
 
-> 状态（2026-11-18）：步骤 1–6 已完成并通过全量回归；步骤 7 为后续工程目标。
+> 状态（2026-11-19）：步骤 1–6 已完成并通过全量回归；步骤 7 的**启动链部分已落地**
+> （crt0 内建于编译器、`__libc_start_main` 见 `trirv_crt.c`、argc/argv 零页 ABI
+> 双 VM 差分锁定，`trirv_crt_e2e.py` 29/29）；"真 musl 编译进来"仍是后续工程目标
+> （前置：链接器、musl 前置 C 特性、CHAR_BIT 决策 —— 见 README 已知缺口 0）。
 
 1. ~~拍板 D1–D5~~ ✅ 已拍板，见 §9
 2. ~~写指令编码表（生成机器码的 Python 脚本）~~ ✅
@@ -594,7 +597,10 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
 4. ~~实现汇编器（编码 20-trit 指令）~~ ✅
 5. ~~跑通最小程序（加法 + 分支 + ECALL 退出）~~ ✅ 13 个 e2e 全通过
 6. ~~加 TT 扩展（三值逻辑 + 打包/解包）~~ ✅ 含 T-LOGIC/T-PACK/TSEXT
-7. 接 crt0 + musl（见 ABI 文档）—— 后续目标
+7. 接 crt0 + musl（见 ABI 文档）—— **启动链已通（2026-11-19）**：`_start`（编译器内建）
+   → `__libc_start_main(argc, argv)`（`trirv_crt.c`，TriRV 形态签名）→ `main(argc, argv)`
+   → `exit(ret)`。guest argv 由 VM 构造（`trirv_vm -- prog 参数...`，零页固定地址
+   argc@0/argv@9/envp@18，栈向上生长决定的必要偏差）。真 musl 源码移植仍为后续目标。
 
 ---
 

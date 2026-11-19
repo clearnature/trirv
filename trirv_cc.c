@@ -377,6 +377,29 @@ static Node* parse_primary(void){
             expect(")");
             return n;
         }
+        /* 函数指针调用：(*fp)(...) 形态（当前 token 是 "*"）。
+         * 名字已消费（TK_ID 后紧跟 "(" 时早退；这里 name 后是 "(" 且再后 "*"）。
+         * 实际上进入本分支时 cur=="("：name 已 take，accept 那次 "(" 没发生。 */
+        if(at("(")&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,"*")){
+            take();                               /* ( */
+            take();                               /* * */
+            Node*target=parse_expr();             /* fp 表达式 */
+            expect(")");
+            if(accept("(")){
+                Node*n=nnew(N_CALL);
+                n->s=strdup("(*target)");         /* 间接调用标记 */
+                n->e=target;                      /* 目标表达式挂在 e 上 */
+                int cap=0;
+                if(!at(")")){
+                    do { n->args=grow(n->args,&cap,n->nargs,sizeof(Node*));
+                         n->args[n->nargs++]=parse_expr(); } while(accept(","));
+                }
+                expect(")");
+                return n;
+            }
+            /* (*fp) 不跟调用：退化为普通解引用 */
+            Node*d=nnew(N_DEREF); d->e=target; return d;
+        }
         Node*n=nnew(N_VAR); n->s=name; return n;
     }
     fprintf(stderr,"parse_primary: bad '%s'\n",cur()->s); exit(1);
@@ -385,6 +408,21 @@ static Node* parse_postfix(void){
     Node*n=parse_primary();
     for(;;){
         if(accept("[")){ Node*i=parse_expr(); expect("]"); Node*x=nnew(N_INDEX); x->l=n; x->r=i; n=x; }
+        else if(at("(")&&n->k==N_DEREF){
+            /* (*fp)(...) —— 解引用后紧跟调用：间接调用。
+             * 目标（被解引用的表达式）挂 n->e，s 标记 "(*target)"。 */
+            take();                               /* ( */
+            Node*call=nnew(N_CALL);
+            call->s=strdup("(*target)");
+            call->e=n->e;
+            int cap=0;
+            if(!at(")")){
+                do { call->args=grow(call->args,&cap,call->nargs,sizeof(Node*));
+                     call->args[call->nargs++]=parse_expr(); } while(accept(","));
+            }
+            expect(")");
+            n=call;
+        }
         else if(at(".")||at("->")){
             int arrow = at("->"); take();
             char*mt=take()->s;
@@ -646,6 +684,90 @@ static Node** FNS; static int NFN, CAPFN;
 
 static void struct_def(const char*name);   /* forward：布局在类型系统一节实现 */
 
+/* ===================== 全局变量 =====================
+ * 布局：全局区从 GBASE=200 起，按地址升序依次分配；字符串段（STRBASE）在
+ * 全局扫描完成后从全局区末尾起分配 —— 所以顺序必须是：
+ *   1) parse_program 收集全局声明（只记类型/初始化表达式，不编数据）
+ *   2) main 里 assign_glob_addrs()：给每个全局分配地址 -> 得出全局区末尾
+ *   3) STRBASE = 全局区末尾；assign_strings/register_strings 照常分配字符串
+ *   4) gen_glob_data()：此时字符串地址已定，char* g="..." 的指针值可回填
+ * 未初始化的全局也占地址（bss 语义），但不写 TRV1 段（内存镜像天然为 0）。
+ */
+typedef struct {
+    char *name;
+    char *ty;          /* "int" / "char[4]" / "int*" / "struct P" ... */
+    int addr;          /* tryte 地址（数据段） */
+    int size;          /* tryte 数 */
+    Node *init;        /* 初始化表达式（编译期常量 / INITLIST / 字符串），NULL=零 */
+    int strinit;       /* 1 = init 是 N_STR 且 ty 是指针：数据=字符串地址，延迟回填 */
+    unsigned char *data;   /* 最终数据（gen_glob_data 之后有效） */
+} Global;
+
+static Global *GLOBS; static int NGLOB, CAPGLOB;
+static int GBASE = 200;            /* 全局区起始 tryte 地址（避开零页与低地址暂存） */
+static Global* global_find(const char*name){
+    for(int i=0;i<NGLOB;i++) if(!strcmp(GLOBS[i].name,name)) return &GLOBS[i];
+    return NULL;
+}
+static Global* global_add(const char*name,char*ty,int size,Node*init){
+    GROW(GLOBS,CAPGLOB,NGLOB,Global);
+    Global*g=&GLOBS[NGLOB++];
+    memset(g,0,sizeof(*g));
+    g->name=strdup(name); g->ty=ty; g->size=size; g->init=init;
+    return g;
+}
+/* 3^45 装不进任何整型字面量，运行时算。TRV_P45V = 3^45（模数本体）。 */
+static __int128 TRV_P45V;              /* main 里初始化为 3^45 */
+static __int128 TRV_WT[9];             /* 权重表 3^(5b)，b=0..8（p3 是 int，这里必须 128 位） */
+static void enc_word(__int128 v,unsigned char*d,int nbytes){
+    __int128 pv = v % TRV_P45V;
+    if(pv<0) pv += TRV_P45V;              /* [0,3^45) */
+    for(int b=0;b<nbytes&&b<9;b++) d[b]=(unsigned char)((pv/TRV_WT[b])%243);
+}
+/* 初始化表达式 -> tryte 数据。只接受编译期常量：
+ *   标量/指针：整数常量（可负）；指针也可为字符串（strinit=1，地址后填）
+ *   数组：{a,b,c} 逐元素；char 数组可整体 "abc"，不足补零（NUL 由 calloc 保证）
+ */
+static void global_init_data(const char*ty,Node*init,unsigned char**out_data,
+                             int size,int *strinit){
+    unsigned char*d=calloc(1,(size_t)size);
+    *strinit=0;
+    if(init){
+        if(init->k==N_INITLIST){
+            int flat_isarr=0; ty_size(ty,&flat_isarr);
+            int esz = flat_isarr? ty_bytes(array_elem((char*)ty)) : 9;
+            int off=0;
+            for(int i=0;i<init->nitems&&off<size;i++){
+                Node*it=init->items[i];
+                __int128 w128=0;
+                if(it->k==N_NUM) w128=it->numw;
+                else if(it->k==N_UN&&!strcmp(it->s,"-")&&it->e->k==N_NUM) w128=-it->e->numw;
+                else { fprintf(stderr,"UNSUPPORTED: 全局初始化必须是编译期常量\n"); exit(2); }
+                enc_word(w128,d+off,esz);
+                off+=esz;
+            }
+        } else if(init->k==N_STR){
+            if(ty[0]=='c'&&ty[1]=='h'&&ty[2]=='a'&&ty[3]=='r'&&ty[4]=='['){
+                /* char 数组：内容直接铺，NUL 由 calloc 保证 */
+                for(int i=0;i<init->slen&&i<size;i++) d[i]=(unsigned char)init->s[i];
+            } else {
+                *strinit=1;                  /* 指针 -> 字符串地址，gen_glob_data 回填 */
+            }
+            *out_data=d;                     /* N_STR 两条路都直接结束（防穿透到标量编码） */
+            return;
+        } else if(init->k==N_NUM){
+            enc_word(init->numw,d,size<9?size:9);
+        } else if(init->k==N_UN&&!strcmp(init->s,"-")&&init->e->k==N_NUM){
+            enc_word(-init->e->numw,d,size<9?size:9);
+        } else {
+            fprintf(stderr,"UNSUPPORTED: 全局初始化必须是编译期常量（got kind=%d）\n",init->k);
+            exit(2);
+        }
+    }
+    *out_data=d;
+}
+/* 地址分配与数据生成挪到 STRBASE 定义之后（见 "全局变量（续）"）。 */
+
 static void parse_program(void){
     while(!atk(TK_EOF)){
         if(at("struct")){
@@ -661,7 +783,82 @@ static void parse_program(void){
             }
         }
         char*ret=parse_type();
+        /* 顶层函数指针定义：int (*f)(参数表) { ... }
+         * 处理成普通函数 f（签名不参与布局，调用约定由调用点决定）。
+         * __libc_start_main 就是以这种形态出现在 musl 源里的。 */
+        if(at("(")&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,"*")){
+            fprintf(stderr,"[dbg] fnptr def: %s\n",TOKS[IPOS+2].s);
+            take();                              /* ( */
+            expect("*");
+            char*fname=take()->s;                /* 函数名 */
+            expect(")");                         /* ) */
+            if(at("(")){                         /* 跳过 (参数表) */
+                int d=0;
+                do{
+                    if(at("(")) d++;
+                    else if(at(")")) d--;
+                    else if(atk(TK_EOF)) break;
+                    take();
+                } while(d>0);
+            }
+            Node*f=nnew(N_FUNC); f->rettype=ret; f->s=fname;
+            f->ptypes=malloc(sizeof(char*)*32);
+            f->params =malloc(sizeof(char*)*32);
+            f->fbody=parse_block();
+            FNS=grow(FNS,&CAPFN,NFN,sizeof(Node*)); FNS[NFN++]=f;
+            continue;
+        }
         char*name=take()->s;
+        /* 全局声明：type name ; / type name = init ; / type name[N] ... ;
+         * type name, name2 ;   （函数则下一个 token 是 "("） */
+        if(!at("(")){
+            /* 顶层声明：首个名字已在上面 take()。此处处理它的维度/初始化，
+             * 以及后续 `, name` 声明（每个名字可带自己的维度）。 */
+            char*base_ty=strdup(ret);
+            Node dmy={0}; Node*decl=&dmy;
+            decl->dnames=malloc(sizeof(char*)*64);
+            decl->dtypes=malloc(sizeof(char*)*64);
+            decl->dinit =malloc(sizeof(Node*)*64);
+            decl->ndecls=0;
+            char*gn=name;                       /* 首个名字（已在 746 行取过） */
+            for(;;){
+                char*gty=base_ty;
+                while(at("[")){
+                    take(); char cnt[32]; dim_text(cnt,sizeof(cnt)); expect("]");
+                    char buf[256]; snprintf(buf,sizeof(buf),"%s[%s]",gty,cnt);
+                    gty=strdup(buf);
+                }
+                Node*init=NULL;
+                if(accept("=")) init=parse_initval();
+                decl->dnames[decl->ndecls]=gn;
+                decl->dtypes[decl->ndecls]=gty;
+                decl->dinit [decl->ndecls]=init;
+                decl->ndecls++;
+                if(!accept(",")) break;
+                gn=take()->s;                   /* 下一声明的名字 */
+            }
+            expect(";");
+            for(int i=0;i<decl->ndecls;i++){
+                char*gty=decl->dtypes[i];
+                if(is_array(gty)){
+                    /* 未显式给维度且初始化为字符串/列表的：C 语义由初始化推断。
+                       我们的 dim_text 对空维度记 "0" —— 这里按初始化补齐。 */
+                    char*el=array_elem(gty);
+                    int cnt=array_count(gty);
+                    Node*init=decl->dinit[i];
+                    if(cnt==0&&init){
+                        if(init->k==N_STR) cnt=init->slen+1;
+                        else if(init->k==N_INITLIST) cnt=init->nitems;
+                    }
+                    if(cnt<=0){ fprintf(stderr,"UNSUPPORTED: 全局数组需要显式维度\n"); exit(2); }
+                    char buf[256]; snprintf(buf,sizeof(buf),"%s[%d]",el,cnt);
+                    gty=strdup(buf);
+                }
+                global_add(decl->dnames[i],gty,0,decl->dinit[i]);
+            }
+            free(decl->dnames); free(decl->dtypes); free(decl->dinit);
+            continue;
+        }
         expect("(");
         Node*f=nnew(N_FUNC); f->rettype=ret; f->s=name;
         f->ptypes=malloc(sizeof(char*)*32);
@@ -670,7 +867,32 @@ static void parse_program(void){
             if(!(strcmp(ret,"void")==0&&at("void"))){
                 do{
                     if(accept("...")){ f->variadic=1; break; }
-                    char*pt=parse_type(); char*pn=take()->s;
+                    char*pt=parse_type();
+                    /* 函数指针形参：int (*f)(参数表)。
+                     * parse_type 吃掉 "int" 后 cur=="(" 且 next=="*"。
+                     * 跳过 (*name) 与参数表，类型记 "int*"（本 ABI 所有指针
+                     * 等宽，签名不参与布局）。 */
+                    if(at("(")&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,"*")){
+                        take();                          /* ( */
+                        expect("*");
+                        char*pn=take()->s;               /* 名字 */
+                        expect(")");                     /* ) */
+                        if(at("(")){                     /* (参数表) 逐层跳过 */
+                            int d=0;
+                            do{
+                                if(at("(")) d++;
+                                else if(at(")")) d--;
+                                else if(atk(TK_EOF)) break;
+                                take();
+                            } while(d>0);
+                        }
+                        pt=strdup("int*");
+                        f->ptypes[f->nparams]=pt;
+                        f->params [f->nparams]=pn;
+                        f->nparams++;
+                        continue;                        /* 回 do-while 判定 "," */
+                    }
+                    char*pn=take()->s;
                     /* 数组形参退化指针 */
                     {   /* 形参数组退化为指针：int a[5] -> int*；int m[][3] -> int[3]* */
                         char dims[128]=""; 
@@ -716,6 +938,31 @@ static int SPILL_TOP;            /* 溢出区 tryte 偏移(相对 sp) */
 static char **FNRETS; static int *FNVARGS; static char **FNEYS;
 static int NFNRET, CAPFNRET, CAPFNVARGS, CAPFNEYS;
 static char **STRSEG; static int *STRLEN; static int NSTR, CAPSTR, CAPSTRLEN; static int STRBASE=100;
+static int STRSEG_START=100;             /* 字符串段写出的起始地址（= 分配前的 STRBASE） */
+static void assign_glob_addrs(void);     /* 全局地址分配（会改写 STRBASE），实现见下方 */
+static void gen_glob_data(void);         /* 全局数据生成（依赖字符串地址），实现见下方 */
+
+/* ===================== 全局变量（续）：地址分配与数据生成 ===================== */
+static void assign_glob_addrs(void){
+    int pos=GBASE;
+    for(int i=0;i<NGLOB;i++){
+        Global*g=&GLOBS[i];
+        g->addr=((pos+8)/9)*9;           /* 字/结构体 9 对齐；char 数组从对齐位置起也无妨 */
+        g->size=ty_bytes(g->ty);
+        pos=g->addr+g->size;
+    }
+    STRBASE = pos;                        /* 字符串段接在全局区之后 */
+}
+static void gen_glob_data(void){
+    for(int i=0;i<NGLOB;i++){
+        Global*g=&GLOBS[i];
+        global_init_data(g->ty,g->init,&g->data,g->size,&g->strinit);
+        if(g->strinit){                   /* 指针初始化为字符串字面量 */
+            Node*strnode=g->init;
+            enc_word(strnode->straddr,g->data,9);
+        }
+    }
+}
 static const char *CURFN;
 static char **LOOPEND, **LOOPCONT; static int NLOOP, CAPLOOP, CAPLOOPC;
 static char *FUNC_EPILOGUE;   /* 当前函数的 epilogue 标签（return 跳这里统一恢复帧） */
@@ -1166,6 +1413,73 @@ static int syscall_no(const char*name){
     return -1;
 }
 
+/* 函数标签 -> 指令地址（tryte）；不在函数表返回 -1。
+ * 标签行在 OUT 里不占指令槽，普通指令按顺序计数。 */
+static int fn_label_addr(const char*name){
+    for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,name)){
+        int idx=0;
+        for(int k=0;k<NOUT;k++){
+            const char*L=OUT[k];
+            size_t len=strlen(L);
+            if(len>0&&L[len-1]==':'){
+                char tmp[128]; snprintf(tmp,sizeof(tmp),"%.*s",(int)(len-1),L);
+                if(!strcmp(tmp,name)) return idx*4;
+                continue;
+            }
+            idx++;
+        }
+    }
+    return -1;
+}
+/* 间接调用目标：把"被调地址"装入 reg。
+ * n->s 形如 "f(...)"（直接函数指针调用）或 "(*fp)(...)"（指针解引用）。
+ * - 裸名字是已知函数 -> load_imm 其指令下标地址（JAL 的目标值）
+ * - (*fp) -> 求值 fp 变量（里面是函数地址） */
+static void load_mem(int dst,int base,int off,const char*ty);   /* forward：实现在下 */
+static void eval_target_into(int reg,const char*callee){
+    const char*p=callee;
+    if(p[0]=='('&&p[1]=='*'){                   /* (*fp) 形态 */
+        char name[128]={0};
+        const char*q=p+2;
+        int i=0;
+        while(*q&&*q!=')'&&i<127) name[i++]=*q++;
+        name[i]=0;
+        LocVar*v=findloc(name);
+        if(v){ load_mem(reg,8,v->off,v->ty); return; }
+        fprintf(stderr,"UNSUPPORTED: 间接调用目标 '%s' 不是局部变量\n",name);
+        exit(2);
+    }
+    /* 裸名字：截到 '(' 前的函数名 */
+    char name[128]={0};
+    int i=0;
+    while(p[i]&&p[i]!='('&&i<127){ name[i]=p[i]; i++; }
+    name[i]=0;
+    /* 已知函数：地址 = 指令下标*4（PC 是 tryte 地址）。
+     * 函数标签在 assemble 阶段才解析 —— 这里 emit 一个伪指令让
+     * 汇编器查标签。asm_line 支持 "LUI rd, %label" 吗？不支持。
+     * 最简做法：emit "LUI reg, <label>"，assemble_all 里的 asm_line
+     * 对 LUI 的立即数走 parse_int —— 会失败。
+     * 改为：查 FNS 拿到函数标签在 OUT 里的行号 —— 行号在 assemble 前
+     * 就是地址（标签行不占指令）。直接扫 OUT 找 "<name>:" 的指令下标。 */
+    int addr=-1,idx=0;
+    for(int k=0;k<NOUT;k++){
+        const char*L=OUT[k];
+        size_t len=strlen(L);
+        if(len>0&&L[len-1]==':'){
+            char tmp[128]; snprintf(tmp,sizeof(tmp),"%.*s",(int)(len-1),L);
+            if(!strcmp(tmp,name)) { addr=idx*4; break; }
+            continue;                             /* 标签行不占指令 */
+        }
+        idx++;                                    /* 普通指令 */
+    }
+    if(addr>=0){ load_imm(reg,addr); return; }
+    /* 不是本地函数：可能是全局变量里存的函数指针 */
+    Global*g=global_find(name);
+    if(g){ load_imm(SCRATCH,g->addr); load_mem(reg,SCRATCH,0,g->ty); return; }
+    fprintf(stderr,"UNSUPPORTED: 间接调用目标 '%s' 未知\n",name);
+    exit(2);
+}
+
 /* 求值 n，结果放在返回的寄存器里；进入时 TDN=d0，返回后 TDN=d0+1 且结果 = TPOOL[d0] */
 /* ===================== 类型推导与左值寻址 ===================== */
 static int eval(Node*n);          /* forward */
@@ -1219,7 +1533,9 @@ static char* expr_type(Node*n){
     switch(n->k){
     case N_NUM: return "int";
     case N_STR: return "char*";
-    case N_VAR: { LocVar*v=findloc(n->s); return v&&v->ty?v->ty:"int"; }
+    case N_VAR: { LocVar*v=findloc(n->s);
+        if(!v){ Global*g=global_find(n->s); if(g) return g->ty; }
+        return v&&v->ty?v->ty:"int"; }
     case N_INDEX: {
         char*bt=expr_type(n->l);
         return is_array(bt)?array_elem(bt):strdup((char*)pointee(bt));
@@ -1263,17 +1579,29 @@ static void store_mem(int src,int base,int off,const char*ty){
     if(is_char_ty(ty)) emitf("SB %s, %d(%s)",regname(src),off,regname(base));
     else emitf("SW %s, %d(%s)",regname(src),off,regname(base));
 }
+static void load_glob(int dst,Global*g){
+    load_imm(SCRATCH,g->addr);
+    load_mem(dst,SCRATCH,0,g->ty);
+}
+static void store_glob(int src,Global*g){
+    load_imm(SCRATCH,g->addr);
+    store_mem(src,SCRATCH,0,g->ty);
+}
 /* 把"元素的起始地址"算进寄存器并返回 */
 static int addr_of(Node*n){
     Node*lv = (n->k==N_ADDR)? n->e : n;
     if(lv->k==N_VAR){
         LocVar*v=findloc(lv->s);
-        int r=tacq();
-        if(!v){ emitf("ADDI %s, zero, 0",regname(r)); return r; }
+        if(!v){
+            Global*g=global_find(lv->s);
+            if(g){ int r=tacq(); load_imm(r,g->addr); return r; }
+            { int r=tacq(); emitf("ADDI %s, zero, 0",regname(r)); return r; }
+        }
         if(!v->spilled){
             fprintf(stderr,"UNSUPPORTED: address of register-allocated local '%s'\n",lv->s);
             exit(2);
         }
+        { int r=tacq();
         if(is_ptr(v->ty)){                      /* 指针变量：s0+off 里存的是地址，取出来 */
             chk_off(v->off);
             emitf("LW %s, %d(s0)",regname(r),v->off);
@@ -1281,7 +1609,7 @@ static int addr_of(Node*n){
         }
         chk_off(v->off);
         emitf("ADDI %s, s0, %d",regname(r),v->off);
-        return r;
+        return r; }
     }
     if(lv->k==N_DEREF){ int a=eval(lv->e); return rwcopy(a); }   /* *p 的地址= p 的值，不能改写 p */
     if(lv->k==N_INDEX){
@@ -1331,6 +1659,21 @@ static int eval(Node*n){
     case N_STR: { int r=tacq(); load_imm(r,n->straddr); return r; }
     case N_VAR: {
         LocVar*v=findloc(n->s);
+        /* 全局优先级：局部遮蔽全局（C 作用域规则）。
+         * 数组/结构体全局：值=地址；标量/指针全局：按类型 LW/LB。 */
+        if(!v){
+            Global*g=global_find(n->s);
+            if(g){
+                if(is_array(g->ty)||struct_find(g->ty)) return addr_of(n);
+                int r=tacq();
+                load_glob(r,g);
+                return r;
+            }
+            {   /* 函数名 -> 函数地址（函数指针语义，供 __libc_start_main(main) 等） */
+                int faddr=fn_label_addr(n->s);
+                if(faddr>=0){ int r=tacq(); load_imm(r,faddr); return r; }
+            }
+        }
         /* 数组名求值 = 数组首地址（C 的退化规则）；结构体同理 —— 结构体右值的
          * "值"就是首地址，真正按值拷贝由赋值/传参/返回这些消费方自己做。 */
         if(v&&(is_array(v->ty)||struct_find(v->ty))) return addr_of(n);
@@ -1523,7 +1866,9 @@ static int eval(Node*n){
         int d1=TDN;
         if(lv->k==N_VAR){
             LocVar*l=findloc(lv->s);
-            if(l&&l->spilled){ store_mem(v,8,l->off,l->ty); }
+            Global*gg=!l?global_find(lv->s):NULL;
+            if(gg) store_glob(v,gg);
+            else if(l&&l->spilled){ store_mem(v,8,l->off,l->ty); }
             else if(l&&l->reg!=v) emitf("ADDI %s, %s, 0",regname(l->reg),regname(v));
         } else if(lv->k==N_DEREF){
             char*ty=(char*)pointee(expr_type(lv->e));
@@ -1545,10 +1890,15 @@ static int eval(Node*n){
         if(lv->k==N_VAR){
             LocVar*l=findloc(lv->s);
             int r=tacq();
-            if(l&&!l->spilled){
+            if(!l){
+                Global*gg=global_find(lv->s);
+                if(gg){ load_glob(r,gg);
+                        emitf("ADDI %s, %s, %d",regname(r),regname(r),d);
+                        store_glob(r,gg); return r; }
+            } else if(!l->spilled){
                 emitf("ADDI %s, %s, %d",regname(l->reg),regname(l->reg),d);
                 if(l->reg!=r) emitf("ADDI %s, %s, 0",regname(r),regname(l->reg));
-            } else if(l){
+            } else {
                 load_mem(r,8,l->off,l->ty);
                 emitf("ADDI %s, %s, %d",regname(r),regname(r),d);
                 store_mem(r,8,l->off,l->ty);
@@ -1572,6 +1922,9 @@ static int eval(Node*n){
     case N_CALL: {
         int nargs=n->nargs;
         int sn=syscall_no(n->s);
+        /* 间接调用：(*fp)(...) / (fn)(...) 形态，n->s=="(*target)"，
+         * 目标表达式在 n->e。返回类型按 int（无签名信息）。 */
+        int indirect = (n->s[0]=='(') && strstr(n->s,"target")!=NULL;
         /* 返回 struct 的调用走 sret：a0 = 本帧里那块返回缓冲的地址，
          * 实参寄存器窗口整体后移一位；调用完成后 a0 会把缓冲地址带回来。 */
         int sret = (sn<0) && struct_find(fn_ret_type(n->s))!=NULL;
@@ -1605,7 +1958,11 @@ static int eval(Node*n){
                 else { chk_off(v->off); emitf("LW a%d, %d(s0)",abase+i,v->off); }
             }
             if(sret){ chk_off(SRET_BASE+n->sret_off); emitf("ADDI a0, s0, %d",SRET_BASE+n->sret_off); }
-            emitf("JAL ra, %s",n->s);
+            if(indirect){
+                /* 间接调用：目标表达式装临时寄存器再 JALR */
+                int tr=eval(n->e);
+                emitf("JALR ra, 0(%s)",regname(tr));
+            } else emitf("JAL ra, %s",n->s);
         } else {
             /* 2) 实参逐个求值后暂存（嵌套调用会破坏 a0-a7，故不能直接放进 a 寄存器）。
                 struct 实参求值结果就是首地址（C 的按值传参由被调方入口拷贝实现）。 */
@@ -1622,7 +1979,10 @@ static int eval(Node*n){
             if(sn>=0){ load_imm(A7,sn); emitf("ECALL"); }
             else {
                 if(sret){ chk_off(SRET_BASE+n->sret_off); emitf("ADDI a0, s0, %d",SRET_BASE+n->sret_off); }
-                emitf("JAL ra, %s",n->s);
+                if(indirect){
+                    int tr=eval(n->e);
+                    emitf("JALR ra, 0(%s)",regname(tr));
+                } else emitf("JAL ra, %s",n->s);
             }
         }
         /* 3) 恢复活跃临时，结果取回 */
@@ -2368,6 +2728,9 @@ static void gate_check(Node*n){
 static void put_u32(FILE*f,uint32_t v){ fputc(v&0xff,f);fputc((v>>8)&0xff,f);fputc((v>>16)&0xff,f);fputc((v>>24)&0xff,f); }
 
 int main(int argc,char**argv){
+    { __int128 p=1; for(int i=0;i<45;i++) p*=3; TRV_P45V=p;   /* 3^45（模数本体） */
+      { __int128 w=1; for(int b=0;b<9;b++){ TRV_WT[b]=w; w*=243; } }  /* W[b]=3^(5b) 低->高 */
+    }
     if(argc<3){ fprintf(stderr,"usage: %s <src.c> <out.trv> [out.asm]\n",argv[0]); return 1; }
     FILE*fp=fopen(argv[1],"r"); if(!fp){perror("open");return 1;}
     fseek(fp,0,SEEK_END); long sz=ftell(fp); fseek(fp,0,SEEK_SET);
@@ -2390,15 +2753,70 @@ int main(int argc,char**argv){
         GROW(FNEYS,CAPFNEYS,NFNRET,char*);
         FNRETS[NFNRET]=FNS[i]->rettype; FNVARGS[NFNRET]=FNS[i]->variadic; FNEYS[NFNRET]=FNS[i]->s; NFNRET++;
     }
-    /* 字符串地址分配（全局扫描所有函数体） */
+    /* 全局变量：地址分配 -> 字符串段接在其后 -> 数据生成（依赖字符串地址） */
+    assign_glob_addrs();
+    STRSEG_START = STRBASE;               /* 记录字符串段写出的起点 */
+    /* 字符串地址分配：先扫全局初始化表达式（指针 -> 字符串字面量），
+       再扫所有函数体 */
+    for(int i=0;i<NGLOB;i++) if(GLOBS[i].init){
+        assign_strings(GLOBS[i].init); register_strings(GLOBS[i].init);
+    }
     for(int i=0;i<NFN;i++){ assign_strings(FNS[i]->fbody); register_strings(FNS[i]->fbody); }
+    gen_glob_data();
     NOUT=0; LBL=0;
-    /* _start */
+    /* 是否有用户定义的 __libc_start_main（决定 crt0 走 musl 链还是直连 main） */
+    int have_lsm=0;
+    for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,"__libc_start_main")) have_lsm=1;
+    /* 第一遍的 _start（占位）；第二遍在上面循环里重新 emit。
+     * 进程信息在零页固定地址（本 VM 栈向上生长，sp 惯例会立刻被第一帧覆盖，
+     * 这是栈方向决定的必要偏差）：argc@0 argv@9（argv 数组首地址，元素是
+     * 指针，数组本身在 VM 构造的镜像里） */
     emitf("_start:");
-    emitf("JAL ra, main");
-    emitf("ADDI a7, zero, 93");
-    emitf("ECALL");
-    for(int i=0;i<NFN;i++){ emitf("%s:",FNS[i]->s); gen_func(FNS[i]); }
+    if(have_lsm){
+        /* TriRV 形态（与 musl 签名的差异见 trirv_crt.c 头注释）：
+         * __libc_start_main(argc, argv) —— main 在同一编译单元，
+         * lsm 直接 JAL main，不需要 main 指针参数（避免了
+         * "main 地址"这个编译期前向引用问题）。 */
+        emitf("LW a0, 0(zero)");            /* argc */
+        emitf("LW a1, 9(zero)");            /* argv 数组地址 */
+        emitf("JAL ra, __libc_start_main");
+        emitf("ADDI a7, zero, 93");
+        emitf("ECALL");
+    } else {
+        /* 直连链：也按 RISC-V main 约定传 argc/argv（envp 不传，兼容旧程序） */
+        emitf("LW a0, 0(zero)");            /* argc */
+        emitf("LW a1, 9(zero)");            /* argv */
+        emitf("JAL ra, main");
+        emitf("ADDI a7, zero, 93");
+        emitf("ECALL");
+    }
+    /* 两遍生成：函数地址（fn_label_addr）依赖 OUT 里的标签行号，
+     * 而 __libc_start_main 这类前向引用在第一遍时 main 还没生成。
+     * 第一遍：_start + 每函数"标签+1条返回"占位，只为锁定标签行号；
+     * 第二遍：清空重生成（此时 fn_label_addr 能查到正确地址）。 */
+    for(int pass=0;pass<2;pass++){
+        if(pass==1){ NOUT=0; LBL=0;
+            emitf("_start:");                  /* _start 也得重来（占用指令下标） */
+            if(have_lsm){
+                emitf("LW a0, 0(zero)");
+                emitf("LW a1, 9(zero)");
+                emitf("JAL ra, __libc_start_main");
+                emitf("ADDI a7, zero, 93");
+                emitf("ECALL");
+            } else {
+                emitf("LW a0, 0(zero)");
+                emitf("LW a1, 9(zero)");
+                emitf("JAL ra, main");
+                emitf("ADDI a7, zero, 93");
+                emitf("ECALL");
+            }
+        }
+        for(int i=0;i<NFN;i++){
+            emitf("%s:",FNS[i]->s);
+            if(pass==0) emitf("JALR zero, 0(ra)");   /* 占位：至少 1 条指令 */
+            else gen_func(FNS[i]);
+        }
+    }
     drop_jump_to_next();
     if(getenv("TRV_DUMP_ASM")){ for(int i=0;i<NOUT;i++) fprintf(stderr,"%s\n",OUT[i]); }
     /* 第三个参数（可选）：把汇编文本写入文件，供统一后端/差分测试读取，
@@ -2416,19 +2834,34 @@ int main(int argc,char**argv){
     /* 写 TRV1 */
     FILE*out=fopen(argv[2],"wb"); if(!out){perror("out");return 1;}
     fwrite("TRV1",1,4,out);
-    put_u32(out,1); put_u32(out,n); put_u32(out,NSTR);
+    put_u32(out,1); put_u32(out,n);
+    {   /* 段数 = 字符串段 + 非零初始化的全局段 */
+        int nseg=NSTR;
+        for(int i=0;i<NGLOB;i++){ Global*g=&GLOBS[i];
+            int nz=0; for(int b=0;b<g->size;b++) if(g->data[b]) nz++;
+            if(nz) nseg++; }
+        put_u32(out,nseg);
+    }
     for(int i=0;i<n;i++) put_u32(out,prog[i]);
-    /* 字符串段：每个地址一个 segment */
+    /* 字符串段：每个地址一个 segment（起点 = 分配前的 STRBASE，不是当前值） */
     {
-        int addr=100;
+        int addr=STRSEG_START;
         for(int i=0;i<NSTR;i++){
             put_u32(out,addr); put_u32(out,STRLEN[i]);
             fwrite(STRSEG[i],1,STRLEN[i],out);
             addr+=STRLEN[i];
         }
     }
+    /* 全局变量段（跳过全零：内存镜像天然为 0，省文件体积） */
+    for(int i=0;i<NGLOB;i++){
+        Global*g=&GLOBS[i];
+        int nz=0; for(int b=0;b<g->size;b++) if(g->data[b]) nz++;
+        if(!nz) continue;
+        put_u32(out,g->addr); put_u32(out,g->size);
+        fwrite(g->data,1,(size_t)g->size,out);
+    }
     fclose(out);
-    fprintf(stderr,"[trirv_cc.c] compiled %s: %d instructions, %d strings -> %s\n",argv[1],n,NSTR,argv[2]);
+    fprintf(stderr,"[trirv_cc.c] compiled %s: %d instructions, %d strings, %d globals -> %s\n",argv[1],n,NSTR,NGLOB,argv[2]);
     return 0;
 }
 

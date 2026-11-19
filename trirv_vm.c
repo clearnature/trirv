@@ -921,7 +921,7 @@ static int load_trv(const char *path,Inst **out_prog,int *out_n,uint8_t segmem[M
     fclose(f);*out_prog=prog;*out_n=(int)n_inst;return 0;
 }
 static void vm_init_ex(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_data,size_t stdin_len,
-                       uint8_t *shared_mem,SharedSync *sync){
+                       uint8_t *shared_mem,SharedSync *sync,int gargc,char **gargv){
     memset(v,0,sizeof(*v));
     v->mem_ref=shared_mem?shared_mem:v->mem;   /* 必须在 memset 之后设置 */
     v->shared=shared_mem?1:0; v->sync=sync;
@@ -932,15 +932,48 @@ static void vm_init_ex(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_dat
     v->priv=3;v->irq_timer=0;memset(v->csr,0,sizeof(v->csr));   /* Zicsr: 复位 M 态, CSR 清零 */
     v->lr_addr=-1;v->lr_valid=0;v->lr_version=0;                /* A 扩展保留集复位 */
     v->stdin_data=stdin_data;v->stdin_len=stdin_len;v->stdin_pos=0;
+    /* ---- crt0 进程信息（零页固定地址）----
+     * 本 VM 栈向上生长（ADDI sp,sp,+frame），RISC-V Linux 的"sp 指向 argc"
+     * 惯例会立刻被第一帧覆盖，故放零页固定地址。这是栈方向决定的必要偏差：
+     *   [0..8]   argc（1 字 = 9 tryte）
+     *   [9..17]  argv 数组首地址（数组放 mmap 区之上的高地址带）
+     *   [18..26] envp（NULL：本 VM 无环境变量）
+     * argv 数组：argc+1 个字（argv[argc]=NULL 结尾），每个元素指向
+     * 对应参数字符串（同样在高地址带，按 9 tryte 对齐，NUL 结尾）。 */
+    if(gargc>0&&gargv){
+        __int128_t base=v->mmap_ptr-16;         /* 参数区顶部（mmap 之下） */
+        __int128_t arr=base-(__int128_t)(gargc+1)*9;   /* argv 数组（字对齐天然成立） */
+        arr=((arr)/9)*9;
+        store_word_nl(v,0,(__uint128_t)gargc);
+        store_word_nl(v,9,(__uint128_t)arr);
+        store_word_nl(v,18,0);                  /* envp=NULL */
+        __int128_t sp=arr-(__int128_t)gargc*9*12;  /* 字符串区：每参数最多 9*12 tryte */
+        sp=(sp/9)*9;
+        for(int i=0;i<gargc;i++){
+            size_t sl=strlen(gargv[i]);
+            if(sp<4096) break;                  /* 安全下界：不碰代码/栈区 */
+            __int128_t sentry=sp;
+            store_word_nl(v,arr+(__int128_t)i*9,(__uint128_t)sentry);
+            for(size_t k=0;k<sl&&sentry+(__int128_t)k<arr;k++)
+                v->mem_ref[sentry+k]=(uint8_t)(gargv[i][k]%243);
+            if(sentry+(__int128_t)sl<arr) v->mem_ref[sentry+sl]=0;
+            sp-=(((__int128_t)sl+1+8)/9)*9;     /* 下一个：9 对齐向下 */
+        }
+        store_word_nl(v,arr+(__int128_t)gargc*9,0);    /* argv[argc]=NULL */
+    } else {
+        /* 无 guest 参数：完全不动内存（零页可能被数据段占用，
+         * wasm hello 的 data 段从 0 起，写零会把段数据清掉）。 */
+    }
 }
 static void vm_init(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_data,size_t stdin_len){
-    vm_init_ex(v,prog,n,segmem,stdin_data,stdin_len,NULL,NULL);
+    vm_init_ex(v,prog,n,segmem,stdin_data,stdin_len,NULL,NULL,0,NULL);
 }
 
 /* ---------------- CLI ---------------- */
-static void usage(const char *p){fprintf(stderr,"用法: %s [-n 次数] [-t 线程数] [-s] [-o 地址] <prog.trv> [stdin文件]\n"
+static void usage(const char *p){fprintf(stderr,"用法: %s [-n 次数] [-t 线程数] [-s] [-o 地址] <prog.trv> [stdin文件] [-- guest参数...]\n"
     "  -s  共享内存 SMP 模式：所有实例共享同一内存与原子锁\n"
-    "  -o  运行后把该 tryte 地址的 8-tryte word 以 9 字节写到 stdout\n",p);}
+    "  -o  运行后把该 tryte 地址的 8-tryte word 以 9 字节写到 stdout\n"
+    "  --  之后的参数作为 guest 程序的 argv（argv[0]=.trv 路径）\n",p);}
 int main(int argc,char**argv){
     init_consts();init_trit_tab();
     int repeat=1,nthreads=0,argi=1,shared=0,outaddr=-1;
@@ -955,9 +988,24 @@ int main(int argc,char**argv){
     uint8_t *segmem=calloc(1,MEMSZ);
     Inst *prog=NULL;int nprog=0;
     if(load_trv(argv[argi],&prog,&nprog,segmem))return 1;
+    argi++;
+    /* guest 命令行参数：
+     *   程序路径之后若有 "--"，其后全部参数作为 guest argv
+     *   （argv[0]=程序名 .trv 路径）；无 "--" 时与旧行为一致：
+     *   下一个参数若存在则作为 stdin 文件（guest 参数 0 个），
+     *   全部既有测试脚本不受影响。 */
+    char **gargv=NULL;int gargc=0;
+    if(argi<argc&&!strcmp(argv[argi],"--")){
+        argi++;
+        gargc=argc-argi+1;
+        gargv=malloc(sizeof(char*)*(size_t)gargc);
+        gargv[0]=argv[argi-2];       /* argv[0] = 程序路径（.trv） */
+        for(int i=1;i<gargc;i++) gargv[i]=argv[argi-1+i];
+        argi=argc;                    /* 剩余已全部消费为 guest 参数 */
+    }
     uint8_t *stdin_data=NULL;size_t stdin_len=0;
-    if(argi+1<argc){
-        FILE *sf=fopen(argv[argi+1],"rb");
+    if(!gargv&&argi<argc){
+        FILE *sf=fopen(argv[argi],"rb");
         if(sf){fseek(sf,0,SEEK_END);stdin_len=ftell(sf);rewind(sf);stdin_data=malloc(stdin_len?stdin_len:1);fread(stdin_data,1,stdin_len,sf);fclose(sf);}
     }
     /* SMP 模式：所有实例共享一段公共内存 + 一把原子锁。
@@ -969,7 +1017,7 @@ int main(int argc,char**argv){
     struct timespec t0,t1;clock_gettime(CLOCK_MONOTONIC,&t0);
     #pragma omp parallel for num_threads(nthreads?nthreads:1) if(repeat>1)
     for(int r=0;r<repeat;r++){
-        vm_init_ex(&vms[r],prog,nprog,shared_mem?shared_mem:segmem,stdin_data,stdin_len,shared_mem,&sync);
+        vm_init_ex(&vms[r],prog,nprog,shared_mem?shared_mem:segmem,stdin_data,stdin_len,shared_mem,&sync,gargc,gargv);
 #ifdef TRIRV_SWITCH
         vm_run(&vms[r],50000000);
 #else
