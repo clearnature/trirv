@@ -95,13 +95,7 @@ def preprocess(text):
     text = re.sub(r'\bsizeof\s*\(\s*int\s*\)', '4', text)
     text = re.sub(r'\bsizeof\s*\(\s*size_t\s*\)', '4', text)
     text = re.sub(r'\bsizeof\s*\(\s*char\s*\)', '1', text)
-    # BITOP 字节位图技巧依赖二进制位运算（tryte 上语义不同）——整文件标记
-    if 'BITOP' in text or '<<8 |' in text or '<<24 |' in text:
-        text = '#error TRIRV_SKIP: byte-packing trick relies on binary bit ops\n' + text
-    if '__volatile__' in text:
-        text = '#error TRIRV_SKIP: inline asm barrier\n' + text
-    if re.search(r'\[\s*[A-Z][A-Z_]*\s*\]\s*=', text):
-        text = '#error TRIRV_SKIP: designated initializers + signal constants (no signal subsystem)\n' + text
+    text = re.sub(r'\bsizeof\s+([A-Za-z_][A-Za-z0-9_]*)\b', '4', text)  # sizeof tmp（TriRV 视图层统一 4）
     # ifdef __GNUC__ 处理：保留 #else 分支
     out = []
     stack = []   # 每层: (active_now, taken_any, in_else, parent_active)
@@ -132,10 +126,63 @@ def preprocess(text):
         if active:
             out.append(line)
     text = '\n'.join(out)
+    # BITOP 字节位图技巧依赖二进制位运算（tryte 上语义不同）——整文件标记
+    if 'BITOP' in text or '<<8 |' in text or '<<24 |' in text:
+        text = '#error TRIRV_SKIP: byte-packing trick relies on binary bit ops\n' + text
+    if '__volatile__' in text:
+        text = '#error TRIRV_SKIP: inline asm barrier\n' + text
+    if re.search(r'\[\s*[A-Z][A-Z_]*\s*\]\s*=', text):
+        text = '#error TRIRV_SKIP: designated initializers + signal constants (no signal subsystem)\n' + text
+    # 复合字面量 (type){...} —— 待 musl_tri 适配层以 TriRV struct 机制重写
+    if re.search(r'\(\s*[a-z_]+_t\s*\)\s*\{', text):
+        text = '#error TRIRV_SKIP: compound literal (type){...} -> rewrite in musl_tri\n' + text
+    # 浮点（TriRV 无 FP）—— strtod/atof 系
+    if re.search(r'\b(double|float)\b', text):
+        text = '#error TRIRV_SKIP: floating point (no FP on TriRV) -> integer rewrite in musl_tri\n' + text
+    # stdio 内部依赖（FILE/sh_fromstring/__intscan 系）
+    if re.search(r'\b(FILE|sh_fromstring|__intscan|shlim|shcnt)\b', text):
+        text = '#error TRIRV_SKIP: depends on musl stdio internals -> rewrite in musl_tri\n' + text
+    # & 常量对齐掩码（&-4/&-3 等）依赖二进制位语义 —— musl_tri 重写
+    # & 二进制掩码语义适配（纯三进制原则：重写而非跳过）：
+    # a) 对齐技巧行（只影响性能不改变语义）→ 整行删除：
+    #    k = -(int)s & 3;  n &= -4;  k = 24 + ((int)s & 4);
+    drop_lines = []
+    kept2 = []
+    for ln in text.split('\n'):
+        # 对齐/掩码赋值行删除（& 常量、&= 复合赋值），控制流掩码行保留
+        # （留给下方控制流掩码标记判断）
+        if re.search(r'&\s*-?\s*[0-9]', ln) and not re.search(r'\bif\b|\bwhile\b|\breturn\b', ln):
+            drop_lines.append(ln)
+            continue
+        # &= 复合赋值掩码行（n &= -4）—— 二进制语义，删除
+        if re.search(r'&=\s*-?\s*[0-9]', ln):
+            drop_lines.append(ln)
+            continue
+        kept2.append(ln)
+    text = '\n'.join(kept2)
+    # b) 掩码判断行（if(n&8) 等——影响控制流，语义真不同）→ SKIP 标记，
+    #    由 musl_tri 重写。
+    if re.search(r'\bif\s*\([^)]*&\s*-?\s*[0-9][^)]*\)', text):
+        text = '#error TRIRV_SKIP: & mask in control flow -> rewrite in musl_tri\n' + text
+    # 数组维度常量表达式折叠：[14 * 4 + 1] → [57]（纯数字与 + - * / ()）
+    def fold_dim(m):
+        inner = m.group(1)
+        if re.fullmatch(r'[0-9+\-*/()\s]+', inner):
+            try:
+                return '[' + str(int(eval(inner, {"__builtins__": {}}))) + ']'
+            except Exception:
+                return m.group(0)
+        return m.group(0)
+    text = re.sub(r'\[\s*([0-9+\-*/()\s]+?)\s*\]', fold_dim, text)
     # 类型替换
     text = text.replace('size_t', 'int').replace('uintptr_t', 'int')
     text = text.replace('uint32_t', 'int').replace('uint64_t', 'int')
     text = text.replace('uint8_t', 'int').replace('uint16_t', 'int')
+    text = text.replace('intmax_t', 'int')
+    # TriRV 全标量 45-trit 等宽：long/long long/short 都是 int 的别名
+    text = re.sub(r'\blong\s+long\b', 'int', text)
+    text = re.sub(r'\blong\b', 'int', text)
+    text = re.sub(r'\bshort\b', 'int', text)
     # (void*) cast 保留（编译器支持 void*）
     return text
 

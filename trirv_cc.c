@@ -203,7 +203,7 @@ static void tok_push(Token t){
 }
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
-        "if","else","while","do","for","return","break","continue","typedef","const","goto",NULL};
+        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -254,8 +254,8 @@ static void lex(const char*src){
             t.s=s; t.kind=is_kw(s)?TK_KW:TK_ID; tok_push(t); p=q; continue;
         }
         /* 多字符运算符 */
-        static const char*ops[]={"...","==","!=","<=",">=","&&","||","<<",">>","++","--","->",
-            "*=","/=","%=","+=","-=","<<=",">>=","&=","^=","|=",NULL};
+        static const char*ops[]={"...","<<=",">>=","==","!=","<=",">=","&&","||","<<",">>","++","--","->",
+            "*=","/=","%=","+=","-=","&=","^=","|=",NULL};
         int matched=0;
         for(int i=0;ops[i];i++){ int L=strlen(ops[i]);
             if(!strncmp(p,ops[i],L)){ char*s=malloc(L+1); memcpy(s,ops[i],L); s[L]=0;
@@ -272,7 +272,7 @@ typedef enum {
     N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,
     N_PREINC,N_POSTINC,N_DEREF,N_ADDR,
     N_BLOCK,N_DECL,N_IF,N_WHILE,N_FOR,N_RETURN,N_EXPR,N_BREAK,N_CONT,
-    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST,N_LABEL,N_GOTO
+    N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST,N_LABEL,N_GOTO,N_SWITCH,N_CASE,N_DEFAULT
 } NodeKind;
 typedef struct Node Node;
 struct Node {
@@ -454,15 +454,21 @@ static Node* parse_primary(void){
         }
         Node*n=nnew(N_VAR); n->s=name; return n;
     }
-    fprintf(stderr,"parse_primary: bad '%s'\n",cur()->s); exit(1);
+    fprintf(stderr,"parse_primary: bad '%s' (prev='%s')\n",cur()->s,
+            IPOS>0&&TOKS[IPOS-1].s?TOKS[IPOS-1].s:"?");
+    { int k; for(k=IPOS-3;k<IPOS+3;k++)
+        if(k>=0&&k<NTOK&&TOKS[k].s) fprintf(stderr,"   tok[%d]='%s'\n",k,TOKS[k].s); }
+    exit(1);
 }
 static Node* parse_postfix(void){
     Node*n=parse_primary();
     for(;;){
         if(accept("[")){ Node*i=parse_expr(); expect("]"); Node*x=nnew(N_INDEX); x->l=n; x->r=i; n=x; }
-        else if(at("(")&&n->k==N_DEREF){
-            /* (*fp)(...) —— 解引用后紧跟调用：间接调用。
-             * 目标（被解引用的表达式）挂 n->e，s 标记 "(*target)"。 */
+        else if(at("(")&&(n->k==N_DEREF||(n->k==N_CAST&&n->s&&strchr(n->s,'*')))){
+            /* 间接调用两种形态：
+             *   (*fp)(...)          —— 解引用调用
+             *   ((cmpfun)cmp)(...)  —— 函数指针类型 cast 后调用（qsort_nr）
+             * 目标挂 n->e，s 标记 "(*target)"。 */
             take();                               /* ( */
             Node*call=nnew(N_CALL);
             call->s=strdup("(*target)");
@@ -680,6 +686,29 @@ static Node* parse_stmt(void){
             }
         }
         expect(")"); n->stmt=parse_stmt(); return n;
+    }
+    if(accept("switch")){
+        expect("("); Node*n=nnew(N_SWITCH); n->cond=parse_expr(); expect(")");
+        expect("{");
+        /* 扁平收集：N_CASE/N_DEFAULT/普通语句 */
+        n->items=malloc(sizeof(Node*)*64);
+        while(!at("}")&&!atk(TK_EOF)){
+            if(accept("case")){
+                /* case 常量:（限字面量/一元负号字面量） */
+                int neg=accept("-");
+                Node*vn=parse_primary();
+                expect(":");
+                Node*c=nnew(N_CASE); c->num=neg?-vn->num:vn->num;
+                n->items[n->nitems++]=c;
+            } else if(accept("default")){
+                expect(":");
+                n->items[n->nitems++]=nnew(N_DEFAULT);
+            } else {
+                n->items[n->nitems++]=parse_stmt();
+            }
+        }
+        expect("}");
+        return n;
     }
     if(accept("goto")){
         Node*n=nnew(N_GOTO); n->s=take()->s; expect(";"); return n;
@@ -904,10 +933,33 @@ static void global_init_data(const char*ty,Node*init,unsigned char**out_data,
 
 static void parse_program(void){
     while(!atk(TK_EOF)){
+        if(getenv("TRV_TOP")) fprintf(stderr,"[top] '%s' kind=%d\n",cur()->s,cur()->kind);
         if(at("typedef")){
-            /* typedef 原类型 名字 ; —— 纯别名（数组/函数指针组合不支持）。
-             * struct 别名也支持：typedef struct P Point; */
             take();
+            /* 形态一：typedef ret (*NAME)(params) —— parse_type 吃 ret 后
+             * cur=="(" 且 next=="*"。本 ABI 所有指针等宽 45-trit，签名不
+             * 参与布局，记 "int*" 即可。 */
+            {
+                /* 先探查：保存游标，试 parse_type，回溯判定 */
+                int save=IPOS;
+                char*real=parse_type();
+                if(at("(")&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,"*")){
+                    take(); expect("*");
+                    char*nm=take()->s;
+                    expect(")");
+                    if(at("(")){                        /* 跳过参数表 */
+                        int d=0;
+                        do{ if(at("("))d++; else if(at(")"))d--;
+                            else if(atk(TK_EOF)) break; take(); }while(d>0);
+                    }
+                    expect(";");
+                    GROW(TYPEDEFS,CAPTDEF,NTDEF,Typedef);
+                    TYPEDEFS[NTDEF].name=strdup(nm); TYPEDEFS[NTDEF].real=strdup("int*"); NTDEF++;
+                    continue;
+                }
+                IPOS=save;                       /* 非函数指针：回溯走纯别名 */
+            }
+            /* 形态二：纯别名。struct 别名也支持。 */
             char*real=parse_type();
             char*nm=take()->s;
             expect(";");
@@ -1014,6 +1066,7 @@ static void parse_program(void){
         if(!at(")")){
             int void_only = strcmp(ret,"void")==0 && at("void")
                             && TOKS[IPOS+1].s && !strcmp(TOKS[IPOS+1].s,")");
+            if(void_only) take();              /* 吃掉 void，留给 expect(")") */
             if(!void_only){
                 do{
                     if(accept("...")){ f->variadic=1; break; }
@@ -2413,6 +2466,47 @@ static void gen_stmt(Node*n){
     case N_BLOCK: for(int i=0;i<n->nitems;i++) gen_stmt(n->body[i]); break;
     case N_LABEL: lbl(n->s); break;
     case N_GOTO:  emitf("JAL zero, %s",n->s); break;
+    case N_SWITCH: {
+        /* switch 生成：cond 求值 → 逐 case BEQ 跳转；无匹配跳 default/end；
+         * case 体顺序生成（fall-through）；break 落 end。 */
+        int cv=eval(n->cond);
+        TDN=0;
+        char*end=newlbl("swend");
+        GROW(LOOPEND,CAPLOOP,NLOOP,char*); LOOPEND[NLOOP]=end; NLOOP++;
+        /* 建 case 值→标签 映射 */
+        int ncase=0; char*deflbl=0;
+        for(int i=0;i<n->nitems;i++){
+            if(n->items[i]->k==N_CASE) ncase++;
+            else if(n->items[i]->k==N_DEFAULT) deflbl=newlbl("swdef");
+        }
+        char**clbl=malloc(sizeof(char*)*(size_t)(ncase?ncase:1));
+        { int k=0;
+          for(int i=0;i<n->nitems;i++) if(n->items[i]->k==N_CASE)
+              clbl[k++]=newlbl("case"); }
+        /* 分发 */
+        int k=0;
+        for(int i=0;i<n->nitems;i++){
+            if(n->items[i]->k==N_CASE){
+                int t2=tacq();
+                emitf("ADDI %s, zero, %d",regname(t2),(int)n->items[i]->num);
+                emitf("SUB %s, %s, %s",regname(t2),regname(cv),regname(t2));
+                emitf("BEQ %s, zero, %s",regname(t2),clbl[k]);
+                k++;
+            }
+        }
+        emitf("JAL zero, %s",deflbl?deflbl:end);
+        /* 体：N_CASE 输出对应标签，N_DEFAULT 输出 default 标签 */
+        k=0;
+        for(int i=0;i<n->nitems;i++){
+            Node*it=n->items[i];
+            if(it->k==N_CASE){ lbl(clbl[k]); k++; }
+            else if(it->k==N_DEFAULT){ lbl(deflbl); }
+            else gen_stmt(it);
+        }
+        lbl(end);
+        NLOOP--;
+        break;
+    }
     case N_DECL:
         for(int i=0;i<n->ndecls;i++){
             if(!n->dinit[i]) continue;
@@ -2555,6 +2649,7 @@ static void collect_decls(Node*n){
     case N_BIN: collect_decls(n->l); collect_decls(n->r); break;
     case N_UN: collect_decls(n->e); break;
     case N_PREINC: collect_decls(n->e); break;
+    case N_SWITCH: collect_decls(n->cond); for(int i=0;i<n->nitems;i++) collect_decls(n->items[i]); break;
     case N_POSTINC: collect_decls(n->e); break;
     case N_DEREF: collect_decls(n->e); break;
     case N_INDEX: collect_decls(n->l); collect_decls(n->r); break;
@@ -3133,6 +3228,7 @@ static void gate_check(Node*n){
     case N_UN:     if(n->s&&!strcmp(n->s,"~")) GATE_BIT=1; gate_check(n->e); return;
     case N_ASSIGN: gate_check(n->l); gate_check(n->r); return;
     case N_PREINC: gate_check(n->e); return;
+    case N_SWITCH: gate_check(n->cond); for(int i=0;i<n->nitems;i++) gate_check(n->items[i]); return;
     case N_LABEL: case N_GOTO: return;
     case N_POSTINC: gate_check(n->e); return;
     case N_DEREF:  gate_check(n->e); return;
