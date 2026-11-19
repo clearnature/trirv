@@ -176,7 +176,11 @@ def main():
     FULL = R.from_int(MOD - 1)                # 45 trit，全 2（负，符号一眼可判）
     RAND = R.from_int(MOD * 7 // 11)          # 45 trit，随机分布
     NEARHALF = R.from_int(MOD // 2 + 1)       # 45 trit，= 111..12，符号扫描最坏
-    FOUR = R.from_int(12345678)               # 4 tryte
+    def dense(w):
+        """w 个 tryte 全 242 —— 该宽度下最密的数，用于宽度标度（避免稀疏值失真）。"""
+        return R.from_int(R.BASE ** w - 1)
+
+    FOUR = dense(4)
 
     print(f"\n成本表（trit 级原语次数，与宿主无关；主列 45-trit 全宽）")
     print(f"{'ISA 操作':<28}{'全宽':>7}{'4tryte':>8}  主要构成")
@@ -226,7 +230,7 @@ def main():
     print("\n除法器：成本随除数宽度增长（被除数全宽，m=3）")
     print(f"{'除数 tryte':>10}{'原语数':>10}")
     for w in (1, 2, 3, 4, 5, 7, 9):
-        div = R.from_int(3 ** (5 * w - 1) + 7)
+        div = dense(w)
         R.reset(); R.divmod_radix(FULL, div, 3)
         print(f"{w:>10}{sum(R.STATS.values()):>10}")
 
