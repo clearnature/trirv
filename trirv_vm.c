@@ -201,8 +201,8 @@ static inline int is_pcrel(Op op){
 }
 
 static Inst decode_one(uint32_t raw) {
-    uint32_t opc=field(raw,0,2), rd=field(raw,3,5), fc=field(raw,7,8);   /* D3: rd 3-trit */
-    uint32_t rs1=field(raw,9,11), rs2=field(raw,13,15), f2=field(raw,17,19); /* D3: rs1/rs2 3-trit */
+    uint32_t opc=field(raw,0,2), rd=field(raw,3,6), fc=field(raw,7,8);   /* 4-trit：x0-x31 */
+    uint32_t rs1=field(raw,9,12), rs2=field(raw,13,16), f2=field(raw,17,19); /* 4-trit：x0-x31 */
     Inst in; memset(&in,0,sizeof(in));
     in.rd=rd; in.rs1=rs1; in.rs2=rs2; in.op=OP_NOP;
     const InstDef *d=NULL;
