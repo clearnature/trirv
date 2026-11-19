@@ -294,9 +294,10 @@ struct Node {
     int arrow;          /* member -> */
     int deref;          /* parse 辅助 */
     int uses_bitop;     /* 本函数体含 & | ^ ~（需要 5 个 callee-saved 工作寄存器）*/
+    int sret_off;       /* 本调用点的 sret 返回缓冲在帧内的偏移；-1 = 不需要 */
 };
 static Node* nnew(NodeKind k){
-    Node*n=calloc(1,sizeof(Node)); n->k=k; return n;
+    Node*n=calloc(1,sizeof(Node)); n->k=k; n->sret_off=-1; return n;
 }
 static void *grow(void*p,int*cap,int need,int sz){
     if(need>=*cap){ *cap=(*cap?*cap*2:8); while(need>=*cap)*cap*=2; p=realloc(p,*cap*sz); }
@@ -646,12 +647,17 @@ static void struct_def(const char*name);   /* forward：布局在类型系统一
 
 static void parse_program(void){
     while(!atk(TK_EOF)){
-        if(accept("struct")){
-            /* struct 定义：记录成员类型与 9 对齐偏移 */
-            Token*nm=take();
-            if(!at("{")){ fprintf(stderr,"UNSUPPORTED: struct as return type\n"); exit(2); }
-            struct_def(nm->s);
-            continue;
+        if(at("struct")){
+            /* 顶层 `struct` 有两种含义，看第三个 token 区分：
+             *   struct P { … }   定义（t1=P, t2="{"）
+             *   struct P f(…) …  返回 struct 的函数（t1=P, t2=f）—— 不能当定义吃掉 */
+            Token*t1=&TOKS[IPOS+1], *t2=&TOKS[IPOS+2];
+            if(t1->s&&t2->s&&!strcmp(t2->s,"{")){
+                take();                      /* struct */
+                Token*nm=take();             /* 名字 */
+                struct_def(nm->s);
+                continue;
+            }
         }
         char*ret=parse_type();
         char*name=take()->s;
@@ -910,6 +916,9 @@ static int TDN;                                   /* 已占用的临时深度 */
 static int CSAVE_OFF, ARG_OFF;                    /* 跨调用保存区 / 实参暂存区基址 */
 static int NFIXED;                                /* 当前函数固定参数个数（va_start 用） */
 static int A0_DIRECT;                             /* 调用结果就要留在 a0，别再拷回临时（return f() 用） */
+/* sret（struct 按值返回）状态：当前函数是否 sret、隐藏返回缓冲指针存在哪个局部槽、
+ * 返回结构体多大；以及本帧里 sret 调用点缓冲区的基址。 */
+static int FUNC_SRET, FUNC_SRET_LOC, FUNC_RET_BYTES, SRET_BASE;
 
 /* 函数级大常量缓存
  * ----------------
@@ -971,6 +980,34 @@ static int rwcopy(int src){
     int t=tacq();
     emitf("ADDI %s, %s, 0",regname(t),regname(src));
     return t;
+}
+
+/* 整块拷贝：dst/src 都是地址寄存器，struct 尺寸已按 9 tryte 对齐（见 struct_def）。
+ * 用一个固定 scratch 走字，不占临时池 —— 与 N_ASSIGN 的结构体赋值同一套做法。 */
+static const char* fn_ret_type(const char*name);   /* 定义在后面 */
+static void copy_words(int dstReg,int srcReg,int bytes){
+    for(int o=0;o<bytes;o+=9){
+        emitf("LW %s, %d(%s)",regname(SCRATCH),o,regname(srcReg));
+        emitf("SW %s, %d(%s)",regname(SCRATCH),o,regname(dstReg));
+    }
+}
+
+/* sret 调用点缓冲编号：每个"返回 struct 的调用"各占一块独立缓冲，避免
+ * f(g(),h()) 里两个缓冲互相覆盖。帧大小必须先于代码生成确定，所以先走一遍 AST
+ * 编号；字段固定在节点上（每个节点只生成一次代码），循环里复用同一块是安全的。 */
+static void sret_slot_walk(Node*n,int*cur){
+    if(!n) return;
+    if(n->k==N_CALL){
+        n->sret_off=-1;
+        const char*rt=fn_ret_type(n->s);
+        if(struct_find(rt)){ n->sret_off=*cur; *cur+=ty_bytes(rt); }
+    }
+    Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
+    for(int i=0;i<10;i++) sret_slot_walk(all[i],cur);
+    if(n->body) for(int i=0;i<n->nitems;i++) sret_slot_walk(n->body[i],cur);
+    if(n->args) for(int i=0;i<n->nargs;i++) sret_slot_walk(n->args[i],cur);
+    if(n->items) for(int i=0;i<n->nitems;i++) sret_slot_walk(n->items[i],cur);
+    if(n->dinit) for(int i=0;i<n->ndecls;i++) sret_slot_walk(n->dinit[i],cur);
 }
 
 static const char* binop_insn(const char*op){
@@ -1179,8 +1216,9 @@ static int eval(Node*n){
     case N_STR: { int r=tacq(); load_imm(r,n->straddr); return r; }
     case N_VAR: {
         LocVar*v=findloc(n->s);
-        /* 数组名求值 = 数组首地址（C 的退化规则） */
-        if(v&&is_array(v->ty)) return addr_of(n);
+        /* 数组名求值 = 数组首地址（C 的退化规则）；结构体同理 —— 结构体右值的
+         * "值"就是首地址，真正按值拷贝由赋值/传参/返回这些消费方自己做。 */
+        if(v&&(is_array(v->ty)||struct_find(v->ty))) return addr_of(n);
         /* 常驻寄存器里的变量直接返回其寄存器，省掉 `ADDI t, s, 0` 这次拷贝。
            结果因此是只读的，上级若要写必须先 dstof()。 */
         if(v&&!v->spilled&&v->reg>0) return v->reg;
@@ -1401,43 +1439,61 @@ static int eval(Node*n){
     case N_CALL: {
         int nargs=n->nargs;
         int sn=syscall_no(n->s);
+        /* 返回 struct 的调用走 sret：a0 = 本帧里那块返回缓冲的地址，
+         * 实参寄存器窗口整体后移一位；调用完成后 a0 会把缓冲地址带回来。 */
+        int sret = (sn<0) && struct_find(fn_ret_type(n->s))!=NULL;
+        int abase = sret?1:0;
+        int nreg  = 8-abase;
+        /* "return f(...) 结果直留 a0"这个标记只对本层调用有效。实参里还有嵌套调用时
+         * 内层调用会跟着跳过 `ADDI r, a0, 0`，把寄存器池里一个失效的旧值当返回值存下去。
+         * 实测（修复前）：`return f(g(3),g(4))` 返回 0 而不是 34，且编译期毫无提示。
+         * 2026-11-19 由契约测试的 f(g(),h()) 用例查出来。 */
+        int direct_here = A0_DIRECT;
+        A0_DIRECT = 0;
         /* 1) 活跃临时全部落栈：被调者会破坏 t 系列寄存器。索引=深度，嵌套不会互相覆盖。 */
         for(int i=0;i<d0;i++) emitf("SW %s, %d(s0)",regname(TPOOL[i]),CSAVE_OFF+i*9);
-        /* 快路径：实参全是常量或标量变量、不超过 8 个且非变参时，
+        /* 快路径：实参全是常量或标量变量、不超过寄存器窗口且非变参时，
            直接装进 a 寄存器，省掉"先写暂存区再读回"的两趟访存。 */
-        int fast = (sn<0)&&nargs<=8&&!fn_is_variadic(n->s);
+        int fast = (sn<0)&&nargs<=nreg&&!fn_is_variadic(n->s);
         for(int i=0;i<nargs&&fast;i++){
             Node*a=n->args[i];
             if(a->k==N_NUM) continue;
-            if(a->k==N_VAR){ LocVar*v=findloc(a->s); if(v&&!is_array(v->ty)) continue; }
+            /* struct 实参必须传地址，不能读第一个字，故不进快路径 */
+            if(a->k==N_VAR){ LocVar*v=findloc(a->s); if(v&&!is_array(v->ty)&&!struct_find(v->ty)) continue; }
             fast=0;
         }
         if(fast){
             for(int i=0;i<nargs;i++){
                 Node*a=n->args[i];
-                if(a->k==N_NUM){ load_imm128(10+i,a->numw); continue; }
+                if(a->k==N_NUM){ load_imm128(10+abase+i,a->numw); continue; }
                 LocVar*v=findloc(a->s);
-                if(!v) emitf("ADDI a%d, zero, 0",i);
-                else if(!v->spilled&&v->reg>0){ if(v->reg!=10+i) emitf("ADDI a%d, %s, 0",i,regname(v->reg)); }
-                else { chk_off(v->off); emitf("LW a%d, %d(s0)",i,v->off); }
+                if(!v) emitf("ADDI a%d, zero, 0",abase+i);
+                else if(!v->spilled&&v->reg>0){ if(v->reg!=10+abase+i) emitf("ADDI a%d, %s, 0",abase+i,regname(v->reg)); }
+                else { chk_off(v->off); emitf("LW a%d, %d(s0)",abase+i,v->off); }
             }
+            if(sret){ chk_off(SRET_BASE+n->sret_off); emitf("ADDI a0, s0, %d",SRET_BASE+n->sret_off); }
             emitf("JAL ra, %s",n->s);
         } else {
-            /* 2) 实参逐个求值后暂存（嵌套调用会破坏 a0-a7，故不能直接放进 a 寄存器） */
+            /* 2) 实参逐个求值后暂存（嵌套调用会破坏 a0-a7，故不能直接放进 a 寄存器）。
+                struct 实参求值结果就是首地址（C 的按值传参由被调方入口拷贝实现）。 */
             for(int i=0;i<nargs;i++){
                 int r=eval(n->args[i]);
                 emitf("SW %s, %d(s0)",regname(r),ARG_OFF+i*9);
                 TDN=d0;
             }
-            /* 变参或被调函数形参超过 8 个：参数块在帧内连续排布，块基址进 t6。
+            /* 变参或被调函数形参超过寄存器窗口：参数块在帧内连续排布，块基址进 t6。
                块放在帧内（而不是 sp 之下）是为了不与已求值的实参暂存区互相踩踏。 */
-            int need_block = (sn<0) && (fn_is_variadic(n->s)||nargs>8);
+            int need_block = (sn<0) && (fn_is_variadic(n->s)||nargs>nreg);
             if(need_block) emitf("ADDI t6, s0, %d",ARG_OFF);
-            for(int i=0;i<nargs&&i<8;i++) emitf("LW a%d, %d(s0)",i,ARG_OFF+i*9);
+            for(int i=0;i<nargs&&i<nreg;i++) emitf("LW a%d, %d(s0)",abase+i,ARG_OFF+i*9);
             if(sn>=0){ load_imm(A7,sn); emitf("ECALL"); }
-            else emitf("JAL ra, %s",n->s);
+            else {
+                if(sret){ chk_off(SRET_BASE+n->sret_off); emitf("ADDI a0, s0, %d",SRET_BASE+n->sret_off); }
+                emitf("JAL ra, %s",n->s);
+            }
         }
         /* 3) 恢复活跃临时，结果取回 */
+        A0_DIRECT = direct_here;                 /* 本层才是"直通 a0"的对象 */
         for(int i=0;i<d0;i++) emitf("LW %s, %d(s0)",regname(TPOOL[i]),CSAVE_OFF+i*9);
         int r=tacq();
         if(!A0_DIRECT) emitf("ADDI %s, a0, 0",regname(r));   /* return f() 时 a0 已是结果 */
@@ -1471,6 +1527,7 @@ static int eval(Node*n){
     case N_MEMBER: {
         char*ty=expr_type(n);
         int pa=addr_of(n);
+        if(struct_find(ty)) return pa;            /* 成员本身是结构体：值是首地址 */
         int d=dstof(pa);
         if(strcmp(ty,"int")) load_mem(d,pa,0,ty);
         else emitf("LW %s, 0(%s)",regname(d),regname(pa));
@@ -1615,7 +1672,13 @@ static void gen_stmt(Node*n){
                 load_imm128(v->reg,n->dinit[i]->numw); TDN=0; continue;
             }
             TDN=0; int r=eval(n->dinit[i]);
-            if(v->spilled){ store_mem(r,8,v->off,v->ty); }
+            if(v->spilled){
+                if(struct_find(v->ty)){          /* struct 初始化 = 从源地址整块拷入 */
+                    int dst=tacq();
+                    emitf("ADDI %s, s0, %d",regname(dst),v->off);
+                    copy_words(dst,r,ty_bytes(v->ty));
+                } else store_mem(r,8,v->off,v->ty);
+            }
             else if(v->reg!=r) emitf("ADDI %s, %s, 0",regname(v->reg),regname(r));
             TDN=0;
         }
@@ -1655,7 +1718,17 @@ static void gen_stmt(Node*n){
     }
     case N_RETURN:
         TDN=0;
-        if(n->expr&&n->expr->k==N_CALL){        /* return f(...)：结果直接留在 a0 */
+        if(FUNC_SRET && n->expr){
+            /* 返回 struct：把值拷进调用方给的缓冲，再把缓冲地址带回去。
+             * struct 类型表达式求值 = 首地址，直接 addr_of 即可覆盖变量/成员/调用三种形态。 */
+            int src=addr_of(n->expr);
+            int dst=tacq();
+            chk_off(LOC[FUNC_SRET_LOC].off);
+            emitf("LW %s, %d(s0)",regname(dst),LOC[FUNC_SRET_LOC].off);
+            copy_words(dst,src,FUNC_RET_BYTES);
+            emitf("ADDI a0, %s, 0",regname(dst));
+            TDN=0;
+        } else if(n->expr&&n->expr->k==N_CALL){    /* return f(...)：结果直接留在 a0 */
             A0_DIRECT=1; eval(n->expr); A0_DIRECT=0;
         } else if(n->expr){ int r=eval(n->expr); if(r!=10) emitf("ADDI a0, %s, 0",regname(r)); }
         else emitf("ADDI a0, zero, 0");
@@ -1758,19 +1831,29 @@ static void gen_func(Node*f){
     FUNC_EPILOGUE=newlbl("epi");
     int anycall=has_any_call(f->fbody);
     int hascall=has_call(f->fbody);
+    /* sret：返回 struct 的函数多一个隐藏参数 a0 = 调用方给的返回缓冲地址。
+     * 参数寄存器的编号整体后移一位（a1..a7），与 Python 后端一致。 */
+    FUNC_SRET = struct_find(f->rettype)!=NULL;
+    FUNC_RET_BYTES = FUNC_SRET ? ty_bytes(f->rettype) : 0;
+    int abase = FUNC_SRET?1:0;
     pp_set(!anycall&&!f->variadic, f->nparams);   /* 必须在寄存器分配之前定池 */
     for(int i=0;i<f->nparams;i++){
         LocVar*v=loc_new(); v->name=f->params[i]; v->ty=f->ptypes[i];
         int isarr; ty_size(v->ty,&isarr);
-        /* 形参同理：char 类形参必须在入口按 tryte 归一化，故落栈后用 LB/LBU 读回。 */
-        v->spilled = isarr || is_char_ty(v->ty);
+        /* 形参同理：char 类形参必须在入口按 tryte 归一化，故落栈后用 LB/LBU 读回。
+         * struct 形参按值传：入口从 aN（= 源地址）逐字拷进本地副本，之后它就是
+         * 一个普通结构体局部变量 —— 修改与调用方完全隔离。 */
+        v->spilled = isarr || is_char_ty(v->ty) || struct_find(v->ty)!=NULL;
         /* 叶子函数没有调用会踩 a0-a7，形参可以直接留在它到达时的寄存器里，
            省掉 `ADDI sN, aM, 0` 这次搬运。池从 a_nparams 起，不会与它们冲突。 */
-        if(!anycall&&!isarr&&!is_char_ty(v->ty)&&!struct_find(v->ty)&&i<8){
-            v->reg=10+i; reg_take(v->reg);
+        if(!anycall&&!isarr&&!is_char_ty(v->ty)&&!struct_find(v->ty)&&i<8-abase){
+            v->reg=10+abase+i; reg_take(v->reg);
         }
     }
     if(f->variadic){ LocVar*vb=loc_new(); vb->name="__argbase"; vb->ty="int"; vb->spilled=1; }
+    FUNC_SRET_LOC=-1;
+    if(FUNC_SRET){ LocVar*vb=loc_new(); vb->name="__sretptr"; vb->ty="int*"; vb->spilled=1;
+                   FUNC_SRET_LOC=NLOC-1; }   /* 必须排在形参之后：下面按 LOC[i] 索引形参 */
     collect_decls(f->fbody);
     for(int i=0;i<NLOC;i++){
         if(LOC[i].spilled){
@@ -1824,7 +1907,10 @@ static void gen_func(Node*f){
     CSAVE_OFF = spillbase + spill;
     ARG_OFF   = CSAVE_OFF + 6*9;
     int narg_slots = 8; { int ma=max_args(f->fbody); if(ma>narg_slots) narg_slots=ma+2; }
-    int call_bytes = hascall ? (6*9 + narg_slots*9) : 0;
+    /* sret 缓冲跟在实参暂存区之后：每个返回 struct 的调用点各占一块。 */
+    int sret_bytes=0; if(hascall) sret_slot_walk(f->fbody,&sret_bytes);
+    SRET_BASE = ARG_OFF + narg_slots*9;
+    int call_bytes = hascall ? (6*9 + narg_slots*9 + sret_bytes) : 0;
     int framesize=18+ns*9+spill+call_bytes;   /* sp 抬到帧顶 */
     if(need_frame){
         emitf("SW s0, 0(sp)");
@@ -1843,28 +1929,48 @@ static void gen_func(Node*f){
     /* 变参函数：参数块基址在 t6，存入隐藏槽供 va_start/va_arg 使用 */
     if(f->variadic){ LocVar*vb=findloc("__argbase");
         if(vb){ chk_off(vb->off); emitf("SW t6, %d(s0)",vb->off); } }
-    /* 第 9 个起的形参在参数块里：t6 + i*9 */
-    for(int i=8;i<f->nparams;i++){
+    /* sret：a0 是调用方给的返回缓冲地址。后面的参数拷贝只用临时寄存器，不碰 a0。 */
+    if(FUNC_SRET){ chk_off(LOC[FUNC_SRET_LOC].off); emitf("SW a0, %d(s0)",LOC[FUNC_SRET_LOC].off); }
+    TDN=0;
+    /* 参数寄存器窗口：sret 占掉 a0，只剩 a1..a7。多出来的从参数块 t6 + i*9 取
+     * （块内索引不随 sret 平移，与调用方的存放位置一一对应）。 */
+    for(int i=8-abase;i<f->nparams;i++){
         LocVar*v=&LOC[i]; chk_off(i*9);
         int r=tacq(); emitf("LW %s, %d(t6)",regname(r),i*9);
-        if(v->spilled) store_mem(r,8,v->off,v->ty);
+        if(struct_find(v->ty)){                   /* 块里放的是源地址：拷进本地副本 */
+            int dst=tacq(); chk_off(v->off);
+            emitf("ADDI %s, s0, %d",regname(dst),v->off);
+            copy_words(dst,r,ty_bytes(v->ty));
+        }
+        else if(v->spilled) store_mem(r,8,v->off,v->ty);
         else emitf("ADDI %s, %s, 0",regname(v->reg),regname(r));
         TDN=0;
     }
     for(int i=0;i<CC_N;i++) load_imm128(CC_R[i],(__int128)CC_V[i]);   /* 大常量只装一次 */
     /* 参数装载（在帧建立后） */
-    for(int i=0;i<f->nparams&&i<8;i++){
+    TDN=0;
+    for(int i=0;i<f->nparams&&i<8-abase;i++){
         LocVar*v=&LOC[i];
-        if(v->spilled){
+        if(struct_find(v->ty)){
+            /* 按值传参：aN 里是源地址，逐字拷进本地副本后就是普通结构体局部变量，
+             * 之后的成员读写与取址全都走既有路径，调用方完全看不到这里的变化。 */
+            int dst=tacq(), src=tacq(); chk_off(v->off);
+            emitf("ADDI %s, s0, %d",regname(dst),v->off);
+            emitf("ADDI %s, a%d, 0",regname(src),i+abase);
+            copy_words(dst,src,ty_bytes(v->ty));
+            TDN=0;
+        }
+        else if(v->spilled){
             /* 形参落栈时也按类型写：char 形参用 SB 把入参截到 1 tryte，
              * 后续 LB/LBU 读回时符号性才与 C 一致。 */
             if(is_char_ty(v->ty)){
-                int r=tacq(); emitf("ADDI %s, a%d, 0",regname(r),i);
+                int r=tacq(); emitf("ADDI %s, a%d, 0",regname(r),i+abase);
                 store_mem(r,8,v->off,v->ty); TDN=0;
-            } else { chk_off(v->off); emitf("SW a%d, %d(s0)",i,v->off); }
+            } else { chk_off(v->off); emitf("SW a%d, %d(s0)",i+abase,v->off); }
         }
-        else if(v->reg!=10+i) emitf("ADDI %s, a%d, 0",regname(v->reg),i);
+        else if(v->reg!=10+abase+i) emitf("ADDI %s, a%d, 0",regname(v->reg),i+abase);
     }
+    TDN=0;
     gen_stmt(f->fbody);
     if(!ends_with_return(f->fbody)) emitf("ADDI a0, zero, 0");   /* 仅兜底路径需要 */
     lbl(FUNC_EPILOGUE);
@@ -2115,13 +2221,10 @@ int main(int argc,char**argv){
     char*src=malloc(sz+1); fread(src,1,sz,fp); src[sz]=0; fclose(fp);
     lex(src); IPOS=0;
     parse_program();
-    /* 能力闸门：未实现特性直接拒绝，交由统一后端回退到 Python 参考实现 */
+    /* 能力闸门：未实现特性直接拒绝，交由统一后端回退到 Python 参考实现。
+     * struct 按值传参/返回已于 2026-11-19 实现（见 gen_func 的 prologue 拷贝与
+     * N_RETURN 的 sret 拷贝），不再拦截。 */
     for(int i=0;i<NFN&&!GATE_WHY;i++){
-
-        for(int k=0;k<FNS[i]->nparams;k++){
-            if(ty_is_struct_val(FNS[i]->ptypes[k])){ GATE_WHY="struct param by value (未实现)"; break; }
-        }
-        if(ty_is_struct_val(FNS[i]->rettype)){ GATE_WHY="struct return by value (未实现)"; break; }
         GATE_BIT=0;
         gate_check(FNS[i]->fbody);
         FNS[i]->uses_bitop=GATE_BIT;      /* 位运算工作寄存器按函数分配 */
