@@ -294,6 +294,7 @@ struct Node {
     int arrow;          /* member -> */
     int deref;          /* parse 辅助 */
     int uses_bitop;     /* 本函数体含 & | ^ ~（需要 5 个 callee-saved 工作寄存器）*/
+    int shift_regs;     /* 本函数体做二进制移位需要几个 callee-saved 工作寄存器 (0..2) */
     int sret_off;       /* 本调用点的 sret 返回缓冲在帧内的偏移；-1 = 不需要 */
 };
 static Node* nnew(NodeKind k){
@@ -853,6 +854,7 @@ static const __int128 TILDE = (((__int128)1<<72)-1) % ((__int128)3486784401LL*34
 static int BIT_R[5];        /* va, vb, acc, p, two —— s7..s11 */
 static int BITOP_ON;        /* 本函数是否已分配位运算工作寄存器 */
 static int GATE_BIT;        /* gate_check 扫到的位运算标记（按函数） */
+static int GATE_SHIFT;      /* gate_check 扫到的移位所需工作寄存器数（按函数） */
 
 /* dst = a op b；kind 0=& 1=| 2=^
  * 关键：45-trit 寄存器的 raw 值**就是**位模式——负数的 raw 是 3^45-|x|，
@@ -904,6 +906,110 @@ static void emit_bitnot(int dst,int aR){
     load_imm128(ac,TILDE);
     emitf("SUB %s, %s, %s",regname(ac),regname(ac),regname(aR));
     if(dst!=ac) emitf("ADDI %s, %s, 0",regname(dst),regname(ac));
+}
+
+/* ============ 二进制移位适配层（C 的 `<<` / `>>`） ============
+ * 与 & | ^ ~ 同一套 ABI（规范 §5.1.1）：视图 = 45-trit 字的 **raw 值**，
+ * 运算结果直接就是字本身，不需要"映回"。
+ *
+ * 左移 k 位 = raw·2^k mod 3^45。ADD 天然按 3^45 回绕，所以 k 次自加
+ *   `ADD d,d,d` 就是精确结果，一条指令一位；k 大时换成一次 MUL
+ *   （2^k mod 3^45 在编译期算好），位宽不是问题。
+ * 右移 k 位 = 对**数学值**取 floor(x / 2^k)：
+ *   无符号 —— 对 raw 做无符号除法，`DIVU` 一次到位（除法天然向下取整）；
+ *   有符号 —— C/RISC-V 的算术右移语义。`DIV` 向零截断，负数且有余数时
+ *             还要再减 1，所以先 `REM` 取余、用余数的符号判断。
+ *
+ * 已知边界（C 里都是 UB，这里给的是确定行为，不是"猜"）：
+ *   k ≥ 72 无符号 → 0；k ≥ 71 有符号 → 0 或 -1（因为 |x| < 2^71 = 2.36e21）；
+ *   运行时移位量为负 → 按 0 次移位处理（循环条件是 cnt > 0）。
+ *
+ * 变量移位量需要两个 callee-saved 工作寄存器（SH_R），按函数分配，
+ * 与位运算的 BIT_R 同一套做法：抢不到就硬报错，不静默降级。
+ */
+static int SH_R[2]={-1,-1};
+static int SH_NEED;
+
+static __int128 pow2_mod(long long k){          /* 2^k mod 3^45；k≤4096 时逐次翻倍足够 */
+    __int128 m=1;
+    for(long long i=0;i<k;i++){ m<<=1; if(m>=P345) m-=P345; }
+    return m;
+}
+
+static void emit_shl_k(int dst,int aR,long long k){
+    if(k<=0){ if(dst!=aR) emitf("ADDI %s, %s, 0",regname(dst),regname(aR)); return; }
+    if(dst!=aR) emitf("ADDI %s, %s, 0",regname(dst),regname(aR));
+    if(k<=10){                                   /* 小 k：自加链，比装常数+MUL 便宜 */
+        for(int i=0;i<k;i++) emitf("ADD %s, %s, %s",regname(dst),regname(dst),regname(dst));
+        return;
+    }
+    load_imm128(SH_R[0],pow2_mod(k));
+    emitf("MUL %s, %s, %s",regname(dst),regname(dst),regname(SH_R[0]));
+}
+
+static void emit_shr_k(int dst,int aR,long long k,int uns){
+    if(k<=0){ if(dst!=aR) emitf("ADDI %s, %s, 0",regname(dst),regname(aR)); return; }
+    if(uns){
+        if(k>=72){ emitf("ADDI %s, zero, 0",regname(dst)); return; }
+        load_imm128(SH_R[0],pow2_mod(k));
+        if(dst!=aR) emitf("ADDI %s, %s, 0",regname(dst),regname(aR));
+        emitf("DIVU %s, %s, %s",regname(dst),regname(dst),regname(SH_R[0]));
+        return;
+    }
+    if(k>=71){              /* |x| ≤ (3^45-1)/2 < 2^71 ⇒ 结果只能是 0 或 -1 */
+        emitf("SLT %s, %s, zero",regname(dst),regname(aR));
+        emitf("SUB %s, zero, %s",regname(dst),regname(dst));
+        return;
+    }
+    load_imm128(SH_R[0],pow2_mod(k));
+    emitf("REM %s, %s, %s",regname(SH_R[1]),regname(aR),regname(SH_R[0]));
+    emitf("DIV %s, %s, %s",regname(dst),regname(aR),regname(SH_R[0]));
+    emitf("SLT %s, %s, zero",regname(SH_R[1]),regname(SH_R[1]));   /* 余数为负 ⇒ 截断方向错 */
+    char*l=newlbl("sr");
+    emitf("BEQ %s, zero, %s",regname(SH_R[1]),l);
+    emitf("ADDI %s, zero, 1",regname(SH_R[1]));
+    emitf("SUB %s, %s, %s",regname(dst),regname(dst),regname(SH_R[1]));
+    lbl(l);
+}
+
+/* 变量移位量：循环 k 次单步。cnt 在 SH_R[0]，判定"cnt > 0"与单步常数在 SH_R[1]，
+ * 有符号右移的余数借 SCRATCH。
+ * 教训：**不能拿 a、b 里"看起来自由"的那个当临时** —— 它们可能正是某个变量的
+ * 常驻寄存器（`s=s+(1<<i)` 里的 i），写进去就把变量改了。 */
+static void emit_shl_v(int dst,int aR,int cR){
+    emitf("ADDI %s, %s, 0",regname(SH_R[0]),regname(cR));
+    if(dst!=aR) emitf("ADDI %s, %s, 0",regname(dst),regname(aR));
+    char*l=newlbl("sv"),*e=newlbl("sve");
+    lbl(l);
+    emitf("SLT %s, zero, %s",regname(SH_R[1]),regname(SH_R[0]));
+    emitf("BEQ %s, zero, %s",regname(SH_R[1]),e);
+    emitf("ADD %s, %s, %s",regname(dst),regname(dst),regname(dst));
+    emitf("ADDI %s, %s, -1",regname(SH_R[0]),regname(SH_R[0]));
+    emitf("JAL zero, %s",l);
+    lbl(e);
+}
+
+static void emit_shr_v(int dst,int aR,int cR,int uns){
+    emitf("ADDI %s, %s, 0",regname(SH_R[0]),regname(cR));
+    if(dst!=aR) emitf("ADDI %s, %s, 0",regname(dst),regname(aR));
+    char*l=newlbl("sv"),*e=newlbl("sve"),*s=newlbl("svs");
+    lbl(l);
+    emitf("SLT %s, zero, %s",regname(SH_R[1]),regname(SH_R[0]));
+    emitf("BEQ %s, zero, %s",regname(SH_R[1]),e);
+    emitf("ADDI %s, zero, 2",regname(SH_R[1]));
+    if(uns) emitf("DIVU %s, %s, %s",regname(dst),regname(dst),regname(SH_R[1]));
+    else {
+        emitf("REM %s, %s, %s",regname(SCRATCH),regname(dst),regname(SH_R[1]));
+        emitf("DIV %s, %s, %s",regname(dst),regname(dst),regname(SH_R[1]));
+        emitf("SLT %s, %s, zero",regname(SCRATCH),regname(SCRATCH));
+        emitf("BEQ %s, zero, %s",regname(SCRATCH),s);
+        emitf("ADDI %s, zero, 1",regname(SCRATCH));
+        emitf("SUB %s, %s, %s",regname(dst),regname(dst),regname(SCRATCH));
+        lbl(s);
+    }
+    emitf("ADDI %s, %s, -1",regname(SH_R[0]),regname(SH_R[0]));
+    emitf("JAL zero, %s",l);
+    lbl(e);
 }
 
 /* ===================== 表达式求值：带深度的临时寄存器池 =====================
@@ -1020,12 +1126,10 @@ static const char* binop_insn(const char*op){
         exit(2);
     }
     if(!strcmp(op,"<<")||!strcmp(op,">>")){
-        /* ISA 的 SLL/SRL/SRA 是**三进制**移位（×3^k / ÷3^k），C 的 << >> 是二进制（×2^k）。
-         * 直接映射过去会让 x<<1 静默得到 ×3 —— 实测 x=10 时返回 30 而 C 语义要求 20。
-         * 45-trit 字上"左移一位"没有原生含义，必须先定义二进制视图，属外来语义适配层。 */
-        fprintf(stderr,"UNSUPPORTED: 移位运算 %s —— ISA 的 SLL/SRL 是三进制移位（×3^k），"
-                       "C 的 %s 要求二进制移位（×2^k），两者不同义。"
-                       "45-trit 字上的二进制视图需先在适配层定义（尚未实现）\n",op,op);
+        /* 移位不走这里：N_BIN 已把它们交给适配层（emit_shl_* / emit_shr_*）。
+         * ISA 的 SLL/SRL 是**三进制**移位（×3^k / ÷3^k），与 C 的 ×2^k 不同义，
+         * 早期直接把 `<<` 直译成 SLL，于是 x<<1 静默得到 ×3（x=10 返回 30）。 */
+        fprintf(stderr,"internal: 移位应由适配层生成，不该走到 binop_insn\n");
         exit(2);
     }
     static const char*m[]={
@@ -1079,6 +1183,17 @@ static void mul_const_into(int dst,int src,long long c){
 }
 /* 字面量是否真的落在 long long 内（num 是截断值，用 numw 校验） */
 static int num_fits_ll(Node*n){ return n->numw==(__int128)n->num; }
+/* 字面量整数取值（用于移位量这类必须是编译期常量的位置）。
+ * 顺带折叠一元负号：`-1` 在 AST 里是 N_UN('-', N_NUM)，不折叠就当成变量移位量，
+ * 于是 `x << -1` 会静默走运行时路径（按 0 次处理），把 UB 藏起来。 */
+static int node_const_int(Node*n,long long*out){
+    if(!n) return 0;
+    if(n->k==N_NUM&&num_fits_ll(n)){ *out=n->num; return 1; }
+    if(n->k==N_UN&&n->s&&!strcmp(n->s,"-")&&n->e&&n->e->k==N_NUM&&num_fits_ll(n->e)){
+        *out=-n->e->num; return 1;
+    }
+    return 0;
+}
 /* 展开后是否仍划算（MUL≈70ns vs ADD≈5ns，最多容 12 条） */
 static int mul_chain_cost(long long c){
     long long ac=c<0?-c:c; int n=1;      /* 1 条 ADDI 拷贝 */
@@ -1281,6 +1396,24 @@ static int eval(Node*n){
         if(d!=TPOOL[d0]){                    /* 维持"结果落在 TPOOL[d0]"的不变量 */
             emitf("ADDI %s, %s, 0",regname(TPOOL[d0]),regname(d));
             d=TPOOL[d0];
+        }
+        if(!strcmp(op,"<<")||!strcmp(op,">>")){
+            /* 二进制移位（适配层，见 emit_shl_k / emit_shr_k 顶部注释）。
+             * 有符号性只看**左操作数**：移位量的符号性无关紧要，
+             * 而 char/uchar 提升成 int 后必然非负，按有符号处理结果一致。 */
+            int uns = ty_uns(lt);
+            int isl = op[0]=='<';
+            long long k;
+            if(node_const_int(n->r,&k)){
+                if(k<0){ fprintf(stderr,"UNSUPPORTED: 移位量为负 %lld（C 语义未定义）\n",k); exit(2); }
+                if(k>4096){ fprintf(stderr,"UNSUPPORTED: 移位量 %lld 过大\n",k); exit(2); }
+                if(isl) emit_shl_k(d,a,k); else emit_shr_k(d,a,k,uns);
+            } else {
+                if(SH_NEED<2){ fprintf(stderr,"internal: 变量移位未分配工作寄存器\n"); exit(2); }
+                if(isl) emit_shl_v(d,a,b); else emit_shr_v(d,a,b,uns);
+            }
+            TDN=d0+1;
+            return d;
         }
         if((!strcmp(op,"+")||!strcmp(op,"-"))&&is_ptr(lt)&&!is_ptr(rt)){
             int es=ty_bytes(pointee(lt));
@@ -1879,6 +2012,18 @@ static void gen_func(Node*f){
         }
         BITOP_ON=1;
     } else for(int i=0;i<5;i++) BIT_R[i]=-1;
+    /* 移位工作寄存器（1 或 2 个），同样要在常量缓存之前占位。 */
+    SH_NEED=f->shift_regs; SH_R[0]=SH_R[1]=-1;
+    if(SH_NEED>0){
+        static int sscout[6]={22,21,20,19,18,9};      /* s6 s5 s4 s3 s2 s1 */
+        int got=0;
+        for(int i=0;i<6&&got<SH_NEED;i++) if(!USEDREG[sscout[i]]){ USEDREG[sscout[i]]=1; SH_R[got++]=sscout[i]; }
+        if(got<SH_NEED){
+            fprintf(stderr,"UNSUPPORTED: 二进制移位需要 %d 个空闲 callee-saved 寄存器（s2-s6/s1），"
+                           "本函数只空出 %d 个\n",SH_NEED,got);
+            exit(2);
+        }
+    }
     /* 大常量预装到空闲的 callee-saved 寄存器（仅叶子函数：那里 s 系是空的） */
     CC_N=0;
     collect_fn_consts(f->fbody);
@@ -1897,6 +2042,7 @@ static void gen_func(Node*f){
         for(int k=0;k<CC_N;k++) sregs[ns++]=CC_R[k];   /* 常量缓存用的 s 寄存器同样要存 */
     }
     if(BITOP_ON) for(int k=0;k<5;k++) sregs[ns++]=BIT_R[k];   /* 位运算工作寄存器也要存 */
+    for(int k=0;k<SH_NEED;k++) sregs[ns++]=SH_R[k];          /* 移位工作寄存器 */
     int need_frame = hascall || spill>0 || ns>0;
     if(getenv("TRV_DUMP_CC")) fprintf(stderr,"[cc] %s: CC_N=%d ns=%d spill=%d hascall=%d need_frame=%d\n",f->s,CC_N,ns,spill,hascall,need_frame);
     /* 帧布局: s0 = 原sp+18; 原sp[0]=old fp, [9]=ra; saved s 寄存器从 s0+0 起;
@@ -2201,6 +2347,13 @@ static void gate_check(Node*n){
     case N_RETURN: gate_check(n->expr); return;
     case N_EXPR:   gate_check(n->expr); return;
     case N_BIN:    if(n->s&&(n->s[0]=='&'||n->s[0]=='|'||n->s[0]=='^')&&n->s[1]==0) GATE_BIT=1;
+                   if(n->s&&(!strcmp(n->s,"<<")||!strcmp(n->s,">>"))){
+                       long long k; int need;
+                       if(!n->r||!node_const_int(n->r,&k)) need=2;      /* 变量移位量：cnt + 单步常数 */
+                       else if(n->s[0]=='<') need=(k>10)?1:0;           /* 小 k 自加链不占寄存器 */
+                       else need=2;                                      /* 右移：除数 + 余数 */
+                       if(need>GATE_SHIFT) GATE_SHIFT=need;
+                   }
                    gate_check(n->l); gate_check(n->r); return;
     case N_UN:     if(n->s&&!strcmp(n->s,"~")) GATE_BIT=1; gate_check(n->e); return;
     case N_ASSIGN: gate_check(n->l); gate_check(n->r); return;
@@ -2225,9 +2378,10 @@ int main(int argc,char**argv){
      * struct 按值传参/返回已于 2026-11-19 实现（见 gen_func 的 prologue 拷贝与
      * N_RETURN 的 sret 拷贝），不再拦截。 */
     for(int i=0;i<NFN&&!GATE_WHY;i++){
-        GATE_BIT=0;
+        GATE_BIT=0; GATE_SHIFT=0;
         gate_check(FNS[i]->fbody);
         FNS[i]->uses_bitop=GATE_BIT;      /* 位运算工作寄存器按函数分配 */
+        FNS[i]->shift_regs=GATE_SHIFT;
     }
     if(GATE_WHY){ fprintf(stderr,"UNSUPPORTED: %s\n",GATE_WHY); return 2; }
     /* 函数名表 */

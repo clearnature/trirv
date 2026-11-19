@@ -872,9 +872,10 @@ class CodeGen:
         # 直接映射会让 x<<1 静默得到 ×3（实测 x=10 得 30，而 C 语义要求 20）。
         if op in ("<<", ">>"):
             raise RuntimeError(
-                f"UNSUPPORTED: 移位运算 {op} —— ISA 的 SLL/SRL 是三进制移位（×3^k），"
-                f"C 的 {op} 要求二进制移位（×2^k），两者不同义。"
-                f"适配层目前只覆盖 & | ^ ~（方案 A），<< >> 尚未实现")
+                f"UNSUPPORTED: 移位运算 {op} —— 二进制移位适配层已在 C 后端实现"
+                f"（见 trirv_bitview_e2e.py 的移位段），Python 参考后端尚未跟进。"
+                f"这里继续拒绝而不是直译成 ISA 的三进制 SLL/SRL（×3^k），"
+                f"因为那会让 x<<1 静默变成 ×3")
         simple = {"+":"ADD","-":"SUB","*":"MUL","/":"DIV","%":"REM"}
         if op == "/" and uns: self.emit("DIVU t0, t0, t1"); return
         if op == "%" and uns: self.emit("REMU t0, t0, t1"); return
