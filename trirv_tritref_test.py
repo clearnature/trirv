@@ -96,13 +96,15 @@ def main():
         chk("MULHSU", R.to_int(R.mul_hi_signed(a, b, True, False)),
             ((sa * bi) // MOD) % MOD, (ai, bi))
 
-        q, r = R.divmod_u(a, b)
-        if bi == 0:
-            chk("DIVU/0", R.to_int(q), 0, (ai, bi))
-            chk("REMU/0", R.to_int(r), 0, (ai, bi))
-        else:
-            chk("DIVU", R.to_int(q), ai // bi, (ai, bi))
-            chk("REMU", R.to_int(r), ai % bi, (ai, bi))
+        # 除法：三种基数（每轮 1/2/3 个 trit）都必须与整数除法一致
+        for m in (1, 2, 3):
+            q, r = R.divmod_radix(a, b, m)
+            if bi == 0:
+                chk(f"DIVU/0 m={m}", R.to_int(q), 0, (ai, bi))
+                chk(f"REMU/0 m={m}", R.to_int(r), 0, (ai, bi))
+            else:
+                chk(f"DIVU m={m}", R.to_int(q), ai // bi, (ai, bi))
+                chk(f"REMU m={m}", R.to_int(r), ai % bi, (ai, bi))
 
         # 有符号除余：用 tritref 的 divmod_u 组合出来，再与独立参考比
         tq, _ = R.divmod_u(a if sa >= 0 else R.from_int(-sa),
@@ -167,54 +169,80 @@ def main():
     got = R.to_int(f)
     print(f"  20! mod 3^45 = {got}   {'OK' if got == want % MOD else 'FAIL'}")
 
-    print("\n成本表（trit 级原语次数，与宿主无关）")
-    print(f"{'ISA 操作':<24}{'原语数':>8}  主要构成")
+    # ---------------- 成本表 ----------------
+    # 一律用**全宽**操作数（45 trit），这才是硬件的关键路径。
+    # 之前用 12345678 这种窄操作数统计，MUL 只算到 30 —— 那是 3~4 tryte 的开销，
+    # 被当成了全宽成本，属于口径错误。
+    FULL = R.from_int(MOD - 1)                # 45 trit，全 2（负，符号一眼可判）
+    RAND = R.from_int(MOD * 7 // 11)          # 45 trit，随机分布
+    NEARHALF = R.from_int(MOD // 2 + 1)       # 45 trit，= 111..12，符号扫描最坏
+    FOUR = R.from_int(12345678)               # 4 tryte
+
+    print(f"\n成本表（trit 级原语次数，与宿主无关；主列 45-trit 全宽）")
+    print(f"{'ISA 操作':<28}{'全宽':>7}{'4tryte':>8}  主要构成")
     rows = []
 
-    def cost(name, fn):
+    def cost(name, wide, narrow=None):
         R.reset()
-        fn()
-        rows.append((name, sum(R.STATS.values()),
-                     ", ".join(f"{k}×{v}" for k, v in R.STATS.most_common(3))))
+        wide()
+        tot = sum(R.STATS.values())
+        top = ", ".join(f"{k}×{v}" for k, v in R.STATS.most_common(3))
+        if narrow is None:
+            nn = tot
+        else:
+            R.reset()
+            narrow()
+            nn = sum(R.STATS.values())
+        rows.append((name, tot, nn))
+        print(f"{name:<28}{tot:>7}{nn:>8}  {top}")
 
-    A1, B1 = R.from_int(12345678), R.from_int(87654321)
-    A2, B2 = R.from_int(3 ** 30), R.from_int(2 ** 31)
-    big = R.from_int(MOD - 12345)
-
-    cost("ADD / SUB", lambda: R.add(A1, B1))
-    cost("SLT（典型）", lambda: R.cmp_s(A1, B1))
-    cost("SLT（最坏，相等）", lambda: R.cmp_s(A1, A1))
-    cost("AND / OR / XOR", lambda: R.tritwise(A1, B1, 2))
-    cost("SLL / SRL k=1", lambda: R.shl(A1, 1))
-    cost("SLL / SRL k=13", lambda: [R.shl(A1, 13), R.shr(A1, 13)])
-    cost("MUL（低半）", lambda: R.mul_lo(A1, B1))
-    cost("MULH（高半）", lambda: R.mul_hi(A1, B1))
-    cost("DIVU（45 轮逐 trit）", lambda: R.divmod_u(big, B2))
-    cost("LW + SW 往返", lambda: [R.store_word({}, 0, A1), R.load_word({0: 1}, 0)])
-    cost("LB（LBU 免费）", lambda: [R.lb(A1), R.lbu(A1)])
-
-    for name, tot, top in rows:
-        print(f"{name:<24}{tot:>8}  {top}")
+    cost("ADD / SUB", lambda: R.add(FULL, RAND), lambda: R.add(FOUR, FOUR))
+    cost("SLT（典型）", lambda: R.cmp_s(FULL, RAND), lambda: R.cmp_s(FOUR, FOUR))
+    cost("SLT（最坏：值≈HALF，符号扫 45 trit）", lambda: R.cmp_s(NEARHALF, RAND))
+    cost("AND / OR / XOR", lambda: R.tritwise(FULL, RAND, 2),
+         lambda: R.tritwise(FOUR, FOUR, 2))
+    cost("SLL / SRL k=1", lambda: R.shl(FULL, 1), lambda: R.shl(FOUR, 1))
+    cost("SLL / SRL k=13", lambda: [R.shl(FULL, 13), R.shr(FULL, 13)])
+    cost("MUL（低半）", lambda: R.mul_lo(FULL, RAND), lambda: R.mul_lo(FOUR, FOUR))
+    cost("MULH（高半）", lambda: R.mul_hi(FULL, RAND), lambda: R.mul_hi(FOUR, FOUR))
+    cost("DIVU（全宽 / 全宽）", lambda: R.divmod_u(FULL, RAND))
+    cost("DIVU（全宽 / 4tryte）", lambda: R.divmod_u(FULL, FOUR))
+    cost("LW + SW 往返", lambda: [R.store_word({}, 0, FULL), R.load_word({0: 1}, 0)])
+    cost("LB（LBU 免费）", lambda: [R.lb(FULL), R.lbu(FULL)])
 
     base = rows[0][1]
-    print("\n相对 ADD 的倍数：")
+    print("\n相对 ADD（全宽）的倍数：")
     for name, tot, _ in rows[1:]:
-        print(f"  {name:<24}{tot / base:6.1f}×")
+        print(f"  {name:<26}{tot / base:6.1f}×")
+
+    # ---------------- 除法器：基数与宽度 ----------------
+    print("\n除法器：每轮吞几个 trit（m）的代价对比（全宽被除数）")
+    print(f"{'m':>3}{'基数':>7}{'轮数':>6}{'除数全宽':>10}{'除数 4tryte':>14}")
+    for m in (1, 2, 3):
+        R.reset(); R.divmod_radix(FULL, RAND, m); w1 = sum(R.STATS.values())
+        R.reset(); R.divmod_radix(FULL, FOUR, m); w2 = sum(R.STATS.values())
+        print(f"{m:>3}{3 ** m:>7}{(45 + m - 1) // m:>6}{w1:>10}{w2:>14}")
+
+    print("\n除法器：成本随除数宽度增长（被除数全宽，m=3）")
+    print(f"{'除数 tryte':>10}{'原语数':>10}")
+    for w in (1, 2, 3, 4, 5, 7, 9):
+        div = R.from_int(3 ** (5 * w - 1) + 7)
+        R.reset(); R.divmod_radix(FULL, div, 3)
+        print(f"{w:>10}{sum(R.STATS.values()):>10}")
 
     # ---------------- 与 C VM 实测成本的对照 ----------------
     # C VM 数值 = 2000 万次循环实测（循环含 被测 + ADDI + BNE 三条），
     # 已扣除 ADD 循环的基线，2000 万次是为压掉进程启动开销。
-    VM_NS = {"ADD / SUB": 0.0, "MUL（低半）": 43.1, "DIVU（45 轮逐 trit）": 115.7,
-             "AND / OR / XOR": 36.5}
+    VM_NS = {"ADD / SUB": 0.0, "MUL（低半）": 43.1,
+             "DIVU（全宽 / 4tryte）": 115.7, "AND / OR / XOR": 36.5}
     print("\n与 C VM 实测成本的偏差（2000 万次循环，已扣 ADD 基线）")
-    print(f"{'操作':<22}{'C VM 净增量':>12}{'tryte 原语':>11}{'倍数 vs ADD':>13}")
+    print(f"{'操作':<38}{'C VM 净增量':>12}{'tryte 原语':>11}{'倍数 vs ADD':>13}")
     for name, tot, _ in rows:
         if name not in VM_NS:
             continue
-        ns = VM_NS[name]
-        print(f"{name:<22}{ns:>10.1f}ns{tot:>11}{tot / base:>12.1f}×")
-    print("\n  关键读数：C VM 上 DIV 只比 MUL 贵 2.7 倍，按 tryte 原语算是 55 倍。")
-    print("  差额来自宿主 CPU 有硬件除法器，而三进制数据通路没有（要 45 轮试商）。")
+        print(f"{name:<38}{VM_NS[name]:>10.1f}ns{tot:>11}{tot / base:>12.1f}×")
+    print("\n  关键读数：C VM 上 DIV 只比 MUL 贵 2.7 倍，按 tryte 原语算是 15 倍以上。")
+    print("  差额来自宿主 CPU 有硬件除法器，而三进制数据通路只能逐位试商。")
     print("  结论：VM 的墙钟数字不能用来论证架构成本，只能用来比较同一宿主上的优化。")
     return 0
 

@@ -75,8 +75,11 @@ def pad(t, n):
 
 
 def trit(t, i):
-    """取第 i 个 trit（0..2）。"""
-    return (t[i // 5] // POW3[i % 5]) % 3
+    """取第 i 个 trit（0..2）。越界视为 0 —— 定长字超出有效宽度的高位就是 0。"""
+    w = i // 5
+    if i < 0 or w >= len(t):
+        return 0
+    return (t[w] // POW3[i % 5]) % 3
 
 
 # --------------------------------------------------------------------------
@@ -215,35 +218,89 @@ def mul_hi_signed(a, b, sa, sb):
 
 
 # --------------------------------------------------------------------------
-# 除法：45 轮逐 trit 恢复除法（硬件会这么做，不是二进制长除法）
+# 除法：基数 3^m 的恢复式逐位除法（restoring digit recurrence）
 # --------------------------------------------------------------------------
-def divmod_u(a, b):
-    """返回 (q, r)，a,b 均为非平衡非负。b==0 时返回 (0,0)（ISA 语义）。
+def ntrytes(t):
+    """有效宽度：最高非零 tryte 下标 +1。全零返回 0。"""
+    for i in range(len(t) - 1, -1, -1):
+        STATS["tryte_cmp"] += 1
+        if t[i]:
+            return i + 1
+    return 0
 
-    逐 trit 试商：每轮 r = r*3 + a_i，试 d∈{0,1,2} 使 d*b <= r。
-    余量用 L+1 个 tryte，避免 2*b 与 r 在 45 trit 内回绕造成误判。
+
+def ntrits(t):
+    """有效宽度（trit 计）：最高非零 trit 下标 +1。全零返回 0。"""
+    n = ntrytes(t)
+    if n == 0:
+        return 0
+    top = t[n - 1]
+    for k in range(4, -1, -1):
+        STATS["trit_cmp"] += 1
+        if (top // POW3[k]) % 3:
+            return (n - 1) * 5 + k + 1
+    return (n - 1) * 5
+
+
+def divmod_radix(a, b, m=1):
+    """返回 (q, r)，a,b 非平衡非负；b==0 返回 (0,0)（ISA 语义）。
+
+    每轮吞 m 个 trit、商位值域 0..3^m-1。三处都不是"换算法"，是把浪费去掉：
+
+      1. 余量宽度按除数的**有效宽度**分配（W = 有效 tryte + 1）。
+         除数只有 1 tryte 时原来也跑 10 tryte 的进位链，纯浪费；
+         硬件的做法正是先做前导零检测再决定数据通路宽度。
+      2. 轮数按被除数的**有效 trit** 数算，不空转高位零。
+      3. 商位选择用**二分查表**（log2(3^m) 次比较），不逐个 d 试。
+
+    不变式：每轮结束时 r < b，因此下一轮 r*3^m + (3^m-1) < 3^m*b + 3^m，
+    对 m<=3 恒小于 243*b，W 的 1 tryte 余量足够，不会回绕。
     """
     if is_zero(b):
         return [0] * L, [0] * L
-    W = L + 1
+    R = 3 ** m
+    W = ntrytes(b) + 1
     rb = pad(b, W)
-    rb2 = add(rb, rb, W)                 # 2b（W 位内不会溢出，因为 b < 3^45）
+    mult = [[0] * W]                      # mult[d] = d*b，d = 0..R-1
+    for d in range(1, R):
+        mult.append(add(mult[d - 1], rb, W))
+
+    na = ntrits(a)
+    rounds = (na + m - 1) // m
     r = [0] * W
     q = [0] * L
-    for i in range(44, -1, -1):
-        r = shl(r, 1, W)                 # r *= 3
-        r = add(r, [trit(a, i)] + [0] * (W - 1), W)
-        if cmp_u(r, rb2, W) >= 0:
-            r = sub(r, rb2, W)
-            d = 2
-        elif cmp_u(r, rb, W) >= 0:
-            r = sub(r, rb, W)
-            d = 1
-        else:
-            d = 0
-        # 商本来就逐 trit 生成：直接写第 i 个 trit，不必"乘 3 再加"
-        q[i // 5] += d * POW3[i % 5]
+
+    for g in range(rounds - 1, -1, -1):
+        r = shl(r, m, W)                  # r *= 3^m
+        chunk = 0
+        for j in range(m - 1, -1, -1):
+            chunk = chunk * 3 + trit(a, g * m + j)
+        if chunk:
+            r = add(r, [chunk] + [0] * (W - 1), W)
+        lo, hi = 0, R - 1                 # 二分：最大的 d 使 d*b <= r
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            STATS["tryte_cmp"] += 1
+            if cmp_u(r, mult[mid], W) >= 0:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo:
+            r = sub(r, mult[lo], W)
+        for j in range(m):                # 商位直接写进第 g*m+j 个 trit
+            pos = g * m + j
+            if pos >= 5 * L:              # 末轮可能超出字宽，丢掉（真值高位的 0）
+                continue
+            q[pos // 5] += ((lo // POW3[j]) % 3) * POW3[pos % 5]
     return q, pad(r, L)
+
+
+def divmod_u(a, b):
+    """DIVU/REMU 的默认入口：每轮 3 个 trit（基数 27）。
+
+    选择依据见 trirv_tritref_test.py 的基数对照表（2026-11-19 实测）。
+    """
+    return divmod_radix(a, b, 3)
 
 
 # --------------------------------------------------------------------------

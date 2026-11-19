@@ -30,9 +30,9 @@ TriRV 从第一天就是 Load-Store 架构，没有"栈机器"模式。
 已于 2026-11-19 改为逐 trit）。
 
 > 测成本必须用 **C VM**（Python VM 的 ~76 ns/条 是解释器开销）。
-> 但 C VM 的墙钟也只能比较**同一宿主上的优化**，不能论证架构成本——
-> 宿主的硬件乘除法器会严重低估真实数据通路代价（`DIV` 在 C VM 上只比 `MUL` 贵
-> 2.7 倍，按 tryte 原语算是 55 倍）。跨架构比较只认 tryte 原语数，见规范 §1.3。
+> C VM 的**绝对墙钟**不代表硬件周期（宿主 `ADD` 一条 128 位指令，硬件是 9 个 tryte
+> 的串行进位），但**相对成本与 tryte 模型同量级**（`DIV/MUL`：VM 2.7×、模型 5.0×）。
+> 模型独有的价值是"成本随宽度变化"，VM 的二进制运算宽度无关。见规范 §1.3。
 
 ## 二、定位与技术路线（重要）
 
@@ -151,7 +151,7 @@ python3 trirv_wasm_e2e.py                      # 93 例三路差分（参考解�
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
-python3 trirv_tritref_test.py                  # tryte 数组参考实现：43456 项差分 + trit 级成本表
+python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 ```
 
 实测一条完整链路（2026-11-19 验证）：
@@ -174,7 +174,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
-| `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 43456/43456（差分）+ 3 个端到端程序 |
+| `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | 14/14 套（`TRV_CC_STRICT=1` 下 12/14，缺 struct 按值） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |
