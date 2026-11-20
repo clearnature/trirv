@@ -72,6 +72,19 @@ def preprocess(text):
     # UCHAR_MAX / INT_MAX 等常见常量（limits.h 语义，TriRV 45-trit 下按
     # 视图层 8-bit 语义给值：UCHAR_MAX=255）
     text = re.sub(r'\bUCHAR_MAX\b', '255', text)
+    # POSIX errno 常量（errno.h 剥离后的固定值，未列出的仍会触发
+    # 未声明标识符编译错——诚实暴露缺口而非静默 0）
+    for _ename, _eval in (("EPERM", 1), ("ENOENT", 2), ("ESRCH", 3),
+                          ("EINTR", 4), ("EIO", 5), ("ENXIO", 6), ("E2BIG", 7),
+                          ("ENOEXEC", 8), ("EBADF", 9), ("ECHILD", 10),
+                          ("EAGAIN", 11), ("ENOMEM", 12), ("EACCES", 13),
+                          ("EFAULT", 14), ("EEXIST", 17), ("EXDEV", 18),
+                          ("ENOTDIR", 20), ("EISDIR", 21), ("EINVAL", 22),
+                          ("ENFILE", 23), ("EMFILE", 24), ("ENOTTY", 25),
+                          ("EFBIG", 27), ("ENOSPC", 28), ("ESPIPE", 29),
+                          ("EROFS", 30), ("EMLINK", 31), ("EPIPE", 32),
+                          ("EDOM", 33), ("ERANGE", 34)):
+        text = re.sub(r'\b' + _ename + r'\b', str(_eval), text)
     text = re.sub(r'\bINT_MAX\b', '2147483647', text)
     # weak_alias(real, alias) / strong_alias —— 生成别名包装函数
     # （TRI 子集没有符号别名机制；用 static 转发函数模拟）
