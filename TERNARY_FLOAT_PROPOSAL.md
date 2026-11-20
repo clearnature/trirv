@@ -228,6 +228,56 @@ F 扩展从预留区分配（建议 opcode 19–21 给 TF，TC 顺延），具�
 **优先级**：P1→P2→P3 是打通"wasm 能跑浮点"的最短路径；
 P4/P5 视 P1 实测转换税结果调整。阶段 4 LLVM 后端仍在其后，不因本立项改变既有路线。
 
+### 5.1 P2 详细执行计划（2026-11-20 写定，按此执行）
+
+**决策冲突更正（必须先讲明）**：P0 阶段曾口头拍板"独立 freg[32]，元素是 host double 数组"。
+该设想与 §1.1 铁律 4 / §3.1 的**框架更正**冲突——裸 `double` 容器把指数卡在 `3^646`，
+等于把已推翻的"寄存器即 double 载体"错误模型重新装回。P2 按最新框架实现：
+
+> **freg[i] 存分离表示 `(sign, mant∈[1,3) 的 host double, exp3 整数)`，不是裸 double。**
+> mant 是唯一进 FPU 的量（恒在窗口内），exp3 走整数 ALU（无范围约束）。
+> 这正是 `trirv_float.decompose()/compose()` 定义的可执行形态。
+
+**编码分配**（20-trit 指令字，opcode 19–21；18 已被 A 扩展占用，19+ 空闲）：
+
+| opcode | 格式 | 指令 | funct（2 trit） | funct2（3 trit） |
+|---|---|---|---|---|
+| 19 | R | `FADD.S/.D` `FSUB` `FMUL` `FDIV` `FSQRT` | 0=ADD 1=SUB 2=MUL 3=DIV 4=SQRT | 0=S 1=D（档位） |
+| 20 | I | `FLW` `FSW` `FCVT.W.S` `FCVT.S.W`（档位由 funct2） | 0=LW 1=SW 2=CVTW 3=CVTF | 0=S 1=D |
+| 21 | R | `FEQ.S` `FLT.S` `FLE.S`（结果写整数 rd） | 0=FEQ 1=FLT 2=FLE | 0=S 1=D |
+
+寄存器字段：F-R 型 rd/rs1/rs2 都是 **freg 编号**（0–31，复用现有 4-trit 字段，独立寄存器堆）；
+F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字段，含义按 opcode 区分）。
+档位：先用 TF64（45 trit，单寄存器）打通，TF32（20 trit）同编码 funct2=0，后续补齐。
+
+**改动文件清单（按依赖顺序）**：
+1. `trirv_isa.py` — OPCODE 加 19/20/21，INST 加 F 指令，encode/decode 已通用无需改
+2. `trirv_vm.py` — VM 加 `self.freg` 分离表示数组；step() 加 F 指令分支；`decompose/compose` 复用 `trirv_float.py`
+3. `trirv_vm.c` — `Op` 枚举 + `IDEFS` 加 F；VM 加 `FReg freg[32]`（struct `{sign,mant,exp3,cls}`）；`step()` 与 `vm_run_cg()` **两个分发点都要改**；FLW/FSW 用 `trirv_float` 的 C 等价编解码
+4. `trirv_float.py` — 补 C VM 需要的 C 版编解码（或把 Python 的移植到 C，二选一，见下"实现选择"）
+5. `trirv_asm.py` — 加 F 助记符与 f 寄存器别名（`f0`–`f31`）
+6. 新契约 `trirv_float_isa_e2e.py` — ISA 编码 + 双 VM 差分 + 算术正确性
+7. `run_all_tests.py` 注册第 43 套；`README.md` 同步
+
+**实现选择（C VM 编解码归属）**：C VM 不能 import Python。两条路：
+- (a) 把 `trirv_float.py` 的编解码移植成 `trirv_float.c/.h`（一份真相源，Python 侧保留做差分 oracle）
+- (b) 在 `trirv_vm.c` 内联一份 C 编解码
+选 (a)，避免两套 C 副本漂移；Python 版继续做参考 oracle。
+
+**TDD 顺序**：先写 RED 契约（编码往返 + 双 VM 差分 + `1.5+2.25=3.75` 语义）→ 确认失败 → 按上表顺序实现 → GREEN → 全量回归。
+
+**验收标准**：
+- ISA 完整性测试覆盖 F 指令编码/解码往返
+- 双 VM（PyVM/C VM）对同一 F 程序差分一致（含 ±0/±Inf/NaN、极端 exp3）
+- 语义断言：`1.5+2.25=3.75`、`2×3=6`、`1/3` 舍入、`sqrt(9)=3`（在格式精度内）
+- 全量套件保持全绿（第 43 套新增）
+
+**范围边界（本阶段不做）**：
+- 不做 wasm f32/f64 对接（P3）
+- 不做 C 编译器 float 类型（属 libc/编译器，P4 之后）
+- 不做 FSQRT 的硬件级收敛迭代（先用宿主 `sqrt`，穿透 FPU）
+- 不做双档全部指令，先把 TF64 四则 + load/store 打通，档位字段预留
+
 ---
 
 ## 6. 待拍板决策项
