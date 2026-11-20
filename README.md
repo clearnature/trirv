@@ -150,6 +150,7 @@ python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 �
 python3 trirv_wasm_e2e.py                      # 93 例三路差分（参考解释器 / PyVM / C VM）
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
+python3 bench_div.py                           # DIV 快路径 vs 72轮恢复除法 实测(ns/op)
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
@@ -249,11 +250,20 @@ $ ./trirv_vm /tmp/t.trv
    的方案 A 适配层现在 **C 后端（`trirv_cc.c`）与 Python 参考后端（`trirv_cc.py`）都有**，
    15 项差分锁定（`trirv_cc_py_bitop_e2e.py`），含负数 raw 化、`~0 != -1`、
    变量移位与组合表达式。两套后端语义一致，不再需要为位运算专门切 C。
-3. **VM 的 DIV 慢**：无硬件除法器，走 72 步逐位恢复除法（~150ns）。`>>` 的
-   代价几乎全在这次除法上（`a>>3` 19 步里 11 步是 `DIVU`）。优化方向是乘法
-   逆元估商，预计 1.5–2×。
-4. **动态指令少 8.4× 但墙钟只快 6.5×**：说明单步成本随指令类型差异极大（MUL ~70ns、DIV ~150ns），
-   后续要么优化 VM 除法，要么让编译器继续避开贵指令。
+3. ~~**VM 的 DIV 慢**~~ —— **2026-11-19 已优化，DIV 不再是热点**（`python3 bench_div.py`
+   实测，含循环/调用开销，Apple M2）：
+   - 默认快路径（宿主 128 位整数除法）：**3.7 ns/op**（纯指令 ~0.7ns）
+   - `TRIRV_NO_HW_DIV`（72 轮逐位恢复，三值电路参考）：**117.7 ns/op**，慢 31.6×，
+     仅给无 128 位除法的宿主用，不进默认路径
+   - `>>` 的代价仍主要落在 DIVU 上（`a>>3` 19 步里 11 步是 DIVU），但 DIVU 本身已快。
+   - **估商方案的探索结论（2026-11-20，避免重复踩坑）**：长浮点估商 + 有限修正
+     在**全 2^128 域**最坏修正步数达 87890（截断误差无界，退化比恢复除法还慢）；
+     逐 tryte 分块（5 bit/轮）虽正确但每轮减法循环平均 16 次、总步数反超 72 轮。
+     两者都不满足"确定性、步数有界"的要求，故**不采用**。宿主 128 位除法快路径
+     已是工程最优，乘法逆元估商不再有收益。
+4. **动态指令少 8.4× 但墙钟只快 6.5×**：单步成本随指令类型差异极大（MUL ~70ns、
+   DIV 已降到 ~3.7ns）。DIV 已优化，剩余差距主要来自 MUL 与访存，后续由编译器
+   避开贵指令（如常量乘展开成加法链，已在用）。
 5. **1-tryte 局部变量一律落栈**：`char`/`signed char`/`unsigned char` 不再走寄存器分配。
    原因是寄存器里没有"截断到 5 trit"的归一化点，`signed char c=200` 会原样返回 200 而不是 −43。
    落到栈上后，写用 `SB`（mod 243 截断）、读用 `LB`/`LBU`（按符号性扩展），语义与 C 一致。
