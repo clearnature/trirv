@@ -25,6 +25,11 @@ TRI_REWRITE = {
     "qsort.c": "musl_tri/qsort_tri.c",
     "strtol.c": "musl_tri/strtol_tri.c",
     "strsignal.c": "musl_tri/strsignal_tri.c",
+    "strtod.c": "musl_tri/strtod_tri.c",
+    "atof.c": "musl_tri/strtod_tri.c",
+    "ecvt.c": "musl_tri/ecvt_tri.c",
+    "fcvt.c": "musl_tri/ecvt_tri.c",
+    "gcvt.c": "musl_tri/ecvt_tri.c",
 }
 
 ok, fail, skip = [], [], []

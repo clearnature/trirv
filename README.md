@@ -149,6 +149,7 @@ TRV_CC=py python3 export_trv.py foo.c foo.trv   # 强制 Python 参考后端做�
 
 python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 参数可选，输出汇编）
 python3 trirv_wasm_e2e.py                      # 112 例三路差分（含 P3 浮点 19 例；参考解释器 / PyVM / C VM）
+python3 trirv_float_libc_e2e.py                # P4 浮点 libc 五函数契约（Fraction oracle × 双 VM）
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 bench_div.py                           # DIV 快路径 vs 72轮恢复除法 实测(ns/op)
@@ -171,7 +172,7 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 全量复测：`run_all_tests.py` 43 套全 PASS；真 musl string+stdlib 双目录 60/66 编译、6 项决策 SKIP、0 失败）
+## 五、当前状态（2026-11-20 全量复测：`run_all_tests.py` 44 套全 PASS；真 musl string+stdlib 双目录 65/66 编译、1 项 SKIP（inline asm）、0 失败）
 
 | 套件 | 结果 |
 | --- | --- |
@@ -235,17 +236,22 @@ $ ./trirv_vm /tmp/t.trv
    `_X<单元>_<n>` 防冲突；重复定义检测对 TRVO 导入同样生效。
    与真 musl 的剩余差距：musl 的 arch 层（内联汇编——改写为 read8/write8
    形态 + TRVO 分发）、弱符号语义。
-   **musl 覆盖总账（2026-11-20）**：src/string + src/stdlib 共 66 文件
-   （非宽字符），批量管线 = 60 编译 OK / 6 决策 SKIP / 0 FAIL。
+   **musl 覆盖总账（2026-11-20 P4 后）**：src/string + src/stdlib 共 66 文件
+   （非宽字符），批量管线 = 65 编译 OK / 1 SKIP（explicit_bzero 内联汇编屏障）/ 0 FAIL。
+   浮点系 5 文件（strtod/atof/ecvt/fcvt/gcvt）自 P4 起经 musl_tri 三进制原生重写
+   （TF64 raw ABI，Fraction 精确 oracle 契约锁定），"TriRV 无浮点" SKIP 理由撤销。
    **musl_tri/ = 三进制原生改编层**：上游依赖二进制位运算语义的文件
    在此重写（纯三进制原则：语义适配硬件，不跳过），每文件注释逐条
    标注与上游差异。已重写：memset/memcpy/strcspn/strspn/strstr/memmem/
    div/ldiv/lldiv/imaxdiv/qsort/strtol/strsignal（13 文件，均有行为
    断言锁定）。
-   **决策记录：浮点系 → ISA 演进立项（2026-11-20）**（strtod/atof/ecvt/fcvt/gcvt）。
-   原为"永久 SKIP：TriRV 无浮点"，因 wasm 必然涉及 f32/f64 且用户定调"三进制浮点格式
-   属 ISA 演进"，已立专项：**尾数[1,3)穿透宿主 FPU + 指数走整数 ALU，ISA 格式与语义
-   保持三进制**。关键更正（2026-11-20）：binary64 的"64 位"是 IEEE 软件规范而非物理事实，
+   **决策记录：浮点系 → ISA 演进立项（2026-11-20）→ P4 libc 浮点系落地（2026-11-20）**
+   （strtod/atof/ecvt/fcvt/gcvt）。原为"永久 SKIP：TriRV 无浮点"，因 wasm 必然涉及 f32/f64
+   且用户定调"三进制浮点格式属 ISA 演进"，已立专项：**尾数[1,3)穿透宿主 FPU + 指数走整数
+   ALU，ISA 格式与语义保持三进制**。P1–P3+P5 已完成（F 扩展 74+ 指令、wasm 浮点对接
+   112 例、穿透成本实测），P4 落地 musl_tri/strtod_tri.c + ecvt_tri.c：TF64 raw ABI、
+   6 字走位 + 精确终除、Fraction oracle 契约（`trirv_float_libc_e2e.py`）、批量管线
+   65/66 编译。关键更正（2026-11-20）：binary64 的"64 位"是 IEEE 软件规范而非物理事实，
    不拿 double 值域当格式天花板——全阶码可表示，无"穿透缺口"。立项书见
    `TERNARY_FLOAT_PROPOSAL.md`（D-F1..D-F4 已拍板，P1 编解码已落地 144 项契约）。
 1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——

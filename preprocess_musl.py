@@ -136,8 +136,8 @@ def preprocess(text):
     # 复合字面量 (type){...} —— 待 musl_tri 适配层以 TriRV struct 机制重写
     if re.search(r'\(\s*[a-z_]+_t\s*\)\s*\{', text):
         text = '#error TRIRV_SKIP: compound literal (type){...} -> rewrite in musl_tri\n' + text
-    # 浮点（TriRV 无 FP）—— 已决策永久 SKIP（README §六），
-    # 三进制浮点格式属 ISA 演进，单独立项
+    # 浮点（double/float 字面量）—— P4 起 musl_tri/ 有三进制原生重写
+    # （strtod_tri/ecvt_tri，TF64 raw ABI），此守卫仅拦未经重写的上游文件
     if re.search(r'\b(double|float)\b', text):
         text = '#error TRIRV_SKIP(DECISIONED: no FP on TriRV, see README section 6)\n' + text
     # stdio 内部依赖（FILE/sh_fromstring/__intscan 系）

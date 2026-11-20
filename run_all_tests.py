@@ -97,6 +97,7 @@ SUITES = [
     ("trirv_musl_wide_e2e.py",    "musl string 全目录 7 项",   False, None),
     ("trirv_switch_e2e.py",       "switch 契约 9 项",         False, None),
     ("trirv_musl_tri_e2e.py",     "musl_tri 位图系重写 7 项",  False, None),
+    ("trirv_float_libc_e2e.py",   "浮点 libc 五函数（P4）",    False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),

@@ -222,7 +222,7 @@ F 扩展从预留区分配（建议 opcode 19–21 给 TF，TC 顺延），具�
 | **P1b 表示层记数** ✅ 2026-11-20 | 十二进制记数 + 数码符号定义 + 进制下标标注（执行层/表示层分离铁律落地） | `trirv_base12.py` + `trirv_base12_e2e.py`（72 PASS） | to12/from12/frac_to12、SYMBOL_SET 数码定义、基数自指（'12'₁₂=14、基数写作'10'）、labelled/parse_labelled（18₁₂）、round-trip 0 错 |
 | **P2 F 扩展指令** ✅ 2026-11-20（TF64 子集） | 两套 VM 加 freg + F 指令 + C 浮点头（分离表示穿透宿主 FPU） | `trirv_float.h` + `trirv_vm.c/.py` + `trirv_isa.py` + `trirv_float_isa_e2e.py`（27 PASS） | 编码往返无撞码 + PyVM 语义 + PyVM×C VM 字节差分；**范围：TF64 四则+sqrt+load/store+比较，TF32 编码预留未接** |
 | **P3 wasm 对接** ✅ 2026-11-20 | 解除 `f32.const`/`f64.const` 与算术指令的 `Unsupported`，编译期穿透 IEEE 位模式 → TF raw | `trirv_wasm.py` 扩展 + `trirv_asm.py` F 助记符 + C VM 档位参数化 + `tf_ratio` 舍入修复 | `trirv_wasm_e2e.py` 112 例（含 19 浮点）+ `trirv_float_isa_e2e.py` 39 项；三路差分全一致（详见 §5.2） |
-| **P4 libc 浮点系** | 重开 strtod/atof/ecvt/fcvt/gcvt 的 SKIP 决策 | `musl_tri/` 改编或新实现 | musl 覆盖总账更新 |
+| **P4 libc 浮点系** ✅ 2026-11-20 | 重开 5 项 DECISIONED SKIP（理由已被 P2/P3 推翻），musl_tri 三进制原生重写：strtod+atof（十→TF64，正确舍入）、ecvt+fcvt+gcvt（TF64→十进制，musl 怪癖逐条镜像）（详见 §5.6/§5.7） | `musl_tri/strtod_tri.c` + `ecvt_tri.c` + `trirv_float_libc_e2e.py` | Fraction 精确 oracle × 双 VM 字节差分全绿；批量管线 65/66 |
 | **P5 穿透收益评估** ✅ 2026-11-20 | 实测转换税 vs 穿透收益；裁决方案 B/分离表示/double-double/硬件直通（详见 §5.5） | `bench_float.py` F/G/H 节 + PERF_REPORT + §5.5 | Q1/Q2/Q3 全部实测回答；四候选裁决入账 |
 
 **优先级**：P1→P2→P3 是打通"wasm 能跑浮点"的最短路径；
@@ -591,6 +591,54 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 - 不做 errno/ERANGE（TriRV libc 层无 errno 传递，同 strtol_tri 先例）
 - 不做 trirv_stdio 的 %f/%e/%g（gcvt 自拼串；printf 集成属 stdio 层后续）
 - 不做 <stdlib.h> 头文件系统（契约用原型声明，同既有 e2e）
+
+### 5.7 P4 实施记录（2026-11-20，实测数据）
+
+**交付结果**：
+- `trirv_float_libc_e2e.py`：**7447 PASS / 0 FAIL**（strtod 344 例全 corpus、
+  ecvt/fcvt/gcvt 全 corpus 随机 raw + 全部特殊值 + musl 怪癖边界，
+  Fraction 精确 oracle × PyVM/CVM 双 VM 字节差分；--quick 模式 4256/0 约 21 秒）
+- 批量编译管线：musl string+stdlib 66 文件 **65 编译 OK / 1 SKIP / 0 FAIL**
+  （浮点 5 文件 SKIP→[tri]；唯一剩余 SKIP = explicit_bzero 内联汇编屏障）
+- 全量回归：run_all_tests 38 套全 PASS（第 44 套注册）
+
+**实现要点**：
+- `strtod_tri.c`：≤20 位有效数字的 6 字小数大数走位（base 10^16，容量 10^96）+
+  LSB-first 加权 disc 累加（修正版：旧 disc×3+r 位序反了）+ 精确终除
+  half-up 舍入；值域捷径 exp10+sig ≥ 14100 → ±Inf、≤ −14130 → ±0
+- `ecvt_tri.c`：同构走位反向（TF64 raw → 十进制），S' = Σ(2−r)·3^i 补数
+  同步累加免存 3^u；decpt = 45−g；±Inf/NaN/±0 按合同 §5.6 TriRV 定义
+- inf/infinity/nan 接受（不区分大小写）；end 指针 POSIX 语义
+  （'-0' 是合法转换 end=2；纯空白/裸符号无转换 end=nptr）
+
+**重要发现：链接器全局槽不重定位（跨文件）**
+- trirv 链接器对 `-l` 多单元的全局槽各自从 207 号字起分配，**不重定位**：
+  主文件的提升局部量/全局数组与库单元全局在同一槽碰撞。实测：ecvt chunk
+  主文件 IN[40] 数组恰好覆盖 ecvt_tri.o 的全部全局量（g_ec_w/g_ec_buf/
+  g_ec_zeros/SD_E_* 共 57 槽中的前 40），输入装载把库的全局态踩烂 →
+  ec_core 死循环（ec_mul 热点 300 万步不 halt）
+- 规避：harness 全局最小化（raw 内联为字面量、结果逐 call write）+
+  per-call 隔离（每 call 一个独立 guest 程序，48/48 bisector 已证安全）
+- 待办（编译器工程，非 P4 范围）：跨单元全局重定位
+
+**重要发现：strtod tie-rescue 的 sticky 误设**
+- 终除 ÷3 循环里 sticky=1 是错的：÷3 的余数 r 已加权进 disc（无丢失），
+  sticky 应只标记真丢失（parse 丢弃数字、P<0 走位 ÷10 截断）。误设后
+  sticky 恒 1，rescue（gap≤2 半升）对 frac∈(0.49, 0.5) 的正常下取整误升格
+  → 尾数 +1（实测 '529675342618594954' frac=40/81=0.4938 误升）
+- 移除后 400 例随机 + tie 专项全绿；ecvt 的 sticky 语义不变（其 ÷3 真丢失）
+
+**负 raw 归一（INF_NEG 类）**：s=1 且 E 大的 raw（≥1.477e21）在 45-trit
+平衡解读下为负数——ecvt/fcvt/gcvt 入口先归一（raw<0 → +2×3^44）再拆符号。
+
+**Python oracle 自校验**：exact_round（bit_length 跳步归一 + 单位步校正，
+denormal 0.0001s）对 300 随机 double 逐位匹配 trirv_float.encode（0 mismatch）。
+
+**方法论坑（TDD 教训，防复发）**：
+- Python 字符串 replace 静默 no-op（目标文本已变）——补丁后必须 grep 验证
+- 采样诊断要先确认进程身份（pkill 后老进程可能残留，ps 双跑混淆判断）
+- per-(raw,nn) bisector 单测全过 ≠ chunk 组合正确（全局态残留只在大
+  程序暴露）——最小复现必须含真实状态链
 
 ---
 
