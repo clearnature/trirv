@@ -153,7 +153,7 @@ python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 �
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 bench_div.py                           # DIV 快路径 vs 72轮恢复除法 实测(ns/op)
 python3 bench_float.py                         # TF 浮点精度(trit)/动态范围/全阶码可表示实测
-python3 -c "import trirv_base12 as b; print(b.to12(20), b.from12('18'), b.frac_to12(1,3))"  # 十二进制记数：18 20 0.4
+python3 -c "import trirv_base12 as b; print(b.to12(20), b.from12('18'), b.frac_to12(1,3), b.labelled(20), b.parse_labelled('18₁₂'))"  # 十二进制记数 + 进制下标标注：18 20 0.4 18₁₂ 20
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
@@ -197,7 +197,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
 | `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF32/TF64） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
-| `trirv_base12_e2e.py`（十二进制表示层记数：to12/from12/frac_to12） | **42/42**（执行层 trit ≠ 表示层记数，1/3=0.4 有限位，round-trip 0 错） |
+| `trirv_base12_e2e.py`（十二进制表示层：to12/from12/frac_to12 + 数码定义 + 进制下标） | **72/72**（基数自指：'12'在十二进制=14、本进制写作'10'；18₁₂/20₁₀ 标注往返；round-trip 0 错） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | **16/16 套**（`TRV_CC_STRICT=1` 下同样 16/16） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |

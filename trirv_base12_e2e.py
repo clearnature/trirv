@@ -85,6 +85,48 @@ ratio = math.log(3) / math.log(12)
 check("trit→十二进制位比例", round(b12.trit_to_digits(1), 6), round(ratio, 6))
 check("34 trit 换算", round(b12.trit_to_digits(34), 2), round(34 * ratio, 2))
 
+# ---- 9. 符号定义与基数自指（用户 2026-11-20 定调） ----
+# "12" 是十进制进位记法写出的字样；十二进制自己的基数写作 "10"。
+# 用户拍板：规范数码暂用 ASCII 0-9AB，但必须显式定义符号集 + 留别名层。
+check("符号集定义存在", isinstance(b12.SYMBOL_SET, dict), True)
+check("符号集 canonical", b12.SYMBOL_SET["canonical"], "0123456789AB")
+check("符号集 radix_self", b12.SYMBOL_SET["radix_self"], "10")
+check("符号集 十进制标签", b12.SYMBOL_SET["radix_decimal_label"], 12)
+check("符号集 启用别名输入", b12.SYMBOL_SET["alias_input"], True)
+check("基数数值", b12.RADIX, 12)
+check("基数在本进制的写法", b12.RADIX_IN_SELF, "10")
+check("to12(基数)=10", b12.to12(b12.RADIX), "10")
+check("from12('10')=基数", b12.from12("10"), 12)
+# 决定性证据：字样 "12" 在十二进制 = 1×12+2 = 14，不是基数
+check("字样'12'在十二进制=14", b12.from12("12"), 14)
+check("十进制10在十二进制=A", b12.to12(10), "A")
+# ASCII 别名归一层（将来换地支/专用字形只改映射，不动 to12/from12）
+check("规范数码表", b12.CANONICAL_DIGITS, "0123456789AB")
+check("别名归一 aB→AB", b12.normalize("aB"), "AB")
+check("别名归一 10→10", b12.normalize("10"), "10")
+check("别名归一后解码", b12.from12("aB"), b12.from12("AB"))
+
+# ---- 10. 数字加下标标注进制（用户 2026-11-20 定调） ----
+# 表示 = 数码串 + 进制下标；下标是元层注解，标明这串数码按哪个基数解读。
+check("符号集 标注方式", b12.SYMBOL_SET["annotation"], "subscript")
+check("基数下标 12", b12.radix_subscript(12), "₁₂")
+check("基数下标 10", b12.radix_subscript(10), "₁₀")
+check("基数下标 3",  b12.radix_subscript(3),  "₃")
+check("带下标表示 20₁₂ = 18₁₂", b12.labelled(20), "18₁₂")
+check("带下标表示 10₁₀", b12.labelled(10, base=10), "10₁₀")
+check("带下标表示 20₁₀", b12.labelled(20, base=10), "20₁₀")
+check("解析 18₁₂ = 20", b12.parse_labelled("18₁₂"), 20)
+check("解析 20₁₀ = 20", b12.parse_labelled("20₁₀"), 20)
+check("解析 101₁₀ = 101", b12.parse_labelled("101₁₀"), 101)
+check("带下标 round-trip", b12.parse_labelled(b12.labelled(59048)), 59048)
+for bad_lbl in ("18", "18₁₃", "1x₁₂", "₁₂"):
+    try:
+        b12.parse_labelled(bad_lbl)
+        rejected = False
+    except ValueError:
+        rejected = True
+    check(f"拒绝非法标注 {bad_lbl!r}", rejected, True)
+
 print()
 print(f"十二进制表示层契约：{PASS} PASS / {FAIL} FAIL")
 sys.exit(1 if FAIL else 0)
