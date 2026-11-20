@@ -153,7 +153,7 @@ python3 bench_bitops.py                        # 位运算在三进制上的真�
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
-python3 run_all_tests.py                       # 全量：一条命令跑完 35 套（28 快 + 7 慢），输出汇总表
+python3 run_all_tests.py                       # 全量：一条命令跑完 39 套（30 快 + 9 慢），输出汇总表
 python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
 ```
 
@@ -167,11 +167,11 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 07:05 全量复测：`run_all_tests.py` 35 套全 PASS；真 musl string+stdlib 双目录 49/66 编译、17 项标记 musl_tri 重写待办）
+## 五、当前状态（2026-11-20 09:20 全量复测：`run_all_tests.py` 39 套全 PASS；真 musl string+stdlib 双目录 60/66 编译、6 项决策 SKIP、0 失败）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **35/35 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **39/39 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
@@ -182,6 +182,9 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_musl_real_e2e.py`（**真 musl 源码编译试点**：musl 1.2.5 官方源码 string/stdlib 6 文件原样编译（仅预处理），15 项行为断言 + strstr 集成场景，双 VM） | **11/11** |
 | `trirv_musl_wide_e2e.py`（**musl string/ 全目录覆盖**：46 文件批量管线——40 编译成功 / 6 语义不适用 SKIP（字节位图打包依赖二进制位运算）/ 0 失败；strsep/strlcpy/memmove/strcasecmp/memccpy 功能断言） | **7/7** |
 | `trirv_switch_e2e.py`（**switch 契约**：匹配+break / fall-through / default / 无匹配 / 负 case 值 / 嵌套 switch / 乱序声明 / CVM 一致） | **9/9** |
+| `trirv_compound_e2e.py`（**复合字面量契约**：return/初始化/实参三语境、负值截断、嵌套表达式成员、CVM 一致） | **6/6** |
+| `trirv_qsort_tri_e2e.py`（**qsort 三进制重写契约**：乱序/已序/逆序/重复/单元素/负数/大数组/char 数组，双 VM） | **4/4** |
+| `trirv_strtol_tri_e2e.py`（**strtol 三进制重写契约**：各 base/0x 自动判定/正负号/溢出钳制/end 写回/坏输入，双 VM） | **4/4** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
@@ -224,6 +227,15 @@ $ ./trirv_vm /tmp/t.trv
    `_X<单元>_<n>` 防冲突；重复定义检测对 TRVO 导入同样生效。
    与真 musl 的剩余差距：musl 的 arch 层（内联汇编——改写为 read8/write8
    形态 + TRVO 分发）、弱符号语义。
+   **musl 覆盖总账（2026-11-20）**：src/string + src/stdlib 共 66 文件
+   （非宽字符），批量管线 = 60 编译 OK / 6 决策 SKIP / 0 FAIL。
+   **musl_tri/ = 三进制原生改编层**：上游依赖二进制位运算语义的文件
+   在此重写（纯三进制原则：语义适配硬件，不跳过），每文件注释逐条
+   标注与上游差异。已重写：memset/memcpy/strcspn/strspn/strstr/memmem/
+   div/ldiv/lldiv/imaxdiv/qsort/strtol/strsignal（13 文件，均有行为
+   断言锁定）。
+   **决策记录：浮点系永久 SKIP**（strtod/atof/ecvt/fcvt/gcvt——TriRV
+   无浮点；三进制浮点格式属 ISA 演进，单独立项，见 README §六尾部）。
 1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——
    **2026-11-19 已补齐**，C 后端 148/148。约定与 Python 后端一致：调用方传结构体
    源地址、被调方入口逐字拷进本地副本（修改完全隔离）；sret 由调用方在帧内预留缓冲、

@@ -53,7 +53,10 @@ for d in DIRS:
             continue
         with open(pp, 'w') as f: f.write(r.stdout)
         if 'TRIRV_SKIP' in r.stdout:
-            skip.append(d.split('/')[-1]+'/'+fn); details[fn] = r.stdout.split('TRIRV_SKIP:')[1].split('\\n')[0]
+            reason = r.stdout.split('TRIRV_SKIP', 1)[1].lstrip(':')
+            reason = reason.split('\n')[0]
+            skip.append(d.split('/')[-1] + '/' + fn)
+            details[d.split('/')[-1] + '/' + fn] = reason
             continue
         tvo = os.path.join(OUTDIR, fn.replace('.c', '.trvo'))
         rc = subprocess.run(['./trirv_cc', pp, tvo], capture_output=True, text=True)
