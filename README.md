@@ -133,7 +133,8 @@ RISC-V 的 `AND/OR/XOR` 是**二进制**按位；三进制寄存器里没有二�
 | `CC_寄存器式编译器说明.md` | 编译器内部：可写性约定、目标驱动赋值、寄存器池 |
 | `WASM_ROUTE_A.md` | Wasm 栈式字节码 → TriRV 翻译器：内存模型取舍、指令映射、实测与限制 |
 | `TERNARY_FLOAT_PROPOSAL.md` | 浮点扩展 TF 立项：格式、穿透 FPU 模型、F 指令草案、分阶段计划、待拍板 D-F1..D-F4 |
-| `LLVM_BACKEND_PLAN.md` | 阶段 4 LLVM 后端任务计划书：战略支柱（只改 llc）、D-L1..D-L5 决策、P-0..P-5 原子任务分解、完成定义 |
+| `TINYCC_PORT_PLAN.md` | 工具链正式路线：TinyCC 移植（fork riscv64 后端→tri-gen），D-T1..D-T5 决策、T-0..T-3 原子分解、完成定义 |
+| `LLVM_BACKEND_PLAN.md` | （已搁置）LLVM 后端计划——保留作决策历史，LLVM 降级为未来可选 |
 
 ## 四、快速开始
 
