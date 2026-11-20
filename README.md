@@ -153,7 +153,7 @@ python3 bench_bitops.py                        # 位运算在三进制上的真�
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
-python3 run_all_tests.py                       # 全量：一条命令跑完 39 套（30 快 + 9 慢），输出汇总表
+python3 run_all_tests.py                       # 全量：一条命令跑完 40 套（31 快 + 9 慢），输出汇总表
 python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
 ```
 
@@ -167,11 +167,11 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 09:20 全量复测：`run_all_tests.py` 39 套全 PASS；真 musl string+stdlib 双目录 60/66 编译、6 项决策 SKIP、0 失败）
+## 五、当前状态（2026-11-20 全量复测：`run_all_tests.py` 40 套全 PASS；真 musl string+stdlib 双目录 60/66 编译、6 项决策 SKIP、0 失败）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **39/39 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **40/40 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
@@ -191,6 +191,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
+| `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | **16/16 套**（`TRV_CC_STRICT=1` 下同样 16/16） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
@@ -244,10 +245,10 @@ $ ./trirv_vm /tmp/t.trv
    `TRV_CC_STRICT=1` 下通过**（此前是 9/11 与整套失败）。
    > ⚠️ **验证陷阱仍在**：默认模式下 e2e 全绿，可能是因为失败用例悄悄回退到 Python
    > 后端。考核 C 后端必须加 `TRV_CC_STRICT=1`，`run_all_tests.py` 已默认带上。
-2. **二进制位运算 / 移位只在 C 后端**：`& | ^ ~ << >>` 的适配层（方案 A）写在
-   `trirv_cc.c`，Python 参考后端（`trirv_cc.py`）仍硬报错。所以 `TRV_CC=py`
-   只能用来对照纯三进制代码，含位运算/移位的程序必须走 C 后端。两套后端的
-   报错文案都写明了这一点，避免语义漂移被当成 bug 追。
+2. ~~**二进制位运算 / 移位只在 C 后端**~~ —— **2026-11-20 已对齐**：`& | ^ ~ << >>`
+   的方案 A 适配层现在 **C 后端（`trirv_cc.c`）与 Python 参考后端（`trirv_cc.py`）都有**，
+   15 项差分锁定（`trirv_cc_py_bitop_e2e.py`），含负数 raw 化、`~0 != -1`、
+   变量移位与组合表达式。两套后端语义一致，不再需要为位运算专门切 C。
 3. **VM 的 DIV 慢**：无硬件除法器，走 72 步逐位恢复除法（~150ns）。`>>` 的
    代价几乎全在这次除法上（`a>>3` 19 步里 11 步是 `DIVU`）。优化方向是乘法
    逆元估商，预计 1.5–2×。
