@@ -69,6 +69,7 @@ SUITES = [
     ("trirv_tritlogic_e2e.py",    "AND/OR/XOR 逐 trit 锁定",  False, None),
     ("trirv_bitview_e2e.py",      "C 位运算/移位 方案 A",    False, None),
     ("trirv_cc_py_bitop_e2e.py",  "py 后端位运算差分 15 项",  False, None),
+    ("trirv_float_e2e.py",        "TF 浮点编解码 76 项",      False, None),
     ("trirv_difftest.py",         "PyVM vs C VM 差分",       False, None),
     ("trirv_csr_diff.py",         "CSR/trap 差分",           False, None),
     ("trirv_charsign_e2e.py",     "char 符号性 21 项",        False, None),
