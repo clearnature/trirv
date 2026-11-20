@@ -132,6 +132,7 @@ RISC-V 的 `AND/OR/XOR` 是**二进制**按位；三进制寄存器里没有二�
 | `PERF_REPORT.md` | 性能：编译期 Python→C 后端、运行期按 VM 代价定向 |
 | `CC_寄存器式编译器说明.md` | 编译器内部：可写性约定、目标驱动赋值、寄存器池 |
 | `WASM_ROUTE_A.md` | Wasm 栈式字节码 → TriRV 翻译器：内存模型取舍、指令映射、实测与限制 |
+| `TERNARY_FLOAT_PROPOSAL.md` | 浮点扩展 TF 立项：格式、穿透 FPU 模型、F 指令草案、分阶段计划、待拍板 D-F1..D-F4 |
 
 ## 四、快速开始
 
@@ -236,8 +237,10 @@ $ ./trirv_vm /tmp/t.trv
    标注与上游差异。已重写：memset/memcpy/strcspn/strspn/strstr/memmem/
    div/ldiv/lldiv/imaxdiv/qsort/strtol/strsignal（13 文件，均有行为
    断言锁定）。
-   **决策记录：浮点系永久 SKIP**（strtod/atof/ecvt/fcvt/gcvt——TriRV
-   无浮点；三进制浮点格式属 ISA 演进，单独立项，见 README §六尾部）。
+   **决策记录：浮点系 → ISA 演进立项（2026-11-20）**（strtod/atof/ecvt/fcvt/gcvt）。
+   原为"永久 SKIP：TriRV 无浮点"，因 wasm 必然涉及 f32/f64 且用户定调"三进制浮点格式
+   属 ISA 演进"，已立专项：**穿透宿主 FPU 取性能、ISA 格式与语义保持三进制**。
+   立项书与待拍板项（D-F1..D-F4）见 `TERNARY_FLOAT_PROPOSAL.md`；拍板前不写实现代码。
 1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——
    **2026-11-19 已补齐**，C 后端 148/148。约定与 Python 后端一致：调用方传结构体
    源地址、被调方入口逐字拷进本地副本（修改完全隔离）；sret 由调用方在帧内预留缓冲、
