@@ -148,7 +148,7 @@ TRV_CC=py python3 export_trv.py foo.c foo.trv   # 强制 Python 参考后端做�
 ./trirv_vm -o 1000 foo.trv                  # dump 地址 1000 起的 9 tryte
 
 python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 参数可选，输出汇编）
-python3 trirv_wasm_e2e.py                      # 93 例三路差分（参考解释器 / PyVM / C VM）
+python3 trirv_wasm_e2e.py                      # 112 例三路差分（含 P3 浮点 19 例；参考解释器 / PyVM / C VM）
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 bench_div.py                           # DIV 快路径 vs 72轮恢复除法 实测(ns/op)
@@ -197,11 +197,11 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
 | `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF32/TF64） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
-| `trirv_float_isa_e2e.py`（F 扩展指令 P2：FADD/FSUB/FMUL/FDIV/FSQRT/FLW/FSW/FEQ/FLT/FLE） | **27/27**（编码往返 + PyVM 语义 + PyVM×C VM 字节差分；`trirv_float.h` 精确 mant 量化） |
+| `trirv_float_isa_e2e.py`（F 扩展指令 P2/P3：FADD/FSUB/FMUL/FDIV/FSQRT/FLW/FSW/FEQ/FLT/FLE + .S 双档） | **39/39**（编码往返 + PyVM 语义 + PyVM×C VM 字节差分；`tf_ratio` 整数正确舍入彻底消除跨 VM 1 ulp 漂移） |
 | `trirv_base12_e2e.py`（十二进制表示层：to12/from12/frac_to12 + 数码定义 + 进制下标） | **72/72**（基数自指：'12'在十二进制=14、本进制写作'10'；18₁₂/20₁₀ 标注往返；round-trip 0 错） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | **16/16 套**（`TRV_CC_STRICT=1` 下同样 16/16） |
-| `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
+| `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **112/112**（含 P3 浮点 19 例：双档四则/sqrt/比较/局部变量/双档共存） |
 | `trirv_fuzz.py` / `_mem` / `_csr` | 1500 / 1000 / 800 case，字节级 MATCH |
 
 性能（对比 Python 栈式后端，32 寄存器 + LB/LH 对齐后复测）：
@@ -285,7 +285,11 @@ $ ./trirv_vm /tmp/t.trv
 
 - `trirv_wasm.py`：Wasm 二进制 → TriRV 汇编。**操作数栈驻留寄存器**（t0–t6），
   leaf 函数的局部变量驻留 s1/s2，`local.get x … op … local.set x` 就地更新
-- 三路差分 93/93：参考解释器 × Python VM × C VM，含 hello world 中文输出字节一致
+- 三路差分 112/112：参考解释器 × Python VM × C VM，含 hello world 中文输出字节一致
+- **浮点已支持（P3，2026-11-20）**：f32/f64 常量在**编译期穿透** IEEE 位模式 → TF raw，
+  运行时只跑三进制 F 指令；四则/sqrt/比较/load/store/浮点局部变量/双档共存全通，
+  19 个浮点用例三路字节一致。档位自主定义（TF32=1+5+14、TF64=1+10+34 trit），
+  不照搬 IEEE 语义；详见 `TERNARY_FLOAT_PROPOSAL.md` §5.2/§5.3
 - 关键选择：**1 wasm byte = 1 tryte，地址零偏移**（寻址零换算指令）；
   值域差（243 vs 256）属定义层，不计成本，**成本只算"模拟 mod 2^32 / mod 2^8 的规整指令"**
 - 实测（求和 1..100000）：动态步数 4,700,071 → **2,245,770（−52.2%）**
@@ -294,7 +298,7 @@ $ ./trirv_vm /tmp/t.trv
   - 单步成本 7.7 vs 8.0 ns，差距全在指令条数，VM 没变慢
 - **位运算已支持**（and/or/xor/shl/shr/rot/clz/ctz/popcnt）：32 轮无除法拆位，
   代价 372–436 条/op —— 基数转换的物理成本，实测见 `bench_bitops.py`
-- 不支持：i16/i64、br_table、call_indirect
+- 不支持：i16/i64、br_table、call_indirect、浮点 min/max/abs/neg/round、浮点形参/转换
 - 详见 `WASM_ROUTE_A.md`
 
 ## 八、最近话题（2026-11-19）

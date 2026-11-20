@@ -216,6 +216,7 @@ static const InstDef IDEFS[] = {
     {20,0,0,'I',OP_FLW},{20,2,0,'S',OP_FSW},      /* TF32 */
     {20,5,0,'R',OP_FCVTW},{20,7,0,'R',OP_FCVTF},
     {21,0,1,'R',OP_FEQ},{21,1,1,'R',OP_FLT},{21,2,1,'R',OP_FLE},
+    {21,0,0,'R',OP_FEQ},{21,1,0,'R',OP_FLT},{21,2,0,'R',OP_FLE},  /* P3: TF32 比较档 */
 };
 #define NIDEFS (sizeof(IDEFS)/sizeof(IDEFS[0]))
 
@@ -285,6 +286,7 @@ typedef struct {
      * 裸 double 会把指数卡在 3^646；raw 打包全阶码无损，算术时 decompose 出 mant/exp3。 */
     __uint128_t freg[32];
     TFFmt tf;                          /* TF64 格式常量（init 时填） */
+    TFFmt tf32;                        /* P3: TF32 格式常量（档位由 funct2 选） */
     uint8_t mem[MEMSZ];
     Inst *prog; int nprog;
     int pc_;
@@ -788,18 +790,21 @@ static inline void step(VM *v){
         case OP_FLW:v->freg[rd]=load_word(v,a+imm)%MOD_X;break;
         case OP_FSW:store_word(v,a+imm,v->freg[rs2]%MOD_X);snoop_store(v,a+imm,9);break;
         case OP_FADD:case OP_FSUB:case OP_FMUL:case OP_FDIV:case OP_FSQRT:{
-            long me=TF64_MAX_EXP;
+            /* P3：档位由 funct2 选（0=TF32,1=TF64）；TFFmt 已参数化 bias/max_exp/mant_trits。 */
+            TFFmt *fm = in->funct2 ? &v->tf : &v->tf32;
+            long me = fm->max_exp;
             __uint128_t x=v->freg[rs1],y=v->freg[rs2];
-            if(in->op==OP_FADD)      v->freg[rd]=tf_add(&v->tf,x,y,0,me,POW3)%MOD_X;
-            else if(in->op==OP_FSUB) v->freg[rd]=tf_add(&v->tf,x,y,1,me,POW3)%MOD_X;
-            else if(in->op==OP_FMUL) v->freg[rd]=tf_mul(&v->tf,x,y,me)%MOD_X;
-            else if(in->op==OP_FDIV) v->freg[rd]=tf_divf(&v->tf,x,y,me)%MOD_X;
-            else                     v->freg[rd]=tf_sqrt(&v->tf,x,me)%MOD_X;
+            if(in->op==OP_FADD)      v->freg[rd]=tf_add(fm,x,y,0,me,POW3)%MOD_X;
+            else if(in->op==OP_FSUB) v->freg[rd]=tf_add(fm,x,y,1,me,POW3)%MOD_X;
+            else if(in->op==OP_FMUL) v->freg[rd]=tf_mul(fm,x,y,me)%MOD_X;
+            else if(in->op==OP_FDIV) v->freg[rd]=tf_divf(fm,x,y,me)%MOD_X;
+            else                     v->freg[rd]=tf_sqrt(fm,x,me)%MOD_X;
             break;
         }
         case OP_FEQ:case OP_FLT:case OP_FLE:{
             int opn=(in->op==OP_FEQ)?0:(in->op==OP_FLT?1:2);
-            v->reg[rd]=u(tf_cmp(&v->tf,v->freg[rs1],v->freg[rs2],opn,TF64_MAX_EXP));
+            TFFmt *fm = in->funct2 ? &v->tf : &v->tf32;
+            v->reg[rd]=u(tf_cmp(fm,v->freg[rs1],v->freg[rs2],opn,fm->max_exp));
             break;
         }
         case OP_FCVTW:{
@@ -976,17 +981,17 @@ L_AMOOR: amo_exec(v,OP_AMOOR,rd,rs1,rs2); NEXT();
 L_AMOXOR:amo_exec(v,OP_AMOXOR,rd,rs1,rs2); NEXT();
 L_AMOMIN:amo_exec(v,OP_AMOMIN,rd,rs1,rs2); NEXT();
 L_AMOMAX:amo_exec(v,OP_AMOMAX,rd,rs1,rs2); NEXT();
-/* F 扩展（P2）：与 step() 同语义，档位固定 TF64（本阶段范围） */
+/* F 扩展（P2/P3）：与 step() 同语义；算术/比较档位由 in->funct2 选（0=TF32,1=TF64） */
 L_FLW:   v->freg[rd]=load_word(v,a+imm)%MOD_X; NEXT();
 L_FSW:   store_word(v,a+imm,v->freg[rs2]%MOD_X);snoop_store(v,a+imm,9); NEXT();
-L_FADD:  v->freg[rd]=tf_add(&v->tf,v->freg[rs1],v->freg[rs2],0,TF64_MAX_EXP,POW3)%MOD_X; NEXT();
-L_FSUB:  v->freg[rd]=tf_add(&v->tf,v->freg[rs1],v->freg[rs2],1,TF64_MAX_EXP,POW3)%MOD_X; NEXT();
-L_FMUL:  v->freg[rd]=tf_mul(&v->tf,v->freg[rs1],v->freg[rs2],TF64_MAX_EXP)%MOD_X; NEXT();
-L_FDIV:  v->freg[rd]=tf_divf(&v->tf,v->freg[rs1],v->freg[rs2],TF64_MAX_EXP)%MOD_X; NEXT();
-L_FSQRT: v->freg[rd]=tf_sqrt(&v->tf,v->freg[rs1],TF64_MAX_EXP)%MOD_X; NEXT();
-L_FEQ:   v->reg[rd]=u(tf_cmp(&v->tf,v->freg[rs1],v->freg[rs2],0,TF64_MAX_EXP)); NEXT();
-L_FLT:   v->reg[rd]=u(tf_cmp(&v->tf,v->freg[rs1],v->freg[rs2],1,TF64_MAX_EXP)); NEXT();
-L_FLE:   v->reg[rd]=u(tf_cmp(&v->tf,v->freg[rs1],v->freg[rs2],2,TF64_MAX_EXP)); NEXT();
+L_FADD:  {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->freg[rd]=tf_add(fm,v->freg[rs1],v->freg[rs2],0,fm->max_exp,POW3)%MOD_X;} NEXT();
+L_FSUB:  {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->freg[rd]=tf_add(fm,v->freg[rs1],v->freg[rs2],1,fm->max_exp,POW3)%MOD_X;} NEXT();
+L_FMUL:  {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->freg[rd]=tf_mul(fm,v->freg[rs1],v->freg[rs2],fm->max_exp)%MOD_X;} NEXT();
+L_FDIV:  {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->freg[rd]=tf_divf(fm,v->freg[rs1],v->freg[rs2],fm->max_exp)%MOD_X;} NEXT();
+L_FSQRT: {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->freg[rd]=tf_sqrt(fm,v->freg[rs1],fm->max_exp)%MOD_X;} NEXT();
+L_FEQ:   {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->reg[rd]=u(tf_cmp(fm,v->freg[rs1],v->freg[rs2],0,fm->max_exp));} NEXT();
+L_FLT:   {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->reg[rd]=u(tf_cmp(fm,v->freg[rs1],v->freg[rs2],1,fm->max_exp));} NEXT();
+L_FLE:   {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->reg[rd]=u(tf_cmp(fm,v->freg[rs1],v->freg[rs2],2,fm->max_exp));} NEXT();
 L_FCVTW: {TFVal fv=tf_dec(&v->tf,v->freg[rs1],TF64_MAX_EXP);
           double val=fv.sign*fv.mant*pow(3.0,(double)fv.exp3);
           v->reg[rd]=u((__int128_t)llround(val));} NEXT();
@@ -1057,6 +1062,7 @@ static void vm_init_ex(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_dat
     v->priv=3;v->irq_timer=0;memset(v->csr,0,sizeof(v->csr));   /* Zicsr: 复位 M 态, CSR 清零 */
     v->lr_addr=-1;v->lr_valid=0;v->lr_version=0;                /* A 扩展保留集复位 */
     tf64_init(&v->tf,POW3);                                     /* F 扩展：TF64 格式常量 */
+    tf32_init(&v->tf32,POW3);                                   /* P3：TF32 格式常量（wasm f32 档位） */
     v->stdin_data=stdin_data;v->stdin_len=stdin_len;v->stdin_pos=0;
     /* ---- crt0 进程信息（零页固定地址）----
      * 本 VM 栈向上生长（ADDI sp,sp,+frame），RISC-V Linux 的"sp 指向 argc"

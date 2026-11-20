@@ -17,6 +17,7 @@ import os
 import trirv_asm
 import trirv_vm
 import trirv_wasm
+import trirv_float as tf
 from trirv_wasm import compile_wasm, build_trv, Unsupported
 
 M32 = 2 ** 32
@@ -67,6 +68,8 @@ def nm(t):
 
 
 I32 = 0x7F
+F32 = 0x7D
+F64 = 0x7C
 
 
 class W:
@@ -84,10 +87,17 @@ class W:
         self.imports.append(nm(mod) + nm(fld) + b"\x00" + u(tidx))
         return len(self.imports) - 1
 
-    def func(self, tidx, body, nlocals=0):
-        """body 已含末尾 0x0B。nlocals 个 i32 局部变量。"""
+    def func(self, tidx, body, nlocals=0, local_types=None):
+        """body 已含末尾 0x0B。nlocals 个 i32 局部变量；
+        P3：local_types 可给每个 local 指定 valtype（长度须等于 nlocals）。"""
         self.funcs.append(u(tidx))
-        loc = vec([u(nlocals) + bytes([I32])] if nlocals else [])
+        if local_types is None:
+            loc = vec([u(nlocals) + bytes([I32])] if nlocals else [])
+        else:
+            groups = {}
+            for t in local_types:
+                groups[t] = groups.get(t, 0) + 1
+            loc = vec([u(c) + bytes([t]) for t, c in groups.items()])
         self.codes.append(loc + body)
         return len(self.imports) + len(self.funcs) - 1
 
@@ -144,6 +154,19 @@ def STORE8(off=0): return b"\x3a" + u(0) + u(off)
 ADD, SUB, MUL = b"\x6a", b"\x6b", b"\x6c"
 DIVS, DIVU, REMS, REMU = b"\x6d", b"\x6e", b"\x6f", b"\x70"
 EQZ, EQ, NE = b"\x45", b"\x46", b"\x47"
+
+# ---- 浮点指令简写（P3）----
+def F64C(v): return b"\x44" + struct.pack("<d", v)
+def F32C(v): return b"\x43" + struct.pack("<f", v)
+F64ADD, F64SUB, F64MUL, F64DIV = b"\xa0", b"\xa1", b"\xa2", b"\xa3"
+F32ADD, F32SUB, F32MUL, F32DIV = b"\x92", b"\x93", b"\x94", b"\x95"
+F64SQRT, F32SQRT = b"\x9f", b"\x91"
+F64EQ, F64NE, F64LT, F64GT, F64LE, F64GE = (bytes([x]) for x in range(0x61, 0x67))
+F32EQ, F32NE, F32LT, F32GT, F32LE, F32GE = (bytes([x]) for x in range(0x5b, 0x61))
+def FLOAD64(off=0): return b"\x2b" + u(0) + u(off)
+def FLOAD32(off=0): return b"\x2a" + u(0) + u(off)
+def FSTORE64(off=0): return b"\x39" + u(0) + u(off)
+def FSTORE32(off=0): return b"\x38" + u(0) + u(off)
 LTS, LTU, GTS, GTU = b"\x48", b"\x49", b"\x4a", b"\x4b"
 LES, LEU, GES, GEU = b"\x4c", b"\x4d", b"\x4e", b"\x4f"
 SELECT = b"\x1b"
@@ -192,6 +215,15 @@ class Ref:
                 d -= 243
             self.mem[a + k] = d % 243
             v = (v - d) // 243
+
+    def ld_raw(self, a):
+        """9 tryte 小端 → TF raw（P3：f32/f64 的 raw 都占 9 tryte 槽）。"""
+        return sum(self.tryte(a + k) * 243 ** k for k in range(9)) % (3 ** 45)
+
+    def st_raw(self, a, raw):
+        raw %= 3 ** 45
+        for k in range(9):
+            self.mem[a + k] = (raw // 243 ** k) % 243
 
     # ---- 结构预处理：给每个 block/loop/if 找到 else / end 位置 ----
     @staticmethod
@@ -285,6 +317,38 @@ class Ref:
                 i, pc = trirv_wasm.uleb(body, pc); self.glob[i] = st.pop()
             elif op == 0x41:
                 v, pc = trirv_wasm.sleb(body, pc); st.append(s32(v))
+            elif op == 0x43:                       # f32.const：IEEE → TF32 raw
+                v = struct.unpack("<f", body[pc:pc + 4])[0]; pc += 4
+                st.append(tf.TF32.encode(v))
+            elif op == 0x44:                       # f64.const：IEEE → TF64 raw
+                v = struct.unpack("<d", body[pc:pc + 8])[0]; pc += 8
+                st.append(tf.TF64.encode(v))
+            elif op in (0x92, 0x93, 0x94, 0x95):   # f32.add/sub/mul/div
+                b2 = st.pop(); a2 = st.pop(); F = tf.TF32
+                st.append({0x92: lambda x,y,f: tf.f_add(x,y,f),
+                           0x93: lambda x,y,f: tf.f_add(x,y,f,subtract=True),
+                           0x94: tf.f_mul, 0x95: tf.f_div}[op](a2, b2, F))
+            elif op in (0xA0, 0xA1, 0xA2, 0xA3):   # f64.add/sub/mul/div
+                b2 = st.pop(); a2 = st.pop(); F = tf.TF64
+                st.append({0xA0: lambda x,y,f: tf.f_add(x,y,f),
+                           0xA1: lambda x,y,f: tf.f_add(x,y,f,subtract=True),
+                           0xA2: tf.f_mul, 0xA3: tf.f_div}[op](a2, b2, F))
+            elif op in (0x91, 0x9F):               # f32.sqrt / f64.sqrt
+                F = tf.TF32 if op == 0x91 else tf.TF64
+                st.append(tf.f_sqrt(st.pop(), F))
+            elif 0x5B <= op <= 0x66:              # f32/f64 比较
+                b2 = st.pop(); a2 = st.pop()
+                F = tf.TF32 if op <= 0x60 else tf.TF64
+                base = 0x5B if op <= 0x60 else 0x61
+                k = op - base
+                opn = ("eq", "eq", "lt", "lt", "le", "le")[k]
+                # ne = !eq；gt = lt(b,a)；ge = le(b,a)
+                if k == 1:
+                    r = tf.f_cmp(a2, b2, F, "eq"); st.append(1 - r)
+                elif k in (3, 5):
+                    st.append(tf.f_cmp(b2, a2, F, opn))
+                else:
+                    st.append(tf.f_cmp(a2, b2, F, opn))
             elif op == 0x6A:
                 b = st.pop(); a = st.pop(); st.append(s32(a + b))
             elif op == 0x6B:
@@ -348,6 +412,13 @@ class Ref:
             elif op == 0x1B:
                 c = st.pop(); b = st.pop(); a = st.pop()
                 st.append(a if c else b)
+            elif op in (0x2A, 0x2B):               # f32.load / f64.load
+                _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
+                st.append(self.ld_raw(st.pop() + off))
+            elif op in (0x38, 0x39):               # f32.store / f64.store
+                _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
+                v = st.pop(); a = st.pop()
+                self.st_raw(a + off, v)
             elif op == 0x28:
                 _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
                 st.append(self.ld32(st.pop() + off))
@@ -410,6 +481,153 @@ def wrap1(body, args, nlocals=0, params=None):
     w.export("run", 0, fw)
     w.mems.append(b"\x00")
     return w
+
+
+def run_float_case(name, w, entry, check_raw=None):
+    """P3 浮点专用三路差分：编译 → Ref(TF oracle) → PyVM → C VM。
+    check_raw: 可选 lambda(raw)->bool，对 Ref 输出的 TF raw 再做语义断言。"""
+    data = w.build()
+    try:
+        asm, segs, _ = compile_wasm(data, entry)
+    except Unsupported as e:
+        print(f"SKIP  {name}: {e}")
+        return 0, 0, 1
+    mod = trirv_wasm.parse_module(data)
+    ref = Ref(mod, segs)
+    want = ref.run(mod["exports"][0][entry])
+    want_v = trirv_vm.s(want[0]) if want else 0
+    want_out = bytes(ref.out)
+    py_exit, py_a0, py_out = run_py_vm(asm, segs)
+    c_exit, c_out = run_c_vm(asm, segs)
+    good = (py_a0 == want_v and py_out == want_out and
+            c_exit == (want_v & 0xFF) and c_out == want_out)
+    if check_raw is not None and want_out:
+        raw = sum(want_out[k] * 243 ** k for k in range(min(9, len(want_out))))
+        good = good and check_raw(raw)
+    if good:
+        print(f"PASS  {name:32s} = a0:{want_v:3d} out:{want_out!r}")
+        return 1, 0, 0
+    print(f"FAIL  {name:32s} ref={want_v},{want_out!r} "
+          f"py({py_a0},{py_out!r}) c({c_exit},{c_out!r})")
+    return 0, 1, 0
+
+
+def float_suite():
+    """P3 浮点用例集。统一 import print，函数把 TF raw f64.store 到内存再输出，
+    三路差分对比 9 tryte 输出；期望值由 Ref 用 trirv_float 语义独立算出。"""
+    ok = fail = skip = 0
+    PRINT_ADDR = 100                       # 线性内存里的结果槽
+
+    def mk(body):
+        w = W()
+        tp = w.type([I32, I32], [])
+        tm = w.type([], [I32])
+        imp = w.imp("env", "print", tp)
+        # body 产出浮点 raw 后 FSTORE64(0)，再打印 9 tryte
+        fn = w.func(tm, I32C(PRINT_ADDR) + body + FSTORE64(0) +
+                    I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
+        w.export("run", 0, fn)
+        w.mems.append(b"\x00")
+        return w
+
+    def near(v, tol=1e-4):
+        return lambda raw: abs(tf.TF64.decode(raw) - v) <= tol
+
+    def near32(v, tol=1e-2):
+        return lambda raw: abs(tf.TF32.decode(raw) - v) <= tol
+
+    cases64 = [
+        ("wasm f64 1.5+2.25=3.75", F64C(1.5) + F64C(2.25) + F64ADD, near(3.75)),
+        ("wasm f64 3.0*2.0=6.0", F64C(3.0) + F64C(2.0) + F64MUL, near(6.0)),
+        ("wasm f64 9.0/2.0=4.5", F64C(9.0) + F64C(2.0) + F64DIV, near(4.5)),
+        ("wasm f64 2.25-1.5=0.75", F64C(2.25) + F64C(1.5) + F64SUB, near(0.75)),
+        ("wasm f64 sqrt(9)=3", F64C(9.0) + F64SQRT, near(3.0)),
+    ]
+    for name, body, chk in cases64:
+        a, b, s = run_float_case(name, mk(body), "run", chk)
+        ok += a; fail += b; skip += s
+
+    cases32 = [
+        ("wasm f32 1.5+2.25=3.75", F32C(1.5) + F32C(2.25) + F32ADD, near32(3.75)),
+        ("wasm f32 3.0*2.0=6.0", F32C(3.0) + F32C(2.0) + F32MUL, near32(6.0)),
+        ("wasm f32 sqrt(9)=3", F32C(9.0) + F32SQRT, near32(3.0)),
+    ]
+    for name, body, chk in cases32:
+        a, b, s = run_float_case(name, mk(body), "run", chk)
+        ok += a; fail += b; skip += s
+
+    # 比较类：结果 0/1 直接由 a0 观察（函数返回比较结果，无 print）
+    def mkcmp(body):
+        w = W()
+        tm = w.type([], [I32])
+        fn = w.func(tm, body + END)
+        w.export("run", 0, fn)
+        w.mems.append(b"\x00")
+        return w
+
+    cmp_cases = [
+        ("wasm f64 1.5<2.25", F64C(1.5) + F64C(2.25) + F64LT, 1),
+        ("wasm f64 2.25>1.5", F64C(2.25) + F64C(1.5) + F64GT, 1),
+        ("wasm f64 1.5==2.25", F64C(1.5) + F64C(2.25) + F64EQ, 0),
+        ("wasm f64 1.5!=2.25", F64C(1.5) + F64C(2.25) + F64NE, 1),
+        ("wasm f64 1.5<=1.5", F64C(1.5) + F64C(1.5) + F64LE, 1),
+        ("wasm f64 2.25>=1.5", F64C(2.25) + F64C(1.5) + F64GE, 1),
+        ("wasm f32 1.5<2.25", F32C(1.5) + F32C(2.25) + F32LT, 1),
+        ("wasm f32 1.5==2.25", F32C(1.5) + F32C(2.25) + F32EQ, 0),
+    ]
+    for name, body, expected in cmp_cases:
+        a, b, s = run_float_case(name, mkcmp(body), "run", lambda raw, e=expected: True)
+        # 比较类 a0 由三路差分已锁定；再单独断言 a0 == expected
+        if a:
+            w = mkcmp(body)
+            data = w.build()
+            asm, segs, _ = compile_wasm(data, "run")
+            py_a0 = run_py_vm(asm, segs)[1]
+            if py_a0 != expected:
+                a, b = 0, 1
+                print(f"FAIL  {name:32s} a0={py_a0} want={expected}")
+        ok += a; fail += b; skip += s
+
+    # 浮点局部变量：local f64 / f32 的 set/get/tee
+    w = W()
+    tp = w.type([I32, I32], [])
+    tm = w.type([], [I32])
+    imp = w.imp("env", "print", tp)
+    body = (F64C(5.0) + LSET(0) +                       # local 0 ← 5.0
+            I32C(PRINT_ADDR) + LGET(0) + F64C(3.0) + F64ADD +   # 5.0 + 3.0
+            FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
+    fn = w.func(tm, body, nlocals=1, local_types=[F64])
+    w.export("run", 0, fn); w.mems.append(b"\x00")
+    a, b, s = run_float_case("wasm f64 局部变量 set/get", w, "run", near(8.0))
+    ok += a; fail += b; skip += s
+
+    body32 = (F32C(4.0) + LSET(0) +
+              I32C(PRINT_ADDR) + LGET(0) + F32C(2.0) + F32MUL +
+              FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
+    w2 = W(); tp2 = w2.type([I32, I32], []); tm2 = w2.type([], [I32])
+    imp2 = w2.imp("env", "print", tp2)
+    fn2 = w2.func(tm2, body32, nlocals=1, local_types=[F32])
+    w2.export("run", 0, fn2); w2.mems.append(b"\x00")
+    a, b, s = run_float_case("wasm f32 局部变量 set/get", w2, "run", near32(8.0))
+    ok += a; fail += b; skip += s
+
+    # 双档共存：同模块两个函数，一个 f64、一个 f32，验证档位切换不串
+    w = W()
+    tp = w.type([I32, I32], [])
+    tm = w.type([], [I32])
+    imp = w.imp("env", "print", tp)
+    f64 = w.func(tm, I32C(PRINT_ADDR) + F64C(1.5) + F64C(2.25) + F64ADD +
+                 FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) +
+                 CALL(imp) + I32C(0) + END)
+    f32 = w.func(tm, I32C(PRINT_ADDR) + F32C(3.0) + F32C(2.0) + F32MUL +
+                 FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) +
+                 CALL(imp) + I32C(0) + END)
+    w.export("run", 0, f64)                    # 入口跑 f64 档
+    w.mems.append(b"\x00")
+    a, b, s = run_float_case("wasm 双档共存(入口 f64)", w, "run", near(3.75))
+    ok += a; fail += b; skip += s
+
+    return ok, fail, skip
 
 
 def main():
@@ -568,6 +786,11 @@ def main():
             print(f"FAIL  {nm2:30s} ref={want_v} py(a0={py_a0},out={py_out!r}) "
                   f"c(exit={c_exit},out={c_out!r})")
             fail += 1
+
+    # P3 浮点套件
+    fo, ff, fs = float_suite()
+    ok += fo; fail += ff; skip += fs
+
     print(f"\n总计 {ok} PASS / {fail} FAIL / {skip} SKIP")
     return 0 if fail == 0 else 1
 

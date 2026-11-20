@@ -187,6 +187,75 @@ if os.path.exists(CVM):
 else:
     print("SKIP C VM 差分：未找到 trirv_vm 二进制")
 
+
+# ---------------- 4. TF32 档位（P3）：.S 后缀指令 + 双 VM 差分 ----------------
+# P3 把 C VM 的 TFFmt 参数化（bias/max_exp/mant_trits），档位由 funct2 选。
+# 这里锁住 TF32 四则 + sqrt + 比较的 PyVM 语义与 PyVM×C VM 字节差分。
+F32 = tf.TF32
+DT = {A_ADDR: list(raw_to_trytes(F32.encode(1.5))),
+      B_ADDR: list(raw_to_trytes(F32.encode(2.25)))}
+
+for mn, expr, expect in [
+    ("FADD.S", "1.5+2.25", 3.75),
+    ("FSUB.S", "1.5-2.25", -0.75),
+    ("FMUL.S", "1.5*2.25", 3.375),
+    ("FDIV.S", "1.5/2.25", 1.5 / 2.25),
+]:
+    ops = [("FLW.S", 0, 0, 0, A_ADDR), ("FLW.S", 1, 0, 0, B_ADDR),
+           (mn, 2, 0, 1, 0), ("FSW.S", 0, 0, 2, C_ADDR)]
+    c = run_py(ops, DT)
+    r = trytes_to_raw(bytes(c.mem[C_ADDR:C_ADDR + 9]))
+    check(f"PyVM TF32 {expr}", round(F32.decode(r), 5), round(expect, 5))
+
+# TF32 sqrt(9)=3；比较结果写整数寄存器
+c = run_py([("FLW.S", 0, 0, 0, A_ADDR),
+            ("FSQRT.S", 1, 0, 0, 0), ("FSW.S", 0, 0, 1, C_ADDR)],
+           {A_ADDR: list(raw_to_trytes(F32.encode(9.0)))})
+r = trytes_to_raw(bytes(c.mem[C_ADDR:C_ADDR + 9]))
+check("PyVM TF32 sqrt(9)=3", F32.decode(r), 3.0)
+for cmp_op, expect in [("FEQ", 0), ("FLT", 1), ("FLE", 1)]:
+    c = run_py([("FLW.S", 0, 0, 0, A_ADDR), ("FLW.S", 1, 0, 0, B_ADDR),
+                (cmp_op, 5, 0, 1, 0)], DT)
+    check(f"PyVM TF32 {cmp_op}(1.5,2.25)", c.regs[5], expect)
+
+# 双 VM 字节差分：TF32 FADD.S/FMUL.S 的输出 raw 必须逐字节一致
+if os.path.exists(CVM):
+    for mn in ("FADD.S", "FMUL.S"):
+        ops = [("FLW.S", 0, 0, 0, A_ADDR), ("FLW.S", 1, 0, 0, B_ADDR),
+               (mn, 2, 0, 1, 0), ("FSW.S", 0, 0, 2, C_ADDR),
+               ("ADDI", 10, 0, 0, 1), ("ADDI", 11, 0, 0, C_ADDR),
+               ("ADDI", 12, 0, 0, 9), ("ADDI", 17, 0, 0, 64), ("ECALL", 0, 0, 0, 0)]
+        prog, mem = build_program(ops, DT)
+        py_out = bytes(vm.VM(prog, mem_init=mem).run(max_steps=200).output)
+        with tempfile.NamedTemporaryFile(suffix=".trv", delete=False) as tf_:
+            path = tf_.name
+        write_trv(path, prog, mem)
+        r = subprocess.run([CVM, path, "/dev/null"], capture_output=True)
+        os.unlink(path)
+        check(f"C VM TF32 {mn} 差分", r.stdout, py_out)
+
+    # P3 修复：tf_dec 的 q+r/P 双重舍入 bug（5.0 的 mant 偏 1 ulp）。
+    # 5.0+3.0=8.0 在修复前 PyVM 最低 tryte=+2、C VM=-1（字节不一致）。
+    # tf_ratio() 整数正确舍入后两 VM 必须逐字节一致。
+    for mn in ("FADD", "FADD.S"):
+        fmt = F if mn == "FADD" else F32
+        vals = [("FLW", "FSW") if mn == "FADD" else ("FLW.S", "FSW.S")]
+        lw, sw = vals[0]
+        a5, a3 = fmt.encode(5.0), fmt.encode(3.0)
+        d = {A_ADDR: list(raw_to_trytes(a5)), B_ADDR: list(raw_to_trytes(a3))}
+        ops = [(lw, 0, 0, 0, A_ADDR), (lw, 1, 0, 0, B_ADDR),
+               (mn, 2, 0, 1, 0), (sw, 0, 0, 2, C_ADDR),
+               ("ADDI", 10, 0, 0, 1), ("ADDI", 11, 0, 0, C_ADDR),
+               ("ADDI", 12, 0, 0, 9), ("ADDI", 17, 0, 0, 64), ("ECALL", 0, 0, 0, 0)]
+        prog, mem = build_program(ops, d)
+        py_out = bytes(vm.VM(prog, mem_init=mem).run(max_steps=200).output)
+        with tempfile.NamedTemporaryFile(suffix=".trv", delete=False) as tf_:
+            path = tf_.name
+        write_trv(path, prog, mem)
+        r = subprocess.run([CVM, path, "/dev/null"], capture_output=True)
+        os.unlink(path)
+        check(f"C VM {mn} 5.0+3.0 舍入差分", r.stdout, py_out)
+
 print()
 print(f"F 扩展指令契约：{PASS} PASS / {FAIL} FAIL")
 sys.exit(1 if FAIL else 0)

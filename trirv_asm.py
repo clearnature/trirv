@@ -24,6 +24,9 @@ REG.update({"zero":0,"ra":1,"sp":2,"gp":3,"tp":4,
             **{f"s{i+2}":18+i for i in range(10)},  # s2-s11 = 18..27
             **{f"t{i+3}":28+i for i in range(4)}})  # t3-t6  = 28..31
 REG["fp"] = 8
+# F 扩展（P2/P3）：f0..f31 是独立 freg 堆，字段编号与整数堆复用 0..31，
+# 靠指令 opcode（19/20/21）区分语义——所以汇编层映射同一个整数即可。
+REG.update({f"f{i}": i for i in range(32)})
 
 def parse_int(tok, ntrits=7):
     """解析立即数为 ntrits-trit 的 3 补码位模式。
@@ -89,7 +92,8 @@ def assemble(src):
             return REG[t]
 
         if fmt == "R":
-            if mn in ("TNEG","TNOT","TPACK","TUNPACK"):
+            if mn in ("TNEG","TNOT","TPACK","TUNPACK","FSQRT","FSQRT.S",
+                      "FCVT.W","FCVT.F"):
                 rd, rs1 = reg(ops[0]), reg(ops[1])
                 rs2 = 0
             else:
@@ -105,7 +109,7 @@ def assemble(src):
             elif mn in ("CSRRW","CSRRS","CSRRC"):
                 rd = reg(ops[0]); rs1v = reg(ops[1]); csr = parse_int(ops[2])
                 v = isa.encode(mn, rd=rd, rs1=rs1v, imm=csr)
-            elif mn in ("LW","LH","LB","LBU","LHU","JALR"):
+            elif mn in ("LW","LH","LB","LBU","LHU","JALR","FLW","FLW.S"):
                 rd = reg(ops[0])                 # load/jalr 的目标寄存器不能漏
                 m = re.match(r"(-?\w+)\((\w+)\)", ops[1])
                 imm = parse_int(m.group(1)); rs1 = reg(m.group(2))

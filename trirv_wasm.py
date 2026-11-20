@@ -40,6 +40,8 @@
 import struct
 import sys
 
+import trirv_float as tf               # P3：编译期 IEEE→TF 穿透的真相源
+
 WASM_MEM_SIZE = 262144          # wasm 线性内存占 TriRV 地址 [0, 262144)
 GLOBAL_BASE   = 262144          # 全局变量区
 STACK_BASE    = 270336          # 栈起点（向上增长）
@@ -48,6 +50,14 @@ MOD45         = 3 ** 45
 P2_BASE       = 266240          # 2^k 表（k=0..31，32 个字），gp 常驻指向它
 
 I31, I32, NI31 = 2**31, 2**32, -(2**31)
+
+# P3 浮点常量池：IEEE 位模式在编译期穿透成 TF raw，落到这段数据区。
+# 放在 P2 表（266240+32*9=266528）之后、栈起点（270336）之前，互不重叠。
+FCONST_BASE = 267000
+# 浮点指令内部临时（f0/f1/f2），与整数临时 s3-s8 分属两个寄存器堆。
+# 浮点值不驻留栈槽：每次 FLW 进临时、算完 FSW 回槽（freg 堆无 ADDI 零成本搬移）。
+FT0, FT1, FT2 = "f0", "f1", "f2"
+F32, F64 = 0x7D, 0x7C                  # wasm valtype 字节
 
 POOL = ("t0", "t1", "t2", "t3", "t4", "t5", "t6")   # 操作数栈驻留池，槽 j -> t{j}
 LREG = ("s1", "s2")                                  # 局部变量驻留（仅 leaf 函数）
@@ -261,13 +271,14 @@ def has_call(body):
     return any(op == 0x10 for op, _ in walk_instrs(body))
 
 
-def pick_lreg(body, nlocals):
-    """挑最热的局部变量给 s1/s2：按 local.set/tee 次数排序（只写的才是热的）。"""
+def pick_lreg(body, nlocals, lvtype=None):
+    """挑最热的局部变量给 s1/s2：按 local.set/tee 次数排序（只写的才是热的）。
+    P3：浮点局部变量不驻留整数寄存器（LVREG 只给 i32），直接排除。"""
     cnt = {}
     for op, p in walk_instrs(body):
         if op in (0x21, 0x22):
             i, _ = uleb(body, p)
-            if i < nlocals:
+            if i < nlocals and (lvtype is None or lvtype[i] == 0x7F):
                 cnt[i] = cnt.get(i, 0) + 1
     hot = sorted(cnt, key=lambda k: (-cnt[k], k))
     return {i: LREG[j] for j, i in enumerate(hot[:len(LREG)])}
@@ -288,6 +299,8 @@ class Gen:
         self.uid = 0
         self.frames = []                 # [(行号, 帧字节数)]
         self.used_bits = False           # 用到二进制视图 -> 需要 2^k 表与 gp 初始化
+        self.used_float = False          # P3：用到浮点 -> 需要浮点常量池段
+        self.fconsts = []                # P3：[(addr, raw)] 编译期穿透的 TF 常量
         self.nimp = sum(1 for i in mod["imports"] if i[0] == "func")
         self.ftype = []
         self.callee = {}
@@ -520,6 +533,91 @@ class Gen:
         self.li("s6", offset)
         self.L(f"    ADD {r}, {r}, s6")
 
+    # -- 浮点（P3）：编译期穿透 + 栈槽类型 ----------------------------
+    def fconst_raw(self, raw):
+        """把 TF raw 登记进浮点常量池，返回它的 tryte 地址。"""
+        addr = FCONST_BASE + len(self.fconsts) * WORD
+        self.fconsts.append((addr, raw))
+        self.used_float = True
+        return addr
+
+    def fl_const(self, ieee_bytes, vt):
+        """编译期穿透：IEEE 位模式 → host double → TF raw → FLW 到 FT0。
+        IEEE 只活在 wasm 字节码的编码里；运行时 VM 只见 TF raw，不执行二进制语义。"""
+        if vt == F32:
+            v = struct.unpack("<f", ieee_bytes)[0]
+            fmt = tf.TF32
+            mn = "FLW.S"
+        else:
+            v = struct.unpack("<d", ieee_bytes)[0]
+            fmt = tf.TF64
+            mn = "FLW"
+        raw = fmt.encode(v)
+        addr = self.fconst_raw(raw)
+        # 常量地址可能超出 I 型 7-trit 立即数范围，用 li 装 s6 再 FLW 0(s6)
+        self.li("s6", addr)
+        self.L(f"    {mn} {FT0}, 0(s6)")
+        return FT0
+
+    def f_arith(self, op_name, vt):
+        """浮点二元算术：栈 [a,b] → [a op b]。两操作数 FLW 进 f0/f1，结果写回槽 i0。"""
+        self.h -= 2
+        i0, i1 = self.h, self.h + 1
+        self.kill(i1)
+        # 档位助记符：TF64 用无后缀，TF32 用 .S
+        mn = op_name if vt == F64 else op_name + ".S"
+        self.L(f"    FLW {FT0}, {self.slot(i0)}(s0)")
+        self.L(f"    FLW {FT1}, {self.slot(i1)}(s0)")
+        self.L(f"    {mn} {FT2}, {FT0}, {FT1}")
+        self.L(f"    FSW {FT2}, {self.slot(i0)}(s0)")
+        self.set(i0)                       # 该槽值已在内存（FSW 完成），标记非驻留
+        self.vtype[i0] = vt
+        self.h += 1
+
+    def f_sqrt(self, vt):
+        """浮点开方：栈 [a] → [sqrt(a)]。"""
+        self.h -= 1
+        i0 = self.h
+        mn = "FSQRT" if vt == F64 else "FSQRT.S"
+        self.L(f"    FLW {FT0}, {self.slot(i0)}(s0)")
+        self.L(f"    {mn} {FT1}, {FT0}")
+        self.L(f"    FSW {FT1}, {self.slot(i0)}(s0)")
+        self.set(i0); self.vtype[i0] = vt
+        self.h += 1
+
+    def f_cmp(self, wasm_op, vt):
+        """浮点比较：栈 [a,b] → [i32 0/1]。
+        wasm 六个比较按组偏移 k=op-base 排列：0=eq 1=ne 2=lt 3=gt 4=le 5=ge。
+        TriRV 只有 FEQ/FLT/FLE：ne=eq取反，gt=lt交换操作数，ge=le交换操作数。
+        FEQ/FLT/FLE 把结果写整数 rd；用 s3 接住再走整数栈的 set。"""
+        base = 0x5B if vt == F32 else 0x61
+        k = wasm_op - base
+        base_mn = ("FEQ", "FEQ", "FLT", "FLT", "FLE", "FLE")[k]
+        swap = k in (3, 5)                 # gt/ge：交换成 lt/le
+        neg = k == 1                       # ne：eq 后取反
+        mn = base_mn if vt == F64 else base_mn + ".S"
+        i0, i1 = self.h - 2, self.h - 1
+        a_slot = i1 if swap else i0
+        b_slot = i0 if swap else i1
+        self.h -= 2
+        self.L(f"    FLW {FT0}, {self.slot(a_slot)}(s0)")
+        self.L(f"    FLW {FT1}, {self.slot(b_slot)}(s0)")
+        self.L(f"    {mn} s3, {FT0}, {FT1}")
+        if neg:
+            self.not_("s3", "s3")
+        self.kill(i1)
+        self.set(i0, "s3")
+        self.vtype[i0] = 0x7F              # 比较结果是 i32
+        self.h += 1
+
+    def f_load(self, i, vt):
+        """栈地址槽 → 浮点结果槽：FLW freg, 0(s3)（s3 已是有效地址）。
+        结果 FSW 回槽 i（不驻留），后续浮点指令重新 FLW。"""
+        mn = "FLW" if vt == F64 else "FLW.S"
+        self.L(f"    {mn} {FT0}, 0(s3)")
+        self.L(f"    FSW {FT0}, {self.slot(i)}(s0)")
+        self.vtype[i] = vt
+
     # -- 二进制视图 --------------------------------------------------
     # 三进制寄存器里**不存在二进制位**。第 k 位只能这样取：
     #     残差 r 从值本身出发，拿 2^k 逐个比；r >= 2^k 该位为 1，同时 r -= 2^k。
@@ -711,18 +809,29 @@ class Gen:
         if len(results) > 1:
             raise Unsupported("多返回值未实现")
         groups, body = self.mod["codes"][fidx - self.nimp]
-        for n, t in groups:
+        # P3：局部变量类型表（形参 + 声明locals）。浮点形参走 a 寄存器 ABI，
+        # 需 freg 传参约定，本阶段显式拒绝；浮点**局部**变量（非形参）支持。
+        for t in params:
+            if t in (F32, F64):
+                raise Unsupported("浮点形参未实现（需 freg 传参 ABI，P4）")
             if t != 0x7F:
-                raise Unsupported(f"局部变量类型 0x{t:02x} 不是 i32")
+                raise Unsupported(f"形参类型 0x{t:02x} 不是 i32")
+        lvtype = list(params)
+        for n, t in groups:
+            if t not in (0x7F, F32, F64):
+                raise Unsupported(f"局部变量类型 0x{t:02x} 不是 i32/f32/f64")
+            lvtype += [t] * n
 
+        self.lvtype = lvtype
         self.nlocals = len(params) + sum(n for n, _ in groups)
         self.h = 0
         self.maxh = 0
         self.vs = {}                     # 槽号 -> 持有该值的寄存器名
+        self.vtype = {}                  # P3：槽号 -> wasm valtype（F32/F64/None=i32）
         self.pending = None              # 被就地消费掉的 local.set 之后的游标
         self.dead = False
         # 局部变量驻留只对 leaf 函数启用：有 call 时被调用者会破坏 s1/s2
-        self.lreg = {} if has_call(body) else pick_lreg(body, self.nlocals)
+        self.lreg = {} if has_call(body) else pick_lreg(body, self.nlocals, self.lvtype)
         self.ret = self.lab("ret")
         name = f"wasm_f{fidx}"
 
@@ -903,6 +1012,16 @@ class Gen:
         # ---- 变量 ----
         if op == 0x20:
             i, p = uleb(b, p)
+            if self.lvtype[i] in (F32, F64):   # P3：浮点局部变量
+                vt = self.lvtype[i]
+                mn = "FLW" if vt == F64 else "FLW.S"
+                self.L(f"    {mn} {FT0}, {i * WORD}(s0)")
+                j = self.h; self.h += 1
+                self.maxh = max(self.maxh, self.h)
+                self.vs.pop(j, None)
+                self.L(f"    FSW {FT0}, {self.slot(j)}(s0)")
+                self.vtype[j] = vt
+                return p
             if i in self.lreg:
                 self.push(self.lreg[i])        # 别名压栈，零指令
             else:
@@ -912,6 +1031,18 @@ class Gen:
             return p
         if op in (0x21, 0x22):
             i, p = uleb(b, p)
+            if self.lvtype[i] in (F32, F64):   # P3：浮点局部变量
+                vt = self.lvtype[i]
+                mn = "FLW" if vt == F64 else "FLW.S"
+                j = self.h - 1
+                self.L(f"    {mn} {FT0}, {self.slot(j)}(s0)")
+                self.L(f"    FSW {FT0}, {i * WORD}(s0)")
+                if op == 0x22:                 # tee：值留在栈槽 j
+                    self.vtype[j] = vt
+                else:
+                    self.h -= 1
+                    self.vs.pop(j, None); self.vtype.pop(j, None)
+                return p
             v = self.pop_val()
             if i in self.lreg:
                 k = self.lreg[i]
@@ -945,10 +1076,18 @@ class Gen:
             self.push(r); return p
         if op == 0x42:
             raise Unsupported("i64 未支持")
-        if op == 0x43:
-            raise Unsupported("f32 未支持")
-        if op == 0x44:
-            raise Unsupported("f64 未支持")
+        if op in (0x43, 0x44):                # f32.const / f64.const（P3 编译期穿透）
+            vt = F32 if op == 0x43 else F64
+            nbytes = 4 if op == 0x43 else 8
+            ieee = bytes(b[p:p + nbytes]); p += nbytes
+            r = self.fl_const(ieee, vt)      # r = FT0（TF raw 已在常量池，FLW 载入）
+            # 浮点值不驻留整数池：FSW 回槽，手动维护栈高，不调用 push（否则生成 SW f0）
+            i = self.h; self.h += 1
+            self.maxh = max(self.maxh, self.h)
+            self.vs.pop(i, None)
+            self.L(f"    FSW {r}, {self.slot(i)}(s0)")
+            self.vtype[i] = vt
+            return p
 
         # ---- 比较 ----
         if op == 0x45:                            # eqz
@@ -1005,7 +1144,23 @@ class Gen:
             self.h += 1
             return p
 
+        # ---- 浮点比较（P3）----
+        if 0x5B <= op <= 0x66:                    # f32/f64 eq/ne/lt/gt/le/ge
+            vt = F32 if op <= 0x60 else F64
+            self.f_cmp(op, vt)
+            return p
+
         # ---- 数值 ----
+        if op == 0x91 or op == 0x9F:              # f32.sqrt / f64.sqrt
+            self.f_sqrt(F32 if op == 0x91 else F64)
+            return p
+        if op in (0x92, 0x93, 0x94, 0x95):        # f32.add/sub/mul/div
+            self.f_arith({0x92:"FADD",0x93:"FSUB",0x94:"FMUL",0x95:"FDIV"}[op], F32)
+            return p
+        if op in (0xA0, 0xA1, 0xA2, 0xA3):        # f64.add/sub/mul/div
+            self.f_arith({0xA0:"FADD",0xA1:"FSUB",0xA2:"FMUL",0xA3:"FDIV"}[op], F64)
+            return p
+
         if op in (0x6A, 0x6B):                    # add / sub
             self.h -= 2
             i0, i1 = self.h, self.h + 1
@@ -1111,6 +1266,12 @@ class Gen:
             self.L(f"    LW s3, {self.slot(i)}(s0)")
         self.kill(i)
         self.addr_off("s3", offset)               # 常数用 s6，不碰驻留池
+        if op in (0x2A, 0x2B):                    # f32.load / f64.load（P3）
+            vt = F32 if op == 0x2A else F64
+            self.f_load(i, vt)
+            self.set(i)                            # 结果已 FSW 回槽，不驻留
+            self.h += 1
+            return p
         if op == 0x28:                            # i32.load：4 tryte 平衡进制
             self.L(f"    LB {res}, 0(s3)")
             for k, sh in ((1, 5), (2, 10), (3, 15)):
@@ -1140,9 +1301,18 @@ class Gen:
         else:
             self.L(f"    LW s3, {self.slot(ai)}(s0)")
         self.kill(ai)
-        v = self.get(vi, "s4")
+        v = None
+        if op in (0x38, 0x39):                    # f32.store / f64.store（P3）
+            vt = F32 if op == 0x38 else F64
+        else:
+            v = self.get(vi, "s4")
         self.kill(vi)
         self.addr_off("s3", offset)
+        if op in (0x38, 0x39):                    # 浮点值原样 FSW（TF raw 不解释格式）
+            mn = "FSW" if vt == F64 else "FSW.S"
+            self.L(f"    FLW {FT0}, {self.slot(vi)}(s0)")
+            self.L(f"    {mn} {FT0}, 0(s3)")
+            return p
         if op == 0x36:                            # i32.store：拆成 4 个平衡 243 位
             self.L("    ADDI s6, zero, 243")
             for k in range(4):
@@ -1268,6 +1438,12 @@ def compile_wasm(data, entry=None):
             u = 2 ** k
             digits = bytes((u // 3 ** (5 * i)) % 243 for i in range(WORD))
             segs[P2_BASE + k * WORD] = digits
+    if g.used_float:
+        # P3：浮点常量池。IEEE 位模式已在编译期穿透成 TF raw（45-trit），
+        # 按 9 tryte 小端存进数据段；运行时 FLW 原样载入 freg。
+        for addr, raw in g.fconsts:
+            u = raw % MOD45
+            segs[addr] = bytearray((u // (243 ** i)) % 243 for i in range(WORD))
     return asm, segs, f"wasm_f{entry}"
 
 

@@ -221,7 +221,7 @@ F 扩展从预留区分配（建议 opcode 19–21 给 TF，TC 顺延），具�
 | **P1 格式与转换** ✅ 2026-11-20 | base-3 ↔ (mant,exp3) 编解码 + 分离穿透模型 + 实测 | `trirv_float.py` + `trirv_float_e2e.py`（144 PASS）+ `bench_float.py` | 往返/边界/特殊值/极端阶码；精度与全阶码可表示实测 |
 | **P1b 表示层记数** ✅ 2026-11-20 | 十二进制记数 + 数码符号定义 + 进制下标标注（执行层/表示层分离铁律落地） | `trirv_base12.py` + `trirv_base12_e2e.py`（72 PASS） | to12/from12/frac_to12、SYMBOL_SET 数码定义、基数自指（'12'₁₂=14、基数写作'10'）、labelled/parse_labelled（18₁₂）、round-trip 0 错 |
 | **P2 F 扩展指令** ✅ 2026-11-20（TF64 子集） | 两套 VM 加 freg + F 指令 + C 浮点头（分离表示穿透宿主 FPU） | `trirv_float.h` + `trirv_vm.c/.py` + `trirv_isa.py` + `trirv_float_isa_e2e.py`（27 PASS） | 编码往返无撞码 + PyVM 语义 + PyVM×C VM 字节差分；**范围：TF64 四则+sqrt+load/store+比较，TF32 编码预留未接** |
-| **P3 wasm 对接** 🔄 2026-11-20 | 解除 `f32.const`/`f64.const` 与算术指令的 `Unsupported`，编译期穿透 IEEE 位模式 → TF raw | `trirv_wasm.py` 扩展 + `trirv_asm.py` F 助记符 + C VM 档位参数化 | wasm e2e 增补浮点例 + 三路差分（详见 §5.2） |
+| **P3 wasm 对接** ✅ 2026-11-20 | 解除 `f32.const`/`f64.const` 与算术指令的 `Unsupported`，编译期穿透 IEEE 位模式 → TF raw | `trirv_wasm.py` 扩展 + `trirv_asm.py` F 助记符 + C VM 档位参数化 + `tf_ratio` 舍入修复 | `trirv_wasm_e2e.py` 112 例（含 19 浮点）+ `trirv_float_isa_e2e.py` 39 项；三路差分全一致（详见 §5.2） |
 | **P4 libc 浮点系** | 重开 strtod/atof/ecvt/fcvt/gcvt 的 SKIP 决策 | `musl_tri/` 改编或新实现 | musl 覆盖总账更新 |
 | **P5 穿透收益评估** | 实测转换税 vs 穿透收益，决定是否需方案 B 或硬件 FPU 直通 | `bench_float.py` + PERF_REPORT | 实测数字入账 |
 
@@ -362,6 +362,38 @@ F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字�
 - 不做 NaN payload / 非规格化数的 IEEE 语义（D-F4 已定抽象特殊值）
 - 不做 wasm SIMD（v128 浮点）——本切片无 SIMD 类型
 - 不做 C 编译器 float 类型（P4 之后）
+- 不做浮点**形参**（需要 freg 传参 ABI，显式 `Unsupported`）；浮点**局部变量**已支持
+
+### 5.3 P3 实施记录（2026-11-20，实测数据）
+
+**交付结果**：
+- `trirv_wasm_e2e.py`：112 PASS / 0 FAIL（原 93 例 + 19 浮点例：f64/f32 四则+sqrt、
+  六比较、浮点局部变量 set/get、双档共存；三路差分参考解释器×PyVM×C VM 全一致）
+- `trirv_float_isa_e2e.py`：39 PASS / 0 FAIL（原 27 + 10 TF32 档位 + 2 舍入回归）
+- 全量 43 套 43/43 PASS
+- C VM `TFFmt` 已参数化（bias/max_exp/mant_trits 全部走字段），`tf32_init()` 与
+  `tf64_init()` 共用同一套 `tf_*` 函数；`step()` 与 `vm_run_cg()` 两个分发点都按
+  `funct2` 选档；汇编器补 `f0..f31` 别名与 FLW.S/FSW.S/FSQRT.S/FEQ.S 等 F 助记符
+
+**重要发现：`tf_ratio` 舍入修复（P2 遗留 bug，P3 暴露并修掉）**
+- 现象：`f64.const 5.0 + f64.const 3.0` 在 wasm e2e 里 PyVM 输出最低 tryte=+2、
+  C VM=-1，字节差分不一致（虽然两者 `decode` 都四舍五入到 8.0）。
+- 根因：C `tf_dec` 用 `q + r/P_NORM` 拆法算 mant，5.0 的 `M=5×3^32` 走这条路得
+  `1.6666666666666665`，Python `int.__truediv__` 给 `1.6666666666666667`，差 1 ulp。
+  P2 注释声称"q+r/P 只舍入一次"是错的——它把 q 和 r/P 各自舍入后再相加，是二次舍入。
+- 修复：新增 `tf_ratio(M,P)` 用整数移位 + round-to-nearest-even 一次到位：
+  `e=floor(M/P)∈{1,2}`（正规化尾数 M∈[P,3P)），`q=round(M/P×2^(52-e))` 为
+  53-bit 可精确转 double，再乘 `2^-(52-e)`（2 的幂，精确）。与 Python 大整数真除法
+  逐位一致。
+- 回归锁：`trirv_float_isa_e2e.py` 加 `FADD`/`FADD.S` 的 5.0+3.0 双 VM 字节差分断言，
+  修复前必 FAIL、修复后 PASS。
+
+**编译期穿透的诚实记账**：wasm `f32.const`/`f64.const` 的 IEEE 位模式在编译期由
+宿主 Python `struct.unpack` 解成 host double，再由 `trirv_float.encode()` 量化成
+TF raw 写进数据段（FCONST_BASE=267000），运行时 VM 只见 TF raw、只跑 F 指令。
+IEEE 全程只是 wasm 字节码的**外部输入编码**，不进入 TriRV 运算语义——这是执行层/
+表示层分离铁律在 wasm 边界的落地。精度损失按档位自主定义计（TF32 尾数 14 trit、
+TF64 34 trit），不声称与 binary32/binary64 逐位等价。
 
 ---
 

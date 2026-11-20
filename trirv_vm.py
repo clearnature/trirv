@@ -642,10 +642,12 @@ class VM:
             pass                               # 等待中断：VM 中为提示，中断在步末检查
         elif name == "FENCE":
             pass                               # 内存屏障：单线程 VM 无乱序，视为 NOP
-        elif name in ("FLW", "FSW"):
+        elif name in ("FLW", "FSW", "FLW.S", "FSW.S"):
             # F 边界转换：内存 45-trit raw ↔ freg。offset 是 tryte 地址偏移。
+            # FLW/FSW 只原样搬运 raw（不解释格式），两档共用；档位由后续算术指令的
+            # funct2 决定。.S 变体（funct 0/2）与 .D（funct 1/3）在此无语义差别。
             addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
-            if name == "FLW":
+            if name.startswith("FLW"):
                 self.freg[rd] = self._load_word(addr) % MOD
             else:
                 self._store_word(addr, self.freg[rs2] % MOD)
@@ -668,9 +670,9 @@ class VM:
             else:
                 r = tf.f_sqrt(av, fmt)
             self.freg[rd] = r % MOD
-        elif name in ("FEQ", "FLT", "FLE"):
+        elif name in ("FEQ", "FLT", "FLE", "FEQ.S", "FLT.S", "FLE.S"):
             fmt = tf.TF64 if d.get("funct2", 1) == 1 else tf.TF32
-            opn = {"FEQ": "eq", "FLT": "lt", "FLE": "le"}[name]
+            opn = {"FEQ": "eq", "FLT": "lt", "FLE": "le"}[name.split(".")[0]]
             self.regs[rd] = tf.f_cmp(self.freg[rs1] % MOD, self.freg[rs2] % MOD,
                                      fmt, opn)
         elif name in ("FCVT.W", "FCVT.F"):

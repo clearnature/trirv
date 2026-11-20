@@ -24,17 +24,42 @@
  * 为避免重复定义，本头文件的函数接收 POW3 表指针。 */
 
 typedef struct {
-    __uint128_t P_MANT, P_NORM, P_SIGN;  /* 3^34, 3^33, 3^44 */
+    __uint128_t P_MANT, P_NORM, P_SIGN;  /* 3^mant, 3^(mant-1), 3^(exp+mant) */
     __uint128_t ZERO_POS, ZERO_NEG, INF_POS, INF_NEG, QNAN;
+    long bias, max_exp;                   /* P3：档位参数化，替代硬编码 TF64_* 宏 */
+    int mant_trits;
 } TFFmt;
 
 static inline void tf64_init(TFFmt *f, const __uint128_t *POW3) {
     f->P_MANT = POW3[34];
     f->P_NORM = POW3[33];
     f->P_SIGN = POW3[44];
+    f->bias = TF64_BIAS;
+    f->max_exp = TF64_MAX_EXP;
+    f->mant_trits = TF64_MANT_TRITS;
     f->ZERO_POS = 0;
     f->ZERO_NEG = f->P_SIGN;
     f->INF_POS = (__uint128_t)TF64_MAX_EXP * f->P_MANT;
+    f->INF_NEG = f->P_SIGN + f->INF_POS;
+    f->QNAN = f->INF_POS + 1;
+}
+
+/* P3：TF32 档位 = 1 符号 + 5 阶码 + 14 尾数 = 20 trit（wasm f32 对应）。
+ * 与 TF64 共用同一套 tf_* 函数，仅格式常量不同——这是档位参数化的意义。 */
+#define TF32_EXP_TRITS 5
+#define TF32_MANT_TRITS 14
+#define TF32_BIAS 121                    /* (3^5-1)/2 */
+#define TF32_MAX_EXP 242                 /* 3^5 - 1 */
+static inline void tf32_init(TFFmt *f, const __uint128_t *POW3) {
+    f->P_MANT = POW3[TF32_MANT_TRITS];
+    f->P_NORM = POW3[TF32_MANT_TRITS - 1];
+    f->P_SIGN = POW3[TF32_EXP_TRITS + TF32_MANT_TRITS];
+    f->bias = TF32_BIAS;
+    f->max_exp = TF32_MAX_EXP;
+    f->mant_trits = TF32_MANT_TRITS;
+    f->ZERO_POS = 0;
+    f->ZERO_NEG = f->P_SIGN;
+    f->INF_POS = (__uint128_t)TF32_MAX_EXP * f->P_MANT;
     f->INF_NEG = f->P_SIGN + f->INF_POS;
     f->QNAN = f->INF_POS + 1;
 }
@@ -48,6 +73,24 @@ static inline TFParts tf_parts(const TFFmt *f, __uint128_t raw) {
     p.E = (long)(rest / f->P_MANT);
     p.M = rest % f->P_MANT;
     return p;
+}
+
+/* M/P_NORM 的正确舍入 double（对齐 Python int.__truediv__）。
+ * 直接 (double)M/(double)P 会把 M>2^53 先舍入一次；q+r/P 有二次舍入
+ * （M=5×3^32 时给 1.6666666666666665，Python 给 ...67，差 1 ulp）。
+ * 这里用整数移位 + round-to-nearest-even 一次到位：
+ *   e = floor(M/P) ∈ {1,2}（正规化尾数 M∈[P,3P)）
+ *   q = round(M / P × 2^(52-e))，53-bit，可精确转 double
+ *   result = q × 2^-(52-e)，乘 2 的幂精确。 */
+static inline double tf_ratio(const __uint128_t M, const __uint128_t P) {
+    int e = (M < (P << 1)) ? 0 : 1;
+    int sh = 52 - e;
+    __uint128_t q = (M << sh) / P, r = (M << sh) % P;
+    __uint128_t twice = r << 1;
+    if (twice > P || (twice == P && (q & 1))) q += 1;
+    double scale = 1.0;
+    for (int i = 0; i < sh; i++) scale *= 0.5;   /* 2^-sh，精确 */
+    return (double)q * scale;
 }
 
 /* 分离表示分类 */
@@ -68,13 +111,12 @@ static inline TFVal tf_dec(const TFFmt *f, __uint128_t raw, long max_exp) {
         return v;
     }
     v.kind = TF_NUM;
-    /* 精确对齐 trirv_float.py 的 M/P_NORM（Python 大整数除法只舍入一次）。
-     * 直接 (double)M/(double)P_NORM 会把 M>2^53 先舍入一次，得 2.2500000000000004
-     * 而非 2.25 —— 差分会错 1~2 ulp。拆成 q + r/P：r<P_NORM<2^53 转 double 无损，
-     * q=1/2 精确，只有一次除法舍入，与 Python 一致。 */
-    __uint128_t q = p.M / f->P_NORM, r = p.M % f->P_NORM;
-    v.mant = (double)q + (double)r / (double)f->P_NORM;   /* [1,3) */
-    v.exp3 = p.E - TF64_BIAS;                     /* 整数，无 double 约束 */
+    /* 精确对齐 trirv_float.py 的 M/P_NORM（Python 大整数真除法一次舍入）。
+     * P2 曾用 q + r/P，但 5.0 的 M=5×3^32 走这条路给 1.6666666666666665，
+     * Python 给 ...67，差 1 ulp（5.0+3.0 在 C VM 里偏 -3，PyVM 偏 +2）。
+     * P3 改用 tf_ratio() 的整数正确舍入，彻底消除跨 VM 精度漂移。 */
+    v.mant = tf_ratio(p.M, f->P_NORM);                     /* [1,3) */
+    v.exp3 = p.E - f->bias;                       /* 整数，无 double 约束（P3 档位参数化） */
     return v;
 }
 
@@ -107,8 +149,8 @@ static inline __uint128_t tf_compose(const TFFmt *f, int sign, double mant, long
     if (exp3 == -999999) return sign < 0 ? f->ZERO_NEG : f->ZERO_POS; /* 0 标记 */
     uint64_t mi; int e2;
     tf_double_pow2(mant, &mi, &e2);
-    __uint128_t M = tf_round_mant(mi, e2, TF64_MANT_TRITS - 1);
-    long E = exp3 + TF64_BIAS;
+    __uint128_t M = tf_round_mant(mi, e2, f->mant_trits - 1);
+    long E = exp3 + f->bias;
     if (M >= f->P_MANT) { M /= 3; E += 1; }
     if (E >= max_exp) return sign < 0 ? f->INF_NEG : f->INF_POS;
     if (E <= 0) return sign < 0 ? f->ZERO_NEG : f->ZERO_POS;
