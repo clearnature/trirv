@@ -157,7 +157,7 @@ python3 -c "import trirv_base12 as b; print(b.to12(20), b.from12('18'), b.frac_t
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
-python3 run_all_tests.py                       # 全量：一条命令跑完 42 套（33 快 + 9 慢），输出汇总表
+python3 run_all_tests.py                       # 全量：一条命令跑完 43 套（34 快 + 9 慢），输出汇总表
 python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
 ```
 
@@ -171,11 +171,11 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 全量复测：`run_all_tests.py` 42 套全 PASS；真 musl string+stdlib 双目录 60/66 编译、6 项决策 SKIP、0 失败）
+## 五、当前状态（2026-11-20 全量复测：`run_all_tests.py` 43 套全 PASS；真 musl string+stdlib 双目录 60/66 编译、6 项决策 SKIP、0 失败）
 
 | 套件 | 结果 |
 | --- | --- |
-| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **42/42 PASS** |
+| `run_all_tests.py`（全量入口，三票否决：退出码 / `[FAIL]` / Traceback；STRICT 默认开启） | **43/43 PASS** |
 | `test_isa_completeness.py`（编解码往返 + 语义 + D1–D5 守卫） | **86/86** |
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
@@ -197,6 +197,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
 | `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF32/TF64） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
+| `trirv_float_isa_e2e.py`（F 扩展指令 P2：FADD/FSUB/FMUL/FDIV/FSQRT/FLW/FSW/FEQ/FLT/FLE） | **27/27**（编码往返 + PyVM 语义 + PyVM×C VM 字节差分；`trirv_float.h` 精确 mant 量化） |
 | `trirv_base12_e2e.py`（十二进制表示层：to12/from12/frac_to12 + 数码定义 + 进制下标） | **72/72**（基数自指：'12'在十二进制=14、本进制写作'10'；18₁₂/20₁₀ 标注往返；round-trip 0 错） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | **16/16 套**（`TRV_CC_STRICT=1` 下同样 16/16） |

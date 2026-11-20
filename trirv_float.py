@@ -245,3 +245,184 @@ TF32 = FloatFormat("TF32", exp_trits=5, mant_trits=14, bias=121)
 TF64 = FloatFormat("TF64", exp_trits=10, mant_trits=34, bias=29524)
 
 FORMATS = {"TF32": TF32, "TF64": TF64}
+
+
+# ===========================================================================
+# F 扩展算术（P2）——分离表示 (sign, mant∈[1,3), exp3) 上的穿透运算。
+# 这是两套 VM 共享的语义定义（C 版照此移植，差分测试锁定一致）。
+# 核心：进 FPU 的只有 mant（恒在 [1,3)）与"指数差值"（≤ EXP_GAP，恒在窗口内）；
+#       指数本身是整数，永远不进 double —— 无穿透缺口。
+# ===========================================================================
+
+EXP_GAP = 40                       # 对阶最大跨度：3^40 > 2^53，超过即小项 < 1ulp 可丢弃
+_POW3_NEG = tuple(3.0 ** (-k) for k in range(EXP_GAP + 1))
+
+
+def _dec(raw, fmt):
+    """raw → 规范分类 (kind, sign, mant, exp3)。
+    kind ∈ {'num','zero','inf','nan'}；num 时 mant∈[1,3)、exp3 整数。"""
+    sign, mant, exp3 = fmt.decompose(raw)
+    if exp3 == "nan":
+        return ("nan", sign, None, None)
+    if exp3 == "inf":
+        return ("inf", sign, None, None)
+    if exp3 is None:
+        return ("zero", sign, None, None)
+    return ("num", sign, mant, exp3)
+
+
+def _scale_down(mant, k):
+    """mant × 3^(-k)，k≥0 整数；k 超阈值返回 0（小于 1ulp，可忽略）。"""
+    if k >= EXP_GAP:
+        return 0.0
+    return mant * _POW3_NEG[k]
+
+
+def _norm(sign, mant, exp3, fmt):
+    """把 mant 正规化到 [1,3)，再 compose 回 raw（含上溢/下溢边界）。"""
+    if mant == 0.0:
+        return fmt.ZERO_NEG if sign < 0 else fmt.ZERO_POS
+    while mant < 1.0:
+        mant *= 3.0
+        exp3 -= 1
+    while mant >= 3.0:
+        mant /= 3.0
+        exp3 += 1
+    return fmt.compose(sign, mant, exp3)
+
+
+def f_add(raw_a, raw_b, fmt, subtract=False):
+    """分离表示加法（subtract=True 即 a-b）。穿透：对阶差值进 FPU，指数走整数。"""
+    ka, sa, ma, ea = _dec(raw_a, fmt)
+    kb, sb, mb, eb = _dec(raw_b, fmt)
+    if subtract:
+        sb = -sb
+    if ka == "nan" or kb == "nan":
+        return fmt.NAN
+    if ka == "inf":
+        if kb == "inf" and sa != sb:
+            return fmt.NAN                       # (+inf)+(-inf)
+        return fmt.INF_NEG if sa < 0 else fmt.INF_POS
+    if kb == "inf":
+        return fmt.INF_NEG if sb < 0 else fmt.INF_POS
+    if ka == "zero" and kb == "zero":
+        return fmt.ZERO_NEG if (sa < 0 and sb < 0) else fmt.ZERO_POS
+    if ka == "zero":
+        return fmt.compose(sb, 1.0, eb)          # 0 + b = b（保 b 的符号/值）
+    if kb == "zero":
+        return fmt.compose(sa, 1.0, ea)
+    E = max(ea, eb)                              # 对到较大指数
+    va = sa * ma * _scale_down(1.0, E - ea)
+    vb = sb * mb * _scale_down(1.0, E - eb)
+    t = va + vb                                  # 唯一进 FPU 的加法，|t|<6
+    if t == 0.0:
+        return fmt.ZERO_POS
+    return _norm(1 if t > 0 else -1, abs(t), E, fmt)
+
+
+def f_mul(raw_a, raw_b, fmt):
+    """分离表示乘法：mant 相乘进 FPU，指数整数相加。"""
+    ka, sa, ma, ea = _dec(raw_a, fmt)
+    kb, sb, mb, eb = _dec(raw_b, fmt)
+    sign = sa * sb
+    if ka == "nan" or kb == "nan":
+        return fmt.NAN
+    if (ka == "inf" and kb == "zero") or (kb == "inf" and ka == "zero"):
+        return fmt.NAN
+    if ka == "inf" or kb == "inf":
+        return fmt.INF_NEG if sign < 0 else fmt.INF_POS
+    if ka == "zero" or kb == "zero":
+        return fmt.ZERO_NEG if sign < 0 else fmt.ZERO_POS
+    return _norm(sign, ma * mb, ea + eb, fmt)
+
+
+def f_div(raw_a, raw_b, fmt):
+    """分离表示除法：mant 相除进 FPU，指数整数相减。"""
+    ka, sa, ma, ea = _dec(raw_a, fmt)
+    kb, sb, mb, eb = _dec(raw_b, fmt)
+    sign = sa * sb
+    if ka == "nan" or kb == "nan":
+        return fmt.NAN
+    if (ka == "inf" and kb == "inf") or (ka == "zero" and kb == "zero"):
+        return fmt.NAN
+    if ka == "inf":
+        return fmt.INF_NEG if sign < 0 else fmt.INF_POS
+    if kb == "inf":
+        return fmt.ZERO_NEG if sign < 0 else fmt.ZERO_POS
+    if kb == "zero":                             # 有限 / 0 → Inf（符号为积）
+        return fmt.INF_NEG if sign < 0 else fmt.INF_POS
+    if ka == "zero":
+        return fmt.ZERO_NEG if sign < 0 else fmt.ZERO_POS
+    return _norm(sign, ma / mb, ea - eb, fmt)
+
+
+def f_sqrt(raw, fmt):
+    """分离表示平方根：mant 走宿主 sqrt，指数整数折半（奇偶各归一）。"""
+    k, s, m, e = _dec(raw, fmt)
+    if k == "nan":
+        return fmt.NAN
+    if k == "inf":
+        return fmt.INF_POS if s > 0 else fmt.NAN
+    if k == "zero":
+        return raw                              # ±0 的 sqrt 仍是 ±0
+    if s < 0:
+        return fmt.NAN
+    if e % 2 == 0:
+        return _norm(1, math.sqrt(m), e // 2, fmt)
+    return _norm(1, math.sqrt(3.0 * m), (e - 1) // 2, fmt)
+
+
+def f_cmp(raw_a, raw_b, fmt, op):
+    """比较：op ∈ {'eq','lt','le'} → 1/0。NaN 比较全为 0（除 eq 也 0）。"""
+    ka, sa, ma, ea = _dec(raw_a, fmt)
+    kb, sb, mb, eb = _dec(raw_b, fmt)
+    if ka == "nan" or kb == "nan":
+        return 0
+    # 精确比较：按 (符号, 指数, 尾数) 三元组
+    def cmp_num(x, y):
+        # x,y 为 (sign, mant, exp)；mant∈[1,3)
+        if x[0] != y[0]:
+            return 1 if x[0] > y[0] else -1
+        # 同号：比较 m×3^e，用 log 判定，接近时精确比对
+        lx = math.log(x[1]) + x[2] * math.log(3)
+        ly = math.log(y[1]) + y[2] * math.log(3)
+        if abs(lx - ly) > 1e-9:
+            return 1 if lx > ly else -1
+        # 极接近：指数相同比 mant，否则用整数幂精确比
+        if x[2] == y[2]:
+            return (x[1] > y[1]) - (x[1] < y[1])
+        # m1×3^e1 vs m2×3^e2 → 移到一个共同指数（差值小才到这里）
+        E = max(x[2], y[2])
+        vx = x[1] * _scale_down(1.0, E - x[2])
+        vy = y[1] * _scale_down(1.0, E - y[2])
+        c = (vx > vy) - (vx < vy)
+        return c if x[0] > 0 else -c
+    # 分类比较
+    order = {"zero": 1, "num": 2, "inf": 3}
+    if ka != kb:
+        # 负 inf < 负 num < 负 zero < 正 zero < 正 num < 正 inf
+        def full(t):
+            k, s, m, e = t
+            if k == "zero":
+                base = 0
+            elif k == "inf":
+                base = 3 if s > 0 else -3
+            else:
+                base = 2 if s > 0 else -2
+            return base
+        fa, fb = full((ka, sa, ma, ea)), full((kb, sb, mb, eb))
+        if fa != fb:
+            c = (fa > fb) - (fa < fb)
+        else:
+            c = cmp_num((sa, ma, ea), (sb, mb, eb)) if ka == "num" and kb == "num" else 0
+    elif ka == "num":
+        c = cmp_num((sa, ma, ea), (sb, mb, eb))
+    elif ka == "inf":
+        c = (sa > sb) - (sa < sb)
+    else:  # zero
+        c = 0
+    if op == "eq":
+        return 1 if c == 0 else 0
+    if op == "lt":
+        return 1 if c < 0 else 0
+    return 1 if c <= 0 else 0

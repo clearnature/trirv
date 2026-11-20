@@ -84,6 +84,7 @@ OPCODE = {
     "ZICSR":16, "PRIV":17,          # Zicsr  CSR 读写 / 特权指令（三进制扩展）
     "M-EXT":13, "DIV-EXT":14, "REM-EXT":15,  # M 扩展（复用空闲 opcode，见 INST）
     "ATOMIC":18,                    # A 扩展：LR/SC + AMO（原子读改写）
+    "F-ARITH":19, "F-MEM":20, "F-CMP":21,    # F 扩展：浮点算术/边界转换/比较（P2，见 §5.1）
 }
 # 常用 M 态 CSR 地址（沿用 RISC-V 编号，均 < 3^7=2187 可放入 imm7 字段）
 CSR = {
@@ -144,6 +145,19 @@ INST = {
     "LRW":(18,0,0,"R"), "SCW":(18,0,1,"R"),
     "AMOADD":(18,1,0,"R"), "AMOSWAP":(18,1,1,"R"), "AMOAND":(18,1,2,"R"),
     "AMOOR":(18,1,3,"R"), "AMOXOR":(18,1,4,"R"), "AMOMIN":(18,1,5,"R"), "AMOMAX":(18,1,6,"R"),
+    # F 扩展（P2）：rd/rs1/rs2 字段对 F-ARITH/F-CMP 是 freg 编号；
+    # F-MEM 的 rs1 是整数地址寄存器、rd 是 freg（FLW）或 rs2 是 freg（FSW）。
+    # funct2 低 1 trit 表示档位：0=TF32(.S) 1=TF64(.D)，本阶段先实现 TF64。
+    "FADD":(19,0,1,"R"), "FSUB":(19,1,1,"R"), "FMUL":(19,2,1,"R"),
+    "FDIV":(19,3,1,"R"), "FSQRT":(19,4,1,"R"),
+    "FADD.S":(19,0,0,"R"), "FSUB.S":(19,1,0,"R"), "FMUL.S":(19,2,0,"R"),
+    "FDIV.S":(19,3,0,"R"), "FSQRT.S":(19,4,0,"R"),
+    # F-MEM：档位不能放 funct2（I/S 型的 t17..t19 是立即数一部分），改编码进 funct：
+    #   funct 0/1=FLW.S/.D，2/3=FSW.S/.D，4/5=FCVT.W.S/.D（整数←freg），6/7=FCVT.F.S/.D
+    "FLW":(20,1,0,"I"), "FSW":(20,3,0,"S"),
+    "FLW.S":(20,0,0,"I"), "FSW.S":(20,2,0,"S"),
+    "FCVT.W":(20,5,0,"R"), "FCVT.F":(20,7,0,"R"),
+    "FEQ":(21,0,1,"R"), "FLT":(21,1,1,"R"), "FLE":(21,2,1,"R"),
 }
 
 def get_field(v, lo, hi):

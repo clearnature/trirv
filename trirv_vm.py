@@ -5,6 +5,7 @@
 - 数据内存：byte(tryte) 编址，dict 存储
 """
 import trirv_isa as isa
+import trirv_float as tf
 
 XLEN = isa.XLEN
 MOD = isa.MOD_X
@@ -65,6 +66,10 @@ class VM:
 
     def __init__(self, program, mem_init=None, stdin=b"", argv=None):
         self.regs = [0] * isa.NREG
+        # F 扩展浮点寄存器堆：f0..f31，存 TF64 的 45-trit raw（= (sign,mant,exp3)
+        # 分离表示的无损打包）。裸 double 会把指数卡在 3^646，违背全阶码模型；
+        # raw 打包天然无损，算术时才 decompose → mant 进 FPU、exp3 走整数 → compose。
+        self.freg = [0] * 32
         self.imem = list(program)             # 指令槽
         # 统一内存：tryte 编址，每格存 1 tryte(0..242)；bytearray 容量足够
         self.mem = bytearray(1 << 20)
@@ -637,6 +642,43 @@ class VM:
             pass                               # 等待中断：VM 中为提示，中断在步末检查
         elif name == "FENCE":
             pass                               # 内存屏障：单线程 VM 无乱序，视为 NOP
+        elif name in ("FLW", "FSW"):
+            # F 边界转换：内存 45-trit raw ↔ freg。offset 是 tryte 地址偏移。
+            addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
+            if name == "FLW":
+                self.freg[rd] = self._load_word(addr) % MOD
+            else:
+                self._store_word(addr, self.freg[rs2] % MOD)
+                if self.lr_valid and self._overlap(addr, 9, self.lr_addr):
+                    self.lr_valid = False
+        elif name in ("FADD", "FSUB", "FMUL", "FDIV", "FSQRT",
+                      "FADD.S", "FSUB.S", "FMUL.S", "FDIV.S", "FSQRT.S"):
+            # 档位：带 .S 后缀或 funct2==0 → TF32，否则 TF64。
+            fmt = tf.TF32 if (name.endswith(".S") or d.get("funct2", 1) == 0) else tf.TF64
+            base = name.split(".")[0]
+            av, bv = self.freg[rs1] % MOD, self.freg[rs2] % MOD
+            if base == "FADD":
+                r = tf.f_add(av, bv, fmt)
+            elif base == "FSUB":
+                r = tf.f_add(av, bv, fmt, subtract=True)
+            elif base == "FMUL":
+                r = tf.f_mul(av, bv, fmt)
+            elif base == "FDIV":
+                r = tf.f_div(av, bv, fmt)
+            else:
+                r = tf.f_sqrt(av, fmt)
+            self.freg[rd] = r % MOD
+        elif name in ("FEQ", "FLT", "FLE"):
+            fmt = tf.TF64 if d.get("funct2", 1) == 1 else tf.TF32
+            opn = {"FEQ": "eq", "FLT": "lt", "FLE": "le"}[name]
+            self.regs[rd] = tf.f_cmp(self.freg[rs1] % MOD, self.freg[rs2] % MOD,
+                                     fmt, opn)
+        elif name in ("FCVT.W", "FCVT.F"):
+            # 整数 ↔ 浮点（TF64）：FCVT.W rd=freg→整数写 rd；FCVT.F 整数 rs1→freg[rd]
+            if name == "FCVT.W":
+                self.regs[rd] = u(round(tf.decode(self.freg[rs1] % MOD)))
+            else:
+                self.freg[rd] = tf.encode(float(s(self.regs[rs1]))) % MOD
         else:
             raise RuntimeError(f"未实现指令: {name}")
 

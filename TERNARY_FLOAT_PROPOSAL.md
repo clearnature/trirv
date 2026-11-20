@@ -220,7 +220,7 @@ F 扩展从预留区分配（建议 opcode 19–21 给 TF，TC 顺延），具�
 | **P0 立项** | 本文 + 待拍板项裁决 | `TERNARY_FLOAT_PROPOSAL.md` | — |
 | **P1 格式与转换** ✅ 2026-11-20 | base-3 ↔ (mant,exp3) 编解码 + 分离穿透模型 + 实测 | `trirv_float.py` + `trirv_float_e2e.py`（144 PASS）+ `bench_float.py` | 往返/边界/特殊值/极端阶码；精度与全阶码可表示实测 |
 | **P1b 表示层记数** ✅ 2026-11-20 | 十二进制记数 + 数码符号定义 + 进制下标标注（执行层/表示层分离铁律落地） | `trirv_base12.py` + `trirv_base12_e2e.py`（72 PASS） | to12/from12/frac_to12、SYMBOL_SET 数码定义、基数自指（'12'₁₂=14、基数写作'10'）、labelled/parse_labelled（18₁₂）、round-trip 0 错 |
-| **P2 F 扩展指令** | VM 两后端实现 F 指令 + 编码器/汇编器 | 两套 VM + ISA 表更新 | ISA 完整性扩充 + 双 VM 差分 |
+| **P2 F 扩展指令** ✅ 2026-11-20（TF64 子集） | 两套 VM 加 freg + F 指令 + C 浮点头（分离表示穿透宿主 FPU） | `trirv_float.h` + `trirv_vm.c/.py` + `trirv_isa.py` + `trirv_float_isa_e2e.py`（27 PASS） | 编码往返无撞码 + PyVM 语义 + PyVM×C VM 字节差分；**范围：TF64 四则+sqrt+load/store+比较，TF32 编码预留未接** |
 | **P3 wasm 对接** | 解除 `f32.const`/`f64.const` 与算术指令的 `Unsupported` | `trirv_wasm.py` 扩展 | wasm e2e 增补浮点例 |
 | **P4 libc 浮点系** | 重开 strtod/atof/ecvt/fcvt/gcvt 的 SKIP 决策 | `musl_tri/` 改编或新实现 | musl 覆盖总账更新 |
 | **P5 穿透收益评估** | 实测转换税 vs 穿透收益，决定是否需方案 B 或硬件 FPU 直通 | `bench_float.py` + PERF_REPORT | 实测数字入账 |
