@@ -11,27 +11,28 @@ import math
 import sys
 import time
 
+import trirv_base12 as b12
 import trirv_float as tf
 
 
 def report():
     print("=" * 74)
-    print("A. 格式精度（尾数有效位，log2(3)≈1.585 bit/trit；定义层自主选择，非对标二进制）")
+    print("A. 格式精度（执行层度量 = trit；表示层记数 = 十二进制位）")
     print("=" * 74)
+    print("  执行层度量是 trit；bit/十进制位/十二进制位都只是表示层换算，不作定义依据")
     for f in (tf.TF32, tf.TF64):
         k = f.mant_trits - 1
-        bits = k * math.log2(3)
-        digits = k * math.log10(3)
-        print(f"  {f.name}: {f.mant_trits} trit 尾数 → {bits:5.1f} bit ≈ {digits:4.1f} 十进制有效位")
-    print("  宽度由字长与档位需求自主定义；二进制 f32/f64 的位数不是约束，仅作背景参照")
+        d12 = b12.trit_to_digits(k)
+        print(f"  {f.name}: 尾数 {f.mant_trits} trit（执行层） ≈ {d12:4.1f} 十二进制位（表示层）")
+    print("  宽度由字长与档位需求自主定义；二进制/十进制位数不是约束，仅作背景参照")
 
     print()
     print("=" * 74)
-    print("B. 动态范围（阶码，十进制指数；由 base-3 指数自主定义）")
+    print("B. 动态范围（阶码，base-3 整数指数；指数本身就是执行层度量）")
     print("=" * 74)
     for f in (tf.TF32, tf.TF64):
         emin, emax = -f.bias + 1, f.max_exp - f.bias - 1
-        print(f"  {f.name}: e∈[{emin},{emax}] → 10^[{emin*math.log10(3):.0f}, {emax*math.log10(3):.0f}]")
+        print(f"  {f.name}: exp3∈[{emin},{emax}]（base-3 整数，执行层）")
 
     print()
     print("=" * 74)
