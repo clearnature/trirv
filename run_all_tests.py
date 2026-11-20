@@ -100,6 +100,7 @@ SUITES = [
     ("trirv_float_libc_e2e.py",   "浮点 libc 五函数（P4）",    False, None),
     ("trirv_undeclared_e2e.py",   "未声明标识符编译错 XFAIL",  False,
      "未声明标识符静默零页——gen 阶段完整实现需 fn-as-value 语义设计（P4 记账）"),
+    ("trirv_tri_tcc_e2e.py",      "tri-tcc 后端 38 例双 VM",   False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),

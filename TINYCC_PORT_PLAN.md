@@ -117,7 +117,71 @@ T-0.1 → T-0.2 → T-0.3 → T-0.4 → T-0.5（GO 门）
 - `ternary-isa-design.md`/`trirv_isa.py`：编码真相源（D-T4）
 - `TERNARY_FLOAT_PROPOSAL.md`：F 扩展语义真相源
 
-## 7. 立即下一步
+## 7. T-0 实施记录（2026-11-21，GO 判定）
 
-**T-0.1**：本机构建 tinycc（含 riscv64 交叉目标），验证构建管线可用——这是全部
-后续任务的前提，也是对 dev-c23 分支健康度的第一手检查。
+**T-0.1 ✅**：原生 tcc（AArch64 Darwin）+ riscv64 交叉 tcc 双构建成功；riscv64-tcc
+产出合法 RISC-V ELF（`file` 验证）。dev-c23 分支健康。
+
+**T-0.2 ✅**：`TCC_TARGET_TRIRV` 注册（tcc.h 两遍 include 链 / tcctok.h / tcc.c
+版本串 / Makefile DEF-trirv+TRIPLET+FILES / libtcc.c 第二遍 / config.h 守卫）。
+**坑**：config.h 的目标 fallback 守卫链无 TRIRV → 交叉构建 fallback 到 ARM64
+（arm64_pcs 混进二进制 + NB_REGS/PTR_SIZE 全错）——configure 脚本补链后解决。
+
+**T-0.3 ✅ + T-0.4 ✅**：tri-gen.c（寄存器映射/算术/比较/访存/调用/分支）+
+tri-link.c（TRV1 直写，绕过 ELF）+ tccelf 输出 hook。端到端 11 例双 VM 全绿：
+
+| 用例 | 期望 | C VM | PyVM |
+|---|---|---|---|
+| return 42 | 42 | 42 ✓ | 42 ✓ |
+| Σ square(0..10)（385&0xFF=129） | 129 | 129 ✓ | 129 ✓ |
+| square(7)（跨函数调用） | 49 | 49 ✓ | 49 ✓ |
+| while 循环求和 | 3 | 3 ✓ | 3 ✓ |
+| 全局+if+char 数组+fib(10)+add3+int 数组 | 78 | 78 ✓ | 78 ✓ |
+| 全局 int 初始化 | 8 | 8 ✓ | 8 ✓ |
+| fib(10) 递归 | 55 | 55 ✓ | 55 ✓ |
+| 三实参调用 | 6 | 6 ✓ | 6 ✓ |
+| if(1) | 5 | 5 ✓ | 5 ✓ |
+| char 数组声明 | 0 | 0 ✓ | 0 ✓ |
+| char 数组读写 | 65 | 65 ✓ | 65 ✓ |
+
+**T-0/T-1 五坑（全部修复并记档，防复发）**：
+1. **config.h fallback**（见 T-0.2）——configure 守卫链补 TRIRV。
+2. **C 的 `(unsigned)负数 % 2187` ≠ 三进制补码取模**：2^32 mod 2187 = 1102 ≠ 0，
+   (unsigned)(-9)%2187 = 1093 ≠ 正确值 2178——imm 全部改符号安全取模
+   `((x%N)+N)%N`（TRI_ENC_I/S/U 三宏 + TRI_JAL/gsym_addr/tri-link 三处调用点）。
+   **方法论**：宏修好后 stale .o 不自动重编（头文件无依赖跟踪），必须 rm .o 强制重建；
+   Makefile 已补依赖规则（tcc.o 依赖 LIBTCC_INC）。
+3. **悬挂 if**：`#ifndef` 掏空 `tccelf_add_crtbegin` 的 if 体后，`return` 被吞成
+   条件体——set_output_type 在 nostdlib/MEMORY 路径返回 TCCState 指针（ASLR 低字节
+   = 变动退出码 32/96/208/224）。补 `{}` 包住 if 体。
+4. **bss fwrite**：TRV1 writer 对 bss/common 段 fwrite(sec->data=NULL) → SEGV——
+   VM 内存零初始化，bss/common 不写文件。
+5. **CValue.i 是 uint64_t（T-1.1 审计修复，用户指正）**：load() 常量范围检查
+   `sv->c.i >= -(int64_t)2147483647` 因 usual arithmetic conversions（负 int64
+   转巨大无符号）恒 FALSE——12345 误入错误分支。当时错误地撤掉了检查（作弊），
+   经用户指正后恢复检查并加显式 `(int64_t)` 转换（所有 c.i 裸用点全部符号化审计）。
+
+**T-1.1/1.2 修复记档**：
+- **R 型编码错位**：gen_opil 曾误用 RISC-V funct3 语义直填 funct——SUB 发成
+  SLL（0,0,1 vs 0,1,0）、SHL 发成 XOR、SRL/SAR/&/|/^ 全部无效编码。全部改走
+  tri-isa.h 生成宏 TRI_<mn>_OP/FUNCT/FUNCT2（单一真相源）。
+- **VT_CMP 物化**：SLT/SLTU 编码同错修正；SNEZ=SLTU rd,zero,rd。
+- **二进制移位语义**：TriRV SLL/SRL/SRA 是三进制 ×3^k/÷3^k，C 的 << >> 是
+  ×2^k/÷2^k——直译是语义错误。const 移位量改走 MUL/DIVU/DIV by 2^k 常量
+  （方案 A 口径；DIV 向零截断与 gcc floor 的负数差异记档）；变量移位量
+  UNSUPPORTED。实现：vtop[0].c.i = 2^k 后走标准 gv2 路径（避免手写栈操作泄漏）。
+- **数据重定位**：char* 字符串全局初始化需要 .rela.data 处理——tri-link writer
+  增加 tri_apply_data_relocs（R_DATA_PTR → 45-trit 字 base-243 回填，文本符号
+  +20B 前移）；tccgen init_putv 的 PTR_SIZE==8 reloc 分支对 TRIRV 开放；
+  tcc.h ELF 类宽对 TRIRV 强制 64-bit（Elf32_Rel 无 addend 字段会丢 addend）。
+
+**T-0.5 GO/NO-GO：GO。** 工作量实测：T-0 全程约半天（含 5 个坑的定位），
+tri-gen.c ~470 行 + tri-link.c ~215 行 + tri-isa.h 自动生成（96/96 与 isa.encode
+逐位对齐验证）。D-T1（fork riscv64 后端）✓、D-T2（PTR_SIZE=9 数据模型）✓、
+D-T3（TRV1 直写绕 ELF）✓、D-T4（trirv_isa.py 单一真相源）✓、D-T5（trirv_cc 保留
+对照）✓ 全部落定。下一阶段 T-1（核心 ISA 覆盖）按计划推进。
+
+## 8. 立即下一步
+
+**T-1.1**：load/store 宽度语义全面对齐（LBU/LHU 无符号、short 类型）+ T-1.2
+ALU 全套 21 条 + 契约测试文件化（tri-tcc 端到端 e2e 进 run_all_tests）。
