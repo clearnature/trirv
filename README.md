@@ -152,7 +152,7 @@ python3 trirv_wasm_e2e.py                      # 112 例三路差分（含 P3 �
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 bench_div.py                           # DIV 快路径 vs 72轮恢复除法 实测(ns/op)
-python3 bench_float.py                         # TF 浮点精度(trit)/动态范围/全阶码可表示实测
+python3 bench_float.py                         # TF 浮点精度/动态范围/全阶码 + P5 穿透成本（VM 级 F 指令 ns、编解码占比、尾数承载精度）
 python3 -c "import trirv_base12 as b; print(b.to12(20), b.from12('18'), b.frac_to12(1,3), b.labelled(20), b.parse_labelled('18₁₂'))"  # 十二进制记数 + 进制下标标注：18 20 0.4 18₁₂ 20
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
@@ -290,6 +290,10 @@ $ ./trirv_vm /tmp/t.trv
   运行时只跑三进制 F 指令；四则/sqrt/比较/load/store/浮点局部变量/双档共存全通，
   19 个浮点用例三路字节一致。档位自主定义（TF32=1+5+14、TF64=1+10+34 trit），
   不照搬 IEEE 语义；详见 `TERNARY_FLOAT_PROPOSAL.md` §5.2/§5.3
+- **穿透成本已实测（P5，2026-11-20）**：FADD 105ns（9.1×ADD），其中 ~88% 是 base-3
+  编解码、FPU 本体 ~1ns——税在进制转换不在浮点运算；FLW/FSW≈LW/SW（边界零税）；
+  方案 B/硬件直通/double-double 均裁决不需要，分离表示改造列为 VM 优化项；
+  详见 `TERNARY_FLOAT_PROPOSAL.md` §5.5 与 `bench_float.py`
 - 关键选择：**1 wasm byte = 1 tryte，地址零偏移**（寻址零换算指令）；
   值域差（243 vs 256）属定义层，不计成本，**成本只算"模拟 mod 2^32 / mod 2^8 的规整指令"**
 - 实测（求和 1..100000）：动态步数 4,700,071 → **2,245,770（−52.2%）**
