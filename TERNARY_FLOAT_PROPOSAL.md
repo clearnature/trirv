@@ -521,6 +521,67 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 "MUL 与 ADD 同值"的测量污染同类。修复：实参逐轮变化（`raws[i % 1000]`）。
 顺带修掉 `mants[j & 1023]` 对 1000 元素数组的越界读。
 
+### 5.6 P4 详细执行计划（2026-11-20 写定，按此执行）
+
+**目标**：重开 strtod/atof/ecvt/fcvt/gcvt 五项 DECISIONED SKIP（"TriRV 无浮点"的
+理由已被 P2/P3 推翻——F 扩展与 TF 格式已在 ISA 上），以 **musl_tri 三进制原生重写**
+落地，输出/输入均为 **TF64 raw**（45-trit 字，对 guest 就是普通 int）。
+
+**必须先讲明的三件事**：
+
+1. **为什么不需要编译器 float 类型**：这五个函数在 ABI 上全部是"字符串 ↔ 45-trit
+   字"的转换——`double` 形参/返回值就是 TF64 raw，guest 里用 `int` 承载即可。
+   trirv_cc 依旧零浮点支持；纯整数 C 子集可实现全部语义（3 字小数大数 + 走位）。
+2. **正确舍入的算法责任在 guest**：strtod 的 round-half-even 不靠宿主——musl 用
+   stdio 内部大数（`__floatscan`，这是它被 SKIP 的原因），TriRV 重写为 3 字
+   （base-10¹⁶，容量 10⁴⁸≈3¹⁰⁰）小数大数走位算法，见下。
+3. **与 musl 的语义对齐点**（逐条镜像，契约锁定）：
+   `ecvt` 的 n∈{1..16} 保留否则 15 的无符号钳制怪癖、`fcvt` 的 n≤lz 返回静态零串
+   切片（`"000…0"+14-n`）、`gcvt` 的 %g 规则（指数 <−4 或 ≥n → e 形态、去尾零）。
+   ±Inf/NaN 在 ecvt/fcvt/gcvt 里 musl 本身未定义（走 sprintf 是垃圾路径）——
+   **TriRV 定义**：数字串全 0、decpt=0、sign=符号位，契约锁定不再漂移。
+
+**实现文件（按依赖顺序）**：
+
+| # | 文件 | 内容 |
+|---|---|---|
+| 1 | `musl_tri/strtod_tri.c` | `strtod`+`atof`。十进制串 → TF64 raw。支持：空白/±/`inf`/`infinity`/`nan`（不区分大小写）/小数/e 指数；end 写回语义同 strtol_tri（无有效数字 end=nptr）。不支持（文档注明）：十六进制浮点 `0x1p3`、errno/ERANGE |
+| 2 | `musl_tri/ecvt_tri.c` | `ecvt`+`fcvt`+`gcvt`。TF64 raw → 十进制数字串。静态 buf 用**全局数组**（TriRV C 子集无 static 局部；单线程假设与 musl 相同） |
+| 3 | `trirv_float_libc_e2e.py` | 契约：**Fraction 精确 oracle**（宿主 Python 用纯整数算 round-half-even——这就是"正确舍入"的定义本身）× guest 输出 × 双 VM 字节差分 |
+| 4 | `run_all_tests.py` | 注册新套件 |
+| 5 | `batch_musl_compile.py` | TRI_REWRITE 加 5 项（strtod.c/atof.c→strtod_tri.c；ecvt.c/fcvt.c/gcvt.c→ecvt_tri.c），重算总账 |
+| 6 | `README.md` §五/§六 | SKIP 5→0；浮点系决策记录从"演进立项"更新为"P4 已落地" |
+
+**核心算法（两文件共用思路，方向相反）**：
+
+- **定长走位**：3 字数组 `w[3]`（小端 base-10¹⁶，值 = Σw[i]·10^(16i)），只做
+  `字×小因子`（10、3ᵏ≤3⁹ 时单字积 <3⁴⁵ 不溢出）与 `÷小因子带余数`——零 90-trit 乘法。
+- **strtod（十→三）**：解析 ≤20 位有效数字进 3 字 acc（66 bit 内精确），之后的数字
+  只置 sticky；用 (3ᵏ,10ᵐ) 配对表把十进制指数 P 吸收进三进制指数 k（每步 ÷10ᵐ 的
+  丢失 ≤1/10³¹ 相对，步数 ≤7000，总漂移 ≪10⁻¹⁶ 舍入阈值）；终态 `M=acc/3^(…)` 用
+  余数 vs 除数一半做 half-even。|P|>14200 捷径 ±Inf/±0（TF64 值域 10^±14086 外的
+  数学必然，非估算）。
+- **ecvt（三→十）**：raw 拆 (s,M,e)；同配对表反向吸收 e 到十进制小数点位置 D；
+  acc 归一到 [10⁴⁶,10⁴⁸) 窗口（每步 ÷ 丢失 ≤10⁻⁴⁶，700 步总漂移 ≪ 数字精度）；
+  逐位取数字 + 末位看余下部分 half-even 进位传播。
+- **正确性公理**：十进制串永远无法精确落在两个 TF64 值的正中（tie 需要分母含 3³³
+  且 3 不整除分子——十进制展开不终止），故 strtod 的 tie 分支只由 sticky 驱动；
+  e2e 用 Fraction oracle 千例级随机 + 构造用例验证。
+
+**验收标准**：
+- `trirv_float_libc_e2e.py`：strtod ≥300 例（随机数量级/指数/长度 + inf/nan/±0/
+  粘着位构造 + end 语义）、ecvt/fcvt/gcvt ≥300 例（全阶码随机 raw + 特殊值 +
+  musl 怪癖边界 n=0/16/17、lz 路径），Fraction oracle 全对 + 双 VM 字节差分全一致
+- `batch_musl_compile.py`：浮点 5 文件从 SKIP 转 `[tri]` 编译 OK，总账重算
+- float 既有三套契约（144/39/112）不破；全量回归不破
+
+**范围边界（本阶段不做）**：
+- 不做 strtof/strtold（TF32 变体，按需后续）
+- 不做十六进制浮点 `0x1p3`（IEEE 位语义的表示层，TriRV 不认）
+- 不做 errno/ERANGE（TriRV libc 层无 errno 传递，同 strtol_tri 先例）
+- 不做 trirv_stdio 的 %f/%e/%g（gcvt 自拼串；printf 集成属 stdio 层后续）
+- 不做 <stdlib.h> 头文件系统（契约用原型声明，同既有 e2e）
+
 ---
 
 ## 6. 待拍板决策项
