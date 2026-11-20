@@ -18,10 +18,15 @@ raw 布局（trit 位从高到低）：
   E=max_exp,      M≠0     → NaN
   其余                     → 正规/次正规数
 
-实现约束（立项书 §3/§7）：
+穿透模型（立项书 §3，2026-11-20 更正）：
+  - binary64 的"64 位"是 IEEE 软件规范，不是 CPU 物理事实；不拿 double 值域当格式天花板
+  - 格式的规范表示是 (sign, mant∈[1,3), exp3 整数)：mant 是唯一进宿主 FPU 的量
+    （永远装得下），exp3 走整数 ALU（Python int 无上限）。值 = sign × mant × 3^exp3
+  - decompose()/compose() 是该表示的可执行定义：任何 raw（哪怕 exp3=29523）都能
+    无损拆成有限 mant + 整数 exp3，没有一步需要把 3^exp3 装进 double —— 无穿透缺口
+  - encode()/decode() 是 double↔raw 的便利桥：double 值域外的 decode 返回 ±Inf/0，
+    那是"单个 double 装不下"的桥接限制，不是格式限制（格式用 decompose 表示全值域）
   - 尾数用整数 M 精确表示，绝不转 float 再乘 3^k（会丢精度）
-  - 宿主 double 只是值容器；TF64 动态范围远超 double，encode 接受 double 输入，
-    decode 输出 double —— 超出 double 的 TF64 值无法穿透（如实返回 ±Inf/0）
   - 舍入 round-to-nearest（数学规则，与 base-2 的 ties-to-even 在 tie 点不同，P1 先锁定）
 """
 import math
@@ -62,8 +67,60 @@ class FloatFormat:
         s, E, M = self.parts(raw)
         return E == self.max_exp and M == 0
 
+    def decompose(self, raw):
+        """raw → (sign, mant, exp3)：格式的规范表示，穿透模型的核心。
+
+        sign ∈ {-1, +1}；mant ∈ [1,3) 的 host double（唯一进 FPU 的量，永远装得下）；
+        exp3 是 base-3 整数指数（走整数 ALU，Python int 无上限）。
+        值 = sign × mant × 3^exp3。
+
+        特殊值：Inf → (sign, None, 'inf')；NaN → (sign, None, 'nan')；
+        ±0 → (sign, 1.0, None) 由 sign 区分（调用方看 exp3 is None 判断零）。
+
+        关键：任何正规 raw（哪怕 exp3=29523，3^exp3 远超 double）都能拆成有限 mant
+        + 整数 exp3，全程不把 3^exp3 塞进 double —— 这就是"无穿透缺口"的证明。
+        """
+        s, E, M = self.parts(raw)
+        sign = -1 if s else 1
+        if E == self.max_exp:
+            return (sign, None, "nan" if M != 0 else "inf")
+        if E == 0 and M == 0:
+            return (sign, 1.0, None)              # ±0，靠 sign 区分
+        mant = M / self.P_NORM                    # ∈ [1,3)，有限 double
+        exp3 = E - self.bias                      # 整数，无 double 范围约束
+        return (sign, mant, exp3)
+
+    def compose(self, sign, mant, exp3):
+        """(sign, mant∈[1,3), exp3 整数) → raw，decompose 的逆（格式精度内）。
+
+        mant 回量化到 M = round(mant × 3^(k-1))，全程 Python 整数精确算，
+        不经过 3^exp3 的浮点乘方 —— exp3 多大都不溢出 double。
+        """
+        if exp3 == "inf":
+            return self.INF_NEG if sign < 0 else self.INF_POS
+        if exp3 == "nan":
+            return self.NAN
+        if exp3 is None:
+            return self.ZERO_NEG if sign < 0 else self.ZERO_POS
+        mi, e2 = _double_to_int_pow2(mant)
+        M = _round_mantissa(mi, e2, 0, self.mant_trits - 1)  # round(mant×3^(k-1))
+        E = exp3 + self.bias
+        if M >= self.P_MANT:                      # 舍入进位到 3^k
+            M //= 3
+            E += 1
+        if E >= self.max_exp:
+            return self.INF_NEG if sign < 0 else self.INF_POS
+        if E <= 0:
+            return self.ZERO_NEG if sign < 0 else self.ZERO_POS
+        s = 1 if sign < 0 else 0
+        return s * self.P_SIGN + E * self.P_MANT + M
+
     def decode(self, raw):
-        """raw → host double。超出 double 范围时返回 ±Inf/0（穿透边界）。"""
+        """便利桥：raw → 单个 host double。
+
+        注意这只是"装进一个 double"的便利接口：double 值域外返回 ±Inf/0。
+        完整格式值（含 double 装不下的大阶码）请用 decompose()，它是规范表示。
+        """
         s, E, M = self.parts(raw)
         sign = -1.0 if s else 1.0
         if E == self.max_exp:

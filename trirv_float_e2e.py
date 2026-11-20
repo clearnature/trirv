@@ -119,6 +119,46 @@ check("TF64 trit 总数", tf.TF64.total_trits, 45)
 check("TF32 bias", tf.TF32.bias, 121)
 check("TF64 bias", tf.TF64.bias, 29524)
 
+# ---- 8. 尾数/指数分离穿透：无"穿透缺口"（2026-11-20 框架更正） ----
+# binary64 的 64 位是 IEEE 软件规范，不是 CPU 物理事实，不能当格式天花板。
+# 正确模型 = 尾数 mant∈[1,3) 进 FPU + 指数 exp3 走整数 ALU，double 值域不约束指数。
+# 构造极端阶码 raw（直接按字段拼，绕开 encode 的 double 输入），验证：
+#   (a) decompose 给出有限 mant 与整数 exp3，哪怕 3^exp3 远超 double（无缺口）
+#   (b) exp3 精确保住 —— 这是穿透模型成立的关键（范围由整数指数承载）
+#   (c) compose 回去：TF32 逐位相等；TF64 尾数 34trit>double 53bit 有 ~1ulp 误差，
+#       但等价值与阶码仍精确（穿透代价，属实现层账）
+for fmt, name, exact in ((tf.TF32, "TF32", True), (tf.TF64, "TF64", False)):
+    for E in (1, 2, fmt.bias - 1, fmt.bias, fmt.bias + 1,
+              fmt.max_exp - 2, fmt.max_exp - 1):
+        M = fmt.P_NORM + 13
+        raw = E * fmt.P_MANT + M
+        sign, mant, exp3 = fmt.decompose(raw)
+        check(f"{name} E={E} mant 有限", math.isfinite(mant), True)
+        check(f"{name} E={E} mant∈[1,3)", (1.0 <= mant < 3.0), True)
+        check(f"{name} E={E} exp3 精确", exp3, E - fmt.bias)
+        back = fmt.compose(sign, mant, exp3)
+        if exact:
+            check(f"{name} E={E} decompose→compose 逐位", back, raw)
+        else:
+            _, E2, _ = fmt.parts(back)
+            check(f"{name} E={E} 往返阶码精确保住", E2, E)
+
+# 极端：TF64 最大正规阶码，3^29523 —— 远超 double 上限 3^646
+sign, mant, exp3 = tf.TF64.decompose((tf.TF64.max_exp - 1) * tf.TF64.P_MANT + tf.TF64.P_NORM)
+check("TF64 极端阶码 mant 仍有限", math.isfinite(mant), True)
+check("TF64 极端阶码 exp3=29523", exp3, tf.TF64.max_exp - 1 - tf.TF64.bias)
+
+# 特殊值 decompose/compose 往返
+for fmt, name in ((tf.TF32, "TF32"), (tf.TF64, "TF64")):
+    for label, raw in (("+0", fmt.ZERO_POS), ("-0", fmt.ZERO_NEG),
+                       ("+Inf", fmt.INF_POS), ("-Inf", fmt.INF_NEG), ("NaN", fmt.NAN)):
+        sign, mant, exp3 = fmt.decompose(raw)
+        back = fmt.compose(sign, mant, exp3)
+        if label == "NaN":
+            check(f"{name} {label} 分离往返仍 NaN", fmt.is_nan(back), True)
+        else:
+            check(f"{name} {label} 分离往返", back, raw)
+
 print()
 print(f"TF 浮点编解码契约：{PASS} PASS / {FAIL} FAIL")
 sys.exit(1 if FAIL else 0)

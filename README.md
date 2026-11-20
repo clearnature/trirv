@@ -152,7 +152,7 @@ python3 trirv_wasm_e2e.py                      # 93 例三路差分（参考解�
 python3 bench_wasm.py                          # Wasm 直译 vs C 寄存器式 的代价对比
 python3 bench_bitops.py                        # 位运算在三进制上的真实成本（拆位数/op）
 python3 bench_div.py                           # DIV 快路径 vs 72轮恢复除法 实测(ns/op)
-python3 bench_float.py                         # TF 浮点精度对标/动态范围/穿透缺口实测
+python3 bench_float.py                         # TF 浮点精度/动态范围/全阶码可表示实测
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
@@ -195,7 +195,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
-| `trirv_float_e2e.py`（TF 浮点编解码 P1：base-3 ↔ double，双档 TF32/TF64） | **76/76**（含 ±0/±Inf/NaN、3^e 精确、舍入 1 ULP） |
+| `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF32/TF64） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
 | `*_e2e.py`（C 编译到执行全链路） | **16/16 套**（`TRV_CC_STRICT=1` 下同样 16/16） |
 | `trirv_wasm_e2e.py`（Wasm 三路差分：参考解释器 / PyVM / C VM） | **93/93** |
@@ -241,8 +241,10 @@ $ ./trirv_vm /tmp/t.trv
    断言锁定）。
    **决策记录：浮点系 → ISA 演进立项（2026-11-20）**（strtod/atof/ecvt/fcvt/gcvt）。
    原为"永久 SKIP：TriRV 无浮点"，因 wasm 必然涉及 f32/f64 且用户定调"三进制浮点格式
-   属 ISA 演进"，已立专项：**穿透宿主 FPU 取性能、ISA 格式与语义保持三进制**。
-   立项书与待拍板项（D-F1..D-F4）见 `TERNARY_FLOAT_PROPOSAL.md`；拍板前不写实现代码。
+   属 ISA 演进"，已立专项：**尾数[1,3)穿透宿主 FPU + 指数走整数 ALU，ISA 格式与语义
+   保持三进制**。关键更正（2026-11-20）：binary64 的"64 位"是 IEEE 软件规范而非物理事实，
+   不拿 double 值域当格式天花板——全阶码可表示，无"穿透缺口"。立项书见
+   `TERNARY_FLOAT_PROPOSAL.md`（D-F1..D-F4 已拍板，P1 编解码已落地 144 项契约）。
 1. ~~**C 后端覆盖 130/148 = 88%**：struct 按值传参 / sret 返回未实现~~ ——
    **2026-11-19 已补齐**，C 后端 148/148。约定与 Python 后端一致：调用方传结构体
    源地址、被调方入口逐字拷进本地副本（修改完全隔离）；sret 由调用方在帧内预留缓冲、
