@@ -203,7 +203,7 @@ static void tok_push(Token t){
 }
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
-        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default",NULL};
+        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -1051,7 +1051,9 @@ static void parse_program(void){
             for(;;){
                 char*gty=base_ty;
                 while(at("[")){
-                    take(); char cnt[32]; dim_text(cnt,sizeof(cnt)); expect("]");
+                    take(); char cnt[32]="";
+                    if(!at("]")) dim_text(cnt,sizeof(cnt));   /* 空维度 [] */
+                    expect("]");
                     char buf[256]; snprintf(buf,sizeof(buf),"%s[%s]",gty,cnt);
                     gty=strdup(buf);
                 }
@@ -3058,6 +3060,8 @@ static void tvo_import(const char*path){
             int len; if(sscanf(line,"STR %d",&len)==1){
                 char *buf=malloc((size_t)len+1);
                 const char*hex=line+4; while(*hex==' ')hex++;
+                while(*hex>='0'&&*hex<='9')hex++;      /* 跳过长度字段 */
+                while(*hex==' ')hex++;                  /* 长度后空格 */
                 for(int k=0;k<len;k++){
                     unsigned b; sscanf(hex+2*k,"%2x",&b); buf[k]=(char)b;
                 }
