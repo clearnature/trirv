@@ -1852,11 +1852,9 @@ static int addr_of(Node*n){
             exit(2);
         }
         { int r=tacq();
-        if(is_ptr(v->ty)){                      /* 指针变量：s0+off 里存的是地址，取出来 */
-            chk_off(v->off);
-            emitf("LW %s, %d(s0)",regname(r),v->off);
-            return r;
-        }
+        /* &x：x 的栈槽地址。指针变量也一样——&p 要的是 p 自身的
+         * 槽地址（char**），不是 p 的值（那是 *p / N_DEREF 的语义，
+         * 在 eval N_DEREF 分支处理）。 */
         chk_off(v->off);
         emitf("ADDI %s, s0, %d",regname(r),v->off);
         return r; }
