@@ -243,7 +243,36 @@ D-T3（TRV1 直写绕 ELF）✓、D-T4（trirv_isa.py 单一真相源）✓、D-
 vrott 配对遗漏（实参用例回归）、_start JAL 双重补偿（位游标探针程序重启）、
 SLT 宏参序（floor 修正失效）。
 
-**T-1 状态**：1.1/1.2/1.3/1.4 ✓、1.5 ✓（MUL/DIV/DIVU/REM/REMU 在用）、方案 A ✓；
-1.6（F 扩展）/1.7（CSR）/1.8（ISA 守卫）未做；MULH 3 条、A 扩展 9 条未做。
-**下一轮**：T-1.8 gen_tri_isa.py --check → T-2（TRVO/多 TU/musl）。
+**T-1 状态**：1.1/1.2/1.3/1.4 ✓、1.5 ✓（MUL/DIV/DIVU/REM/REMU 在用）、方案 A ✓、
+1.8 ✓（gen_tri_isa_h.py --check 守卫 + trirv_tri_isa_guard.py 常绿套件，篡改检测已验证）；
+1.6（F 扩展）/1.7（CSR）未做；MULH 3 条、A 扩展 9 条未做。
+
+## 9. T-2 第一记档（2026-11-21，多 TU + musl→tri-tcc）
+
+**T-2.1 多 TU（同进程）✅**：tcc 原生多文件单进程编译白拿——`trirv-tcc main.c lib.c
+... -o out.trv` 符号经进程内 symtab 解析。**根治 §7.12 悬垂**：TRI_PATCHES 曾存 Sym*
+到 writer 期——extern 声明与定义是不同 Sym（声明 c 恒 0）、static 符号的 Sym 在其 TU
+后被回收（垃圾 c 实证 `symbol #1719946136`）。改为补丁创建时快照
+`{name: strdup(get_tok_str(sym->v))（仅解析期安全）, elf_idx: sym->c}`，
+writer 优先 elf_idx、未定义过的按名查 symtab（跨 TU 声明-定义分离也能解析）。
+tri-isa.h 补丁表结构变更（生成器 FIXED 区同步 + 再生 + 守卫绿）。
+e2e 新增多 TU 组 4 例（跨文件 extern/后续 TU static/共享全局/三文件链）。
+
+**T-2.3 musl→tri-tcC 端到端 ✅（首里程碑）**：真 musl 上游 string 源码
+（preprocess_musl.py 同管线）+ musl_tri 重写版 16 文件 → tri-tcc 同进程多 TU
+→ TRV1 → 双 VM。新套件 `trirv_tri_musl_e2e.py`（3 组 30 断言全绿）：
+memset/memcpy/strlen/strcmp/strncmp/memcmp/memchr/strcspn/strspn/strstr/memmem/
+strsep/div/ldiv/lldiv/imaxdiv/qsort(函数指针)/strtol(2/8/10/16 进制) 全部
+编译、链接、运行、断言通过。strtod/ecvt（TF64 整数编码）单独编译通过
+（调用面待 F 扩展/浮点 ABI 决策）。
+
+**TRVO 文本互通（T-2.1 的 trirv_cc 桥）评估后延后**：trirv_cc 导出的 TRVO
+LINE 里全局引用是导出期数字地址（`LUI t1, 9`），导入器按 GLOB 顺序重排地址——
+一致性依赖"导入单元先于主 TU 分配"的分配顺序巧合（atof.trvo 实证）；tri-tcc
+若逐字模仿该约定即承接其脆弱性。多 TU 端到端（本节）已覆盖 musl 主线，
+文本互通待 trirv_cc 导入器支持符号化引用后再接。
+
+**新坑（防复发）**：e2e 框架编辑时 `for` 行被并进注释 → 循环体落进上一个
+循环（多 TU 用例名出现在 NEG 检查、空 c 文件编译"意外成功"）——编辑测试
+框架后先跑一遍确认循环结构。
 

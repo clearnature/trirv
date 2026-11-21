@@ -150,6 +150,20 @@ CASES = [
     ("混合宽度", "int main(void){ char c = 10; short s = 1000; int i = 100000; return c + s + (i/1000); }", (10+1000+100)&0xFF),
 ]
 
+# 多 TU 用例（T-2.1）：(name, [src1, src2, ...], expected) —— 同进程多文件编译，
+# 符号经 symtab 解析（声明在 main TU / 定义在后续 TU，含 static 跨 TU 边界）
+MULTI_CASES = [
+    ("多TU跨文件调用", ["int dbl2(int x){ return x+x; }\n",
+                        "int dbl2(int x);\nint main(void){ return dbl2(21); }\n"], 42),
+    ("多TU后续TU带static", ["static int h(int a){ return a*2; }\nint dbl(int x){ return h(x); }\n",
+                            "int dbl(int x);\nint main(void){ return dbl(21); }\n"], 42),
+    ("多TU共享全局", ["int g_counter = 100;\nint add_n(int x) { g_counter = g_counter + x; return g_counter; }\n",
+                      "extern int g_counter;\nint add_n(int x);\nint main(void){ return add_n(5) + (g_counter == 105); }\n"], 106),
+    ("多TU三文件", ["int f3(void){ return 3; }\n",
+                    "int f3(void);\nint f4(void){ return f3()+1; }\n",
+                    "int f4(void);\nint main(void){ return f4(); }\n"], 4),
+]
+
 # (name, c_source, expected_error_substring) —— 编译必须失败且 stderr 含子串
 NEG_CASES = [
     ("未解析符号", "extern int zzz; int main(void){ return (int)(char*)&zzz; }", "unresolved"),
@@ -200,6 +214,27 @@ def main():
         c = vm.VM(prog, mem_init=mem).run(max_steps=50000000)
         check("%s [PyVM]" % name, c.exit_code & 0xFF, want)
 
+    # 多 TU：同进程多源文件编译（T-2.1 前置：符号进程内解析）
+    for name, srcs, want in MULTI_CASES:
+        cpaths = []
+        tpath = "/tmp/tri_e2e_multi_%s.trv" % abs(hash(name))
+        for k, s in enumerate(srcs):
+            cp = "/tmp/tri_e2e_multi_%s_%d.c" % (abs(hash(name)), k)
+            with open(cp, "w") as f:
+                f.write(s)
+            cpaths.append(cp)
+        r = subprocess.run([TCC, "-nostdlib"] + cpaths + ["-o", tpath],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            check("%s [编译]" % name, r.stderr.strip()[:120], "")
+            continue
+        rr = subprocess.run([CVM, tpath], capture_output=True, text=True, timeout=60)
+        ce = rr.stderr.split("exit=")[-1].split()[0] if "exit=" in rr.stderr else "?"
+        check("%s [CVM]" % name, int(ce) & 0xFF if ce != "?" else "?", want)
+        prog, mem = load_trv(tpath)
+        c = vm.VM(prog, mem_init=mem).run(max_steps=50000000)
+        check("%s [PyVM]" % name, c.exit_code & 0xFF, want)
+
     # NEG：编译必须失败且报错信息含子串（诚实报错契约）
     for name, src, sub in NEG_CASES:
         cpath = "/tmp/tri_e2e_neg_%s.c" % abs(hash(name))
@@ -216,8 +251,9 @@ def main():
             failed += 1
             print("FAIL %s [NEG]: 报错信息缺 %r：%r" % (name, sub, r.stderr.strip()[:120]))
 
-    print("\ntri-tcc 契约：%d PASS / %d FAIL / %d 用例（含 %d NEG）"
-          % (passed, failed, len(CASES) + len(NEG_CASES), len(NEG_CASES)))
+    print("\ntri-tcc 契约：%d PASS / %d FAIL / %d 用例（含 %d NEG + %d 多TU）"
+          % (passed, failed, len(CASES) + len(NEG_CASES) + len(MULTI_CASES),
+             len(NEG_CASES), len(MULTI_CASES)))
     sys.exit(1 if failed else 0)
 
 
