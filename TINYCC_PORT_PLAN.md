@@ -181,7 +181,69 @@ tri-gen.c ~470 行 + tri-link.c ~215 行 + tri-isa.h 自动生成（96/96 与 is
 D-T3（TRV1 直写绕 ELF）✓、D-T4（trirv_isa.py 单一真相源）✓、D-T5（trirv_cc 保留
 对照）✓ 全部落定。下一阶段 T-1（核心 ISA 覆盖）按计划推进。
 
-## 8. 立即下一步
+## 8. T-1 收尾轮记档（2026-11-21，主智能体亲自执行，TDD 门控）
 
-**T-1.1**：load/store 宽度语义全面对齐（LBU/LHU 无符号、short 类型）+ T-1.2
-ALU 全套 21 条 + 契约测试文件化（tri-tcc 端到端 e2e 进 run_all_tests）。
+> 方法：`TCC_BEHAVIOR_NOTES.md`（四视角精读 tcc 机制 + 独立核实）→ `T1_TDD_PLAN.md`
+> → 分批 RED（e2e 新用例实证缺陷）→ 修复 → GREEN（双 VM 门控）。
+> 全程门控：`python3 trirv_tri_tcc_e2e.py`，最终 **163 PASS / 0 FAIL / 84 用例（含 5 NEG）**；
+> 方案 A 守卫：产物中 SLL/SRL/SRA/ANDI/ORI/XORI 逐 trit 指令 **0 出现**。
+
+**B1 错码速修（全部一行级，均带探针）**：
+1. **D1 实参倒装**：`vrotb(ii+1)`→`vrotb(i+1)`（弹出 arg_{n-1-i} 装入它自己的寄存器）。
+   **新坑**：逆旋转必须配对 `vrott(i+1)`——首修只改 vrotb 漏改 vrott，栈逐轮搅乱
+   （add3 106=100+3+3 暴露）。上游配对：riscv64-gen.c vrotb(i+1)+info[n-1-i]。
+2. **D2 物化比较表**：GT(1,0)/GE(0,1)/LE(1,1)（旧表 GT 物化成 a>=b 等 3 类全错）。
+3. **D3 SNEZ 反序**：TRI_ENC_R 第 3 参是 rs2——曾写 (0,rd) 编成 SLTU rd,rd,zero ≡ 恒 0。
+4. **D4 NE/EQ 物化 SUB**：裸写 (TRI_OP_OP,0,b,a,1) 的 funct=1 是 SLL 非 SUB，改走宏。
+5. **D5 load() fc**：VT_JMP 链头在 c.i——补 `fc=(int)(int64_t)sv->c.i`（对齐上游）。
+6. **D8 JALR rd==rs1**：JALR 先写 rd 后读 rs1——目标经 ra 装载时改道 t0。
+
+**B2 常量装载（D6）**：新通用 `tri_load_imm_hw(hw, unsigned __int128)`——3×20-trit
+平衡分段（借位双向归一），负数 = 3^45+v 转正（raw 即位模式）；旧 LUI+ADDI 两槽路径
+（负 hi 回绕/lo 借位单向/窗口误报）全删。顺带修 gen_opil fuse 的 `(int)fc` 截断
+（VT_LLONG 常量 2^32+1 会截成 1 误融合）。
+
+**B3 链接器/数据编码**：
+1. **静态初值 base-243**（笔记 §1.6 critical）：init_putv TRIRV 分支 VT_INT/VT_LLONG/
+   VT_PTR(非符号) → `tri_write_word45`（9 tryte，负数 3^45+v，__int128）；VT_SHORT →
+   mod-59049；VT_BYTE → mod-243。旧 write32le/write64le 是 base-256——只有初值 <243
+   时两种基数巧合一致（旧 e2e g=7/{10,20,30} 测不出的根因）。
+2. **text 基址**：tri_get_section_base 设 `text_section->sh_addr = 20`，删两处散落 +20。
+   **新坑（本轮最隐蔽）**：writer 的 _start JAL 公式 `main_addr/4 + 3` 假设 main_addr
+   是 text 相对地址——tri_sym_addr 返回绝对地址后 +3 被重复补偿，JAL 跳过 main 序言、
+   ra 未保存、ret 到 0、程序重启。修正：_start JAL 一律用 `es->st_value`（text 相对）。
+3. **符号校验**：tri_sym_final 统一 UNDEF（weak→0/否则 unresolved）+ COMMON 干净报错 +
+   shndx 界检查（曾对 UNDEF 取 sections[0]=NULL SIGSEGV）。代码引用（sym->c=0）报
+   unresolved——**新坑：writer 期 get_tok_str(sym->v) 崩溃（EXC_BAD_ACCESS），该函数
+   仅解析期安全，writer 不取名**。
+4. **未覆盖 ALLOC 节诚实报错**；**新坑**：tcc 自生成 .eh_frame 历来被静默丢弃
+   （VM 无展开器，无害）——检查放行 `.eh_` 前缀，其余用户节报错。
+5. tccgen.c:8787（符号初值允许 VT_LLONG）/8830（addend 保留）补 TRIRV 豁免。
+
+**B4 方案 A 适配层（C 位运算/移位二进制语义，对齐 ternary-isa-design.md §5.1）**：
+1. **位游标**（tri_emit_bitop3，移植 trirv_cc emit_bitop3）：raw 值即位模式，p 从 2^71
+   走 72 位（DIVU/2 递推），& = TMIN、| = TMAX、^ = |ta−tb|；工作寄存器用空闲硬件槽
+   x3/x4/x6/x7/x9 + x5 scratch——位游标块是直线代码（无访存/调用），不需 callee-saved
+   预扫描（tcc 单遍架构无法预扫，与 trirv_cc gate_check 方案的本质差异）。
+2. **~a**：tccgen 把 ~a 折叠成 a^(-1)——gen_opil 拦截 → TILDE−a 一条 SUB（~0≠-1 是
+   回绕必然结果，探针须用变量：`~0` 双常量被前端折叠测不到后端）。
+3. **移位**：SHL = k≤10 ADD 链 / 否则 MUL by 2^k（k>62 用 128 位 pow2_mod）；SHR 无符号
+   = DIVU（k≥72→0）；SAR = DIV+REM 负余数 floor 修正（-65>>3→-9）；变量移位量 = 单步
+   循环（负计数按 0 次）；k<0/k>4096 编译期 tcc_error（NEG 门控）。产物守卫：SLL/SRL/
+   SRA/ANDI/ORI/XORI 零出现（disassemble 扫描验证）。
+   **新坑**：`SLT ac,ac,zero` 两处误写成 TRI_ENC_R(AC,AC)（第 3 参是 rs2）——编成
+   (ac<ac)≡0，floor 修正永不触发。与 D3 同款宏参数序坑，TRI_ENC_R 调用点已全部复核。
+4. e2e 翻转 3 个锁定值（与/或/异或的逐 trit 期望 → C 语义）+ 新增代数律锁定
+   （幂等/零元/对合/交换 ✓、~0≠-1 回绕后果）。
+
+**NEG 机制**：e2e 增加编译必须失败且 stderr 含子串的负用例（unresolved×2/自定义节/
+移位量超限/移位量负），锁定诚实报错路径。
+
+**修复过程被 TDD 实证拦截的 3 次自伤**（均为门控当场拦截，未漏网）：
+vrott 配对遗漏（实参用例回归）、_start JAL 双重补偿（位游标探针程序重启）、
+SLT 宏参序（floor 修正失效）。
+
+**T-1 状态**：1.1/1.2/1.3/1.4 ✓、1.5 ✓（MUL/DIV/DIVU/REM/REMU 在用）、方案 A ✓；
+1.6（F 扩展）/1.7（CSR）/1.8（ISA 守卫）未做；MULH 3 条、A 扩展 9 条未做。
+**下一轮**：T-1.8 gen_tri_isa.py --check → T-2（TRVO/多 TU/musl）。
+

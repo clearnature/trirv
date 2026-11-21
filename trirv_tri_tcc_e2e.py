@@ -5,11 +5,16 @@
 管线：C 源 → trirv-tcc(-nostdlib) → TRV1 → 双 VM（PyVM × C VM）执行，
 期望值 = C 语义的计算结果（写死在用例里，对齐 trirv_cc e2e 风格）。
 
-覆盖（T-1.1/1.2 验收）：
-  - ALU：+ - * / % & | ^ << >> 与全部六种比较（含 unsigned）
+覆盖（T-1.1/1.2 + T-1 收尾批次）：
+  - ALU：+ - * / % 与全部六种比较（含 unsigned，物化/分支两路、等号边界）
+  - 方案 A（B4）：& | ^ ~ 的 C 二进制语义 + 代数律锁定（幂等/零元/对合/交换 ✓，
+    ~0≠-1 回绕后果锁定）
+  - 移位（方案 A）：const/变量移位量、算术右移 floor 修正、无符号右移
+  - 常量装载（B2）：负常量借位双向、i32 窗口溢出走 3×20 分段
+  - 链接（B3）：静态初值 base-243（≥243/负数/long long）、text 基址、
+    UNDEF 符号/自定义节诚实报错（NEG 用例）
   - load/store 宽度：char/short/int、有符号/无符号（LB/LBU/LH/LHU/LW）
-  - 控制流：if/else、while、for、递归、多实参调用
-  - 全局变量（初始化/读写）、int/char 数组
+  - 控制流：if/else、while、for、递归、多实参（非交换序敏感）、函数指针
 
 运行前提：~/ai-lab/tinycc 存在且已构建 trirv-tcc（TINYCC_PORT_PLAN.md T-0.2）；
 缺失时全部 SKIP（不阻断全量回归）。
@@ -49,16 +54,30 @@ CASES = [
     ("乘", "int main(void){ int a=123; int b=456; return a*b; }", (123*456)&0xFF),
     ("除", "int main(void){ int a=100000; int b=7; return a/b; }", (100000//7)&0xFF),
     ("模", "int main(void){ int a=100000; int b=7; return a%b; }", (100000%7)&0xFF),
-    # 位运算（变量版）：TriRV AND/OR/XOR 是逐 trit 语义（ISA §5.1 决议 B），
-    # C 二进制语义需方案 A 适配层（T-1.3 未做）——本套件锁定当前逐 trit 直译语义。
+    # 位运算：方案 A（C 二进制语义，B4 落地）——变量版走位游标；
     # 常量版会被 tccgen 前端以宿主二进制语义折叠（2|1→3），测不到生成代码。
-    ("与min", "int main(void){ int a=6; int b=4; return a & b; }", 3),   # min(20₃,11₃)=10₃=3
-    ("或max", "int main(void){ int a=2; int b=1; return a | b; }", 2),   # max(2,1)=2
-    ("异或mod3", "int main(void){ int a=3; int b=1; return a ^ b; }", 4), # 10₃^01₃=11₃=4
+    ("与二进制", "int main(void){ int a=6; int b=4; return a & b; }", 4),
+    ("或二进制", "int main(void){ int a=2; int b=1; return a | b; }", 3),
+    ("异或二进制", "int main(void){ int a=3; int b=1; return a ^ b; }", 2),
+    ("掩码与", "int main(void){ int a=0x1234; return a & 0xFF; }", 0x34),
+    ("掩码或", "int main(void){ int a=0x1200; return a | 0x34; }", 0x34),
+    ("掩码异或", "int main(void){ int a=0xFF; return a ^ 0x0F; }", 0xF0),
+    ("分配组合", "int main(void){ int a=0xF0; int b=0x0F; int c=0xFF; return (a&b)|(a&c); }", 0xF0),
+    # 方案 A 代数律锁定（ternary-isa-design.md §5.1：幂等/零元/对合/交换成立）
+    ("幂等律", "int main(void){ int a=123; return (a&a)==a; }", 1),
+    ("零元律", "int main(void){ int a=123; return ((a|0)==a) && ((a^0)==a); }", 1),
+    ("对合律", "int main(void){ int a=123; return (~(~a))==a; }", 1),
+    ("交换律", "int main(void){ int a=0xF0; int b=0x0F; return (a&b)==(b&a); }", 1),
+    ("非回绕锁定", "int main(void){ int z=0; return (~z)==(-1); }", 0),  # 方案 A：~0 ≠ -1（~0 双常量会被前端折叠，须用变量探后端）
     # 256 & 0xFF = 0（exit 低 8 位）
     ("左移", "int main(void){ return 1 << 8; }", 0),
     ("逻辑右移", "int main(void){ unsigned u = 0x80000000u; return (int)(u >> 31); }", 1),
     ("算术右移", "int main(void){ int a = -64; return a >> 3; }", (-64 >> 3) & 0xFF),
+    ("算术右移floor", "int main(void){ int a = -65; return a >> 3; }", (-65 >> 3) & 0xFF),
+    ("变量左移", "int main(void){ int s=10; int i=2; return s<<i; }", 40),
+    ("变量右移", "int main(void){ int s=10; int i=2; return s>>i; }", 2),
+    ("变量算术右移", "int main(void){ int a=-65; int i=3; return a>>i; }", (-65>>3)&0xFF),
+    ("变量无符号右移", "int main(void){ unsigned u=0x80000000u; int i=31; return u>>i; }", 1),
     ("负数", "int main(void){ return -100; }", (-100) & 0xFF),
 
     # ---- 比较（真=1） ----
@@ -68,6 +87,16 @@ CASES = [
     ("小于", "int main(void){ return 3 < 4; }", 1),
     ("大于等于", "int main(void){ return 4 >= 4; }", 1),
     ("无符号比较", "int main(void){ unsigned a = 3000000000u; return a > 5; }", 1),
+    # 物化比较（B1：等号边界 + 假值侧，暴露 D2/D3/D4）
+    ("GT等号边界", "int main(void){ int a=3; int b=3; return a>b; }", 0),
+    ("GE假", "int main(void){ int a=3; int b=4; return a>=b; }", 0),
+    ("LE假", "int main(void){ int a=4; int b=3; return a<=b; }", 0),
+    ("无符号GT等号", "int main(void){ unsigned a=3; unsigned b=3; return a>b; }", 0),
+    ("无符号GE假", "int main(void){ unsigned a=3; unsigned b=4; return a>=b; }", 0),
+    ("无符号LE假", "int main(void){ unsigned a=4; unsigned b=3; return a<=b; }", 0),
+    ("NE物化", "int main(void){ int a=3; int b=4; return a!=b; }", 1),
+    ("EQ物化假", "int main(void){ int a=3; int b=4; return a==b; }", 0),
+    ("物化存变量", "int main(void){ int a=3; int b=4; int r=(a!=b); return r+10*(a==b); }", 1),
 
     # ---- T-1.1 load/store 宽度 ----
     ("char 有符号负", "int main(void){ signed char c = -5; return c; }", (-5)&0xFF),
@@ -85,16 +114,49 @@ CASES = [
     ("递归 fib10", "int fib(int n){ if(n<2) return n; return fib(n-1)+fib(n-2); } int main(void){ return fib(10); }", 55),
     ("三实参", "int add3(int a,int b,int c){ return a+b+c; } int main(void){ return add3(100,20,3); }", 123),
     ("深实参调用", "int f8(int a,int b,int c,int d,int e,int f,int g,int h){ return a+b+c+d+e+f+g+h; } int main(void){ return f8(1,2,3,4,5,6,7,8); }", 36),
+    # 实参序敏感（B1：暴露 D1 倒装）
+    ("非交换双实参", "int sub(int a,int b){ return a-b; } int main(void){ return sub(10,4); }", 6),
+    ("首实参返回", "int id(int a,int b){ return a; } int main(void){ return id(5,3); }", 5),
+    ("第三实参", "int id3(int a,int b,int c){ return c; } int main(void){ return id3(5,4,3); }", 3),
+    # 逻辑运算取值物化（B1：暴露 D5 未初始化 fc）
+    ("且取值真", "int main(void){ int a=1; return (a && a<5); }", 1),
+    ("且取值假", "int main(void){ int a=8; return (a && a<5); }", 0),
+    ("或取值", "int main(void){ int a=3; return (a>5 || a==3); }", 1),
+    # 函数指针（B1：暴露 D8 JALR rd==rs1）
+    ("函数指针调用", "int f(void){ return 7; } int main(void){ int (*fp)(void)=f; return fp(); }", 7),
+    ("全局函数指针调用", "int f(void){ return 7; } int (*gfp)(void)=f; int main(void){ return gfp(); }", 7),
+
+    # ---- 常量装载（B2：D6） ----
+    ("负常量借位上", "int main(void){ int x=-1300; return -x; }", 1300&0xFF),
+    ("负常量借位下", "int main(void){ int x=-1094; return -x; }", 1094&0xFF),
+    ("窗口溢出正", "int main(void){ int x=2000000007; return x%1000; }", 7),
+    ("窗口溢出负", "int main(void){ int x=-2000000007; return -x%1000; }", 7),
+    ("运行时取负", "int main(void){ int a=5; return -a; }", (-5)&0xFF),
+    ("llong大常量", "int main(void){ long long x=4294967296; return (int)(x%1000); }", (4294967296%1000)&0xFF),
 
     # ---- 全局 ----
     ("全局初始化读写", "int g = 7; int main(void){ g = g + 1; return g; }", 8),
     ("全局跨函数", "int g = 100; void bump(void){ g = g + 5; } int main(void){ bump(); bump(); return g; }", 110),
     ("全局数组", "int ga[3] = {10, 20, 30}; int main(void){ return ga[0]+ga[1]+ga[2]; }", 60),
     ("char* 字符串", "char *m = \"AB\"; int main(void){ return m[0]+m[1]; }", (65+66)&0xFF),
+    # 静态初值 base-243（B3：≥243/负数/llong）
+    ("全局int千", "int g = 1000; int main(void){ return g; }", 1000&0xFF),
+    ("全局负初值", "int g = -5; int main(void){ return -g; }", 5),
+    ("全局llong初值", "long long g = 5000000007; int main(void){ return (int)(g%1000); }", 7),
+    ("函数指针地址一致", "int f(void){ return 7; } int main(void){ int (*fp)(void)=&f; return (fp==&f)?fp():0; }", 7),
 
     # ---- 组合 ----
     ("表达式嵌套", "int main(void){ return (1+2)*(3+4)-(5-3); }", 19),
     ("混合宽度", "int main(void){ char c = 10; short s = 1000; int i = 100000; return c + s + (i/1000); }", (10+1000+100)&0xFF),
+]
+
+# (name, c_source, expected_error_substring) —— 编译必须失败且 stderr 含子串
+NEG_CASES = [
+    ("未解析符号", "extern int zzz; int main(void){ return (int)(char*)&zzz; }", "unresolved"),
+    ("未解析数据重定位", "extern int zzz; char *p = (char*)&zzz; int main(void){ return p != 0; }", "unresolved"),
+    ("自定义节", "__attribute__((section(\".foo\"))) int g = 7; int main(void){ return g; }", "section"),
+    ("移位量超限", "int main(void){ int x=1; return x << 5000; }", "shift"),
+    ("移位量负", "int main(void){ int x=1; return x >> -1; }", "shift"),
 ]
 
 
@@ -113,10 +175,10 @@ def load_trv(path):
 
 
 def main():
-    global skipped
+    global skipped, passed, failed
     if not os.path.exists(TCC):
         print("tri-tcc 未构建（%s 不存在）—— 全部 SKIP" % TCC)
-        print("\ntri-tcc 契约：0 PASS / 0 FAIL / %d SKIP" % (len(CASES) * 2))
+        print("\ntri-tcc 契约：0 PASS / 0 FAIL / %d 用例" % (len(CASES) + len(NEG_CASES)))
         sys.exit(0)
 
     for name, src, want in CASES:
@@ -138,7 +200,24 @@ def main():
         c = vm.VM(prog, mem_init=mem).run(max_steps=50000000)
         check("%s [PyVM]" % name, c.exit_code & 0xFF, want)
 
-    print("\ntri-tcc 契约：%d PASS / %d FAIL / %d 用例" % (passed, failed, len(CASES)))
+    # NEG：编译必须失败且报错信息含子串（诚实报错契约）
+    for name, src, sub in NEG_CASES:
+        cpath = "/tmp/tri_e2e_neg_%s.c" % abs(hash(name))
+        tpath = "/tmp/tri_e2e_neg_%s.trv" % abs(hash(name))
+        with open(cpath, "w") as f:
+            f.write(src)
+        r = subprocess.run([TCC, "-nostdlib", cpath, "-o", tpath],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            check("%s [NEG须报错]" % name, "编译意外成功", "")
+        elif sub in r.stderr:
+            passed += 1
+        else:
+            failed += 1
+            print("FAIL %s [NEG]: 报错信息缺 %r：%r" % (name, sub, r.stderr.strip()[:120]))
+
+    print("\ntri-tcc 契约：%d PASS / %d FAIL / %d 用例（含 %d NEG）"
+          % (passed, failed, len(CASES) + len(NEG_CASES), len(NEG_CASES)))
     sys.exit(1 if failed else 0)
 
 
