@@ -175,6 +175,9 @@ CASES = [
     ("int常量3^38", "int mod97(int x){ return x - x/97*97; } int main(void){ int x = 1350851717672992089; return mod97(x); }", 1350851717672992089 % 97),
     ("int常量静态初值", "int g = 16677181699666569; int mod97(int x){ return x - x/97*97; } int main(void){ return mod97(g); }", 16677181699666569 % 97),
     ("int常量1e16系数", "int g = 10000000000000000; int main(void){ return g - g/97*97; }", 10**16 % 97),
+    ("负多段常量", "int main(void){ int t = -14130; return t > -14131; }", 1),   # 3^45-14130 三段含中段 0
+    ("负多段常量2", "int main(void){ int t = -14130; return t < -14000; }", 1),
+    ("负多段比较", "int main(void){ int t = -14130; int m = 1; return (m > t) * 7; }", 7),
     ("FCVT.W.T负数", "int main(void){ double d=-3.7; return (int)d; }", (-3)&0xFF),  # 向零：-3（round 给 -4）
     ("FCVT.W.T半途", "int main(void){ double d=3.5; return (int)d; }", 3),   # 向零：3（round-half-even 给 4）
 

@@ -446,3 +446,37 @@ slot1196-1252 段的 JAL 序列）。
 **验证**：e2e **243 PASS / 0 FAIL / 124 用例**（大常量 5 例 RED→GREEN）；
 run_all_tests --fast 43 套全绿。
 
+## 16. T-2.4 第二增量：负多段常量中段零 bug + TRVO GLOB 初值修复（2026-11-22）
+
+**strtod 跳飞根因抓获并修复**：tri_gen 的 `tri_load_imm_hw` 对**中段为 0 的
+负多段常量**（如 -14130 = 3^45-14130，三段 [-14130, 0, 243]）——
+`tri_load_seg_abs(T0, 0)` 编成 NOP 不清 T0，**无条件 `ADD hw,hw,T0` 把 T0
+残留垃圾加进累加器** → mag<=-14130 判断恒错 → return 0。修复：中段 0
+跳过装载与 ADD（只移位）。strtod("3.5") mod97=41=oracle ✓。
+e2e 加负多段 3 例（-14130 比较对），249 PASS / 0 FAIL / 127 用例。
+教训：修复用"分段装载器"时，段值为 0 的捷径（NOP）必须连 ADD 一起跳过。
+
+**trirv_cc TRVO 导入 GLOB 初值修复**（-l .trvo 的潜伏缺陷转正修复）：
+- 导出：GLOB 行附 data hex（gen_glob_data 后有效）
+- 导入：side-table 收集（TVO_GNAME/TVO_GHEX）+ gen_glob_data 末尾按名回填
+- **坑 1**：side-table 声明必须在使用点之前（初插 gen_glob_data 之后致
+  前向引用编译错——被 `| head` 掩盖 rc，二进制 stale 18 小时——管道后
+  $? 取 head 的返回码，gcc 失败被吞；排错用 strings 二进制查新字符串）
+- **坑 2**：两个 side-table 共享一个 cap 变量——第一个 grow 把 cap 翻倍后
+  第二个 grow(need<cap) 不分配返回 NULL → strdup 后写 NULL 崩（-O0 -g
+  lldb 定位 tvo_import:3081）
+- 端到端验证：strtod.trvo 的 SD_P34 hex（t6=81=3^4）✓ → fa5.trv 数据段
+  SD_P34/P44/INF/NaN 全部正确导入 ✓
+
+**TRVO 剩余边界（维持延后记档）**：LINE 汇编里的全局引用是导出期数字
+地址（LUI t1, 9），导入重排布局后地址错——需要导入器支持符号化引用
+（asm_line 不支持 %label），工程量另立项。trirv_cc 的 -l TRVO 路径
+维持不可用（与修复前一致）；真实管线全走源码拼接 ✓。
+
+**T-2.4 里程碑达成**：tri-tcc 管线（musl_tri 浮点 libc → tri-tcc 多 TU →
+调用方 raw 正确）已通——strtod("3.5") raw mod97=41=oracle。
+下一增量：ecvt 调用面（浮点形参经 freg + punning）。
+
+**验证**：e2e **249 PASS / 0 FAIL / 127 用例**；tri-musl 30 PASS；
+float libc 4928 PASS；run_all_tests --fast **43 套全绿**。
+

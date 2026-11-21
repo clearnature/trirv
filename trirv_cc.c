@@ -1195,6 +1195,9 @@ static void assign_glob_addrs(void){
     }
     STRBASE = pos;                        /* 字符串段接在全局区之后 */
 }
+/* TRVO GLOB 初值回填表（tvo_import 收集，gen_glob_data 末尾按名回填 data） */
+static char **TVO_GNAME; static char **TVO_GHEX; static int NTG, CAPTGN, CAPTGH;
+
 static void gen_glob_data(void){
     for(int i=0;i<NGLOB;i++){
         Global*g=&GLOBS[i];
@@ -1202,6 +1205,19 @@ static void gen_glob_data(void){
         if(g->strinit){                   /* 指针初始化为字符串字面量 */
             Node*strnode=g->init;
             enc_word(strnode->straddr,g->data,9);
+        }
+    }
+    /* TRVO 导入的 GLOB 初值回填（hex → data；tvo_import 收集） */
+    for(int i=0;i<NTG;i++){
+        for(int j=0;j<NGLOB;j++){
+            if(strcmp(GLOBS[j].name,TVO_GNAME[i])) continue;
+            Global*g=&GLOBS[j];
+            const char*h=TVO_GHEX[i];
+            for(int b=0;b<g->size&&h[b*2]&&h[b*2+1];b++){
+                unsigned v; sscanf(h+b*2,"%2x",&v);
+                g->data[b]=(unsigned char)v;
+            }
+            break;
         }
     }
 }
@@ -3054,8 +3070,19 @@ static void tvo_import(const char*path){
     /* 第一遍：先扫 FUNC 边界数，给 OUT 行预留单元前缀改写需要原行 */
     while(fgets(line,sizeof line,fp)){
         if(!strncmp(line,"GLOB ",5)){
-            char name[128],ty[128];
-            if(sscanf(line,"GLOB %127s %127s",name,ty)==2) global_add(name,ty,ty_bytes(ty),NULL);
+            char name[128],ty[128],hex[1024];
+            hex[0]=0;
+            if(sscanf(line,"GLOB %127s %127s %1023s",name,ty,hex)>=2){
+                Global*g=global_add(name,ty,ty_bytes(ty),NULL);
+                if(hex[0]){
+                    TVO_GNAME=grow(TVO_GNAME,&CAPTGN,NTG+1,sizeof(char*));
+                    TVO_GHEX=grow(TVO_GHEX,&CAPTGH,NTG+1,sizeof(char*));
+                    TVO_GNAME[NTG]=strdup(name);
+                    TVO_GHEX[NTG]=strdup(hex);
+                    NTG++;
+                }
+                (void)g;
+            }
         } else if(!strncmp(line,"STR ",4)){
             int len; if(sscanf(line,"STR %d",&len)==1){
                 char *buf=malloc((size_t)len+1);
@@ -3484,8 +3511,17 @@ int main(int argc,char**argv){
         FILE*out=fopen(argv[2],"wb"); if(!out){perror("out");return 1;}
         fprintf(out,"TRVO 1\n");
         fprintf(out,"LBLBASE %d\n",LBL);          /* 标签计数续接用 */
-        for(int i=0;i<NGLOB;i++)
-            fprintf(out,"GLOB %s %s\n",GLOBS[i].name,GLOBS[i].ty);
+        for(int i=0;i<NGLOB;i++){
+            fprintf(stderr,"[dbg] GLOB %s data=%p size=%d\n",GLOBS[i].name,(void*)GLOBS[i].data,GLOBS[i].size);
+            fprintf(out,"GLOB %s %s ",GLOBS[i].name,GLOBS[i].ty);
+            /* 初值字节 hex（gen_glob_data 后 data 有效；坑实录：曾不导初值——
+               导入端 global_add(init=NULL) 全零，strtod_tri 的 SD_P34=3^34
+               等常量全丢 → raw=0。真实管线此前全走源码拼接未触发。） */
+            if(GLOBS[i].data)
+                for(int b=0;b<GLOBS[i].size;b++)
+                    fprintf(out,"%02x",GLOBS[i].data[b]);
+            fprintf(out,"\n");
+        }
         for(int i=0;i<NSTR;i++){
             fprintf(out,"STR %d ",STRLEN[i]);
             for(int k=0;k<STRLEN[i];k++) fprintf(out,"%02x",(unsigned char)STRSEG[i][k]);
