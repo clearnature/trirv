@@ -311,10 +311,16 @@ __int128 域 |exp3| ≤ 47（|v| ∈ [2.1e-7, 4.3e7]）；域外诚实报错
 - -(-0.0) = +0.0（FSUB 0-x；IEEE 要求 -0.0）。
 - C float 不降 TF20 档（精度损失不建模）；TF20 档（funct2=0 算术）留待后续。
 
-**T-1.7 CSR 延后理由**：CSR 指令无 C 语言暴露面——tcc 的 CSR 生成需
-inline asm（tri-asm.c，tccasm 目标后端，未写）或 __builtin_csr 钩子
-（tccgen 侧新增）。ISA 层 6 条 CSR 已由 trirv_asm/trirv_csr_e2e 覆盖；
-tri-tcc 侧待 inline-asm 决策后一并做。
+**T-1.7 CSR 关闭记档（2026-11-21 用户拍板：关闭）**：
+- **ISA 层 ✓**：CSR 语义属规范"语义层"（必须一致，差分测试判定）——两套 VM
+  全实现，trirv_csr_e2e 13/13 常绿 + trirv_fuzz_csr 差分 fuzz 累计 2 万+ case，
+  契约一直在 43 套里跑——T-1.7 原验收标准"csr 契约复跑"已满足。
+- **编译器层关闭（无消费者）**：惯例参照 trirv_cc——只有 `#define O_ZICSR 16`
+  常量，从未生成 CSR；musl/busybox 走 ECALL 用户态不碰 CSR；固件 trap handler
+  本就是手写汇编（trirv_asm.py 已有全部 CSR 助记符）。
+- **届时路径已定**：固件 C 代码真需要 CSR（读 mtime/设 mtvec）时按 RISC-V
+  生态惯例做 **tri-asm.c inline-asm**（gcc/llvm 无 __builtin_csr，裸机 CSR
+  访问的正道就是 inline asm；tri-isa.h 守卫链会让编码表自动同步）。
 
 ## 11. ABI 两项拍板落地记档（2026-11-21，用户拍板：均取建议案）
 
