@@ -316,3 +316,32 @@ inline asm（tri-asm.c，tccasm 目标后端，未写）或 __builtin_csr 钩子
 （tccgen 侧新增）。ISA 层 6 条 CSR 已由 trirv_asm/trirv_csr_e2e 覆盖；
 tri-tcc 侧待 inline-asm 决策后一并做。
 
+## 11. ABI 两项拍板落地记档（2026-11-21，用户拍板：均取建议案）
+
+**char 截断口径 = mod-243 全轨**：char=1 tryte，unsigned 0..242 / signed
+-121..121（3^5 偶容量恰平衡），截断 mod-243/59049；ISO C 8-bit 语义不保留
+（三值 C）。依据：硬件 SB/LB/LBU、trirv_cc:408/:2350、charsign 契约三方
+本已一致，tri-tcc 是唯一例外——5 trit 容量选择是为了硬件接口与 int8 对齐
+降延迟（桥接层事），C 语义跟容器（tryte）走。实现三处：gen_cast 常量折叠
+（0xff 掩码→mod-243+符号阈值）、寄存器驻留值窄化 gen_cvt_tri_narrow
+（REM+符号扩展；内存驻留值经 LBU 读低 tryte 天然 mod，无需扰动）、
+存储路径本就 mod-243。short 同轨 mod-59049。
+e2e 6 例锁定（含 (char)300→57 翻转、243 边界、R 值窄化 58、short 951）。
+
+**struct 9-对齐**：成员起始一律 9-对齐、尺寸 9-圆整（ABI §6 = trirv_cc
+struct_def 现状）。实现：TRI_ALIGN_UP/DOWN 整除式圆整宏（9 非 2 的幂，
+掩码 (c+9-1)&-9 会清 bit3——struct{char c; int*p} 的 p 曾落 offset 1）
+替换 tccgen 五处下行/两处上行掩码位点；type_size int/ptr/float/double
+对齐 1→9；aligned(N) 属性退化为 no-op（属性编码 2^k-only 装不下 9，
+predef max_align_t 的 aligned(16) 由此通过）。
+e2e 6 例锁定（成员偏移 9/尺寸 18/数组步长/char 数组成员/嵌套/纯标量）。
+
+**坑记档**：aligned 属性的 no-op 分支曾插在外层 next() 之后又包一层
+if(tok=='(')——tok 已是 16，条件恒假致 16 未消费（"')' expected (got 16)"
+全案例挂死）；no-op 必须自己消费 N 与 ')' 后 break。
+
+**验证**：e2e 221 PASS / 0 FAIL / 113 用例（char 6 例 + struct 6 例）；
+tri-musl 30 PASS 无回归；run_all_tests --fast 42 套全绿。
+**解锁**：trirv_cc↔tri-tcc 结构体/char 语义互通成立，双工具链差分
+（T-3.1）的前置已齐。
+
