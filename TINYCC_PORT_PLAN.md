@@ -345,3 +345,23 @@ tri-musl 30 PASS 无回归；run_all_tests --fast 42 套全绿。
 **解锁**：trirv_cc↔tri-tcc 结构体/char 语义互通成立，双工具链差分
 （T-3.1）的前置已齐。
 
+## 12. FCVT.W.T 拍板落地记档（2026-11-21，用户拍板：新增 rtz 变体）
+
+**拍板**：新增 FCVT.W.T=(20,8,0,"R")——F-MEM funct 2-trit 恰余的最后 1 槽。
+C 的 (int) cast 与未来 wasm trunc 发它；FCVT.W（round-to-nearest）保留给
+数学转换。依据：RISC-V 规范对 FCVT 强制 rtz 正因 C cast 语义（gcc/llvm 发
+fcvt.w.s rtz）；"参考 RISC-V 只换进制层"原则适用；round 语义当时零真实
+消费者（wasm 管线没用 FCVT，浮点 libc 走整数编码）。ISA 96→97 条。
+
+**实现**：trirv_isa.py（真相源 +1）→ gen_tri_isa_h.py 再生（守卫绿）→
+两 VM（PyVM int() 截断；C VM (__int128_t)val C 式截断——**坑：computed-goto
+引擎的 &&label 分发表必须同步加 [OP_FCVTW_T]，漏了 = goto NULL 段错误**，
+switch 引擎的 case 体不会报错）→ tri-gen gen_cvt_ftoi 换 FCVT.W.T 一行。
+
+**双轨分歧解决**：(int)3.7 变量路径 3 = 常量折叠路径 3（同 char mod-243
+的修复模式——语义跟容器/指令走）。
+
+**验证**：e2e 225 PASS / 0 FAIL / 115 用例（rtz 三向判别：3.7→3、
+-3.7→-3、3.5→3）；tri-musl 30 PASS；run_all_tests --fast 42 套全绿
+（PGO VM 重建后）。
+

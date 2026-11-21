@@ -675,10 +675,14 @@ class VM:
             opn = {"FEQ": "eq", "FLT": "lt", "FLE": "le"}[name.split(".")[0]]
             self.regs[rd] = tf.f_cmp(self.freg[rs1] % MOD, self.freg[rs2] % MOD,
                                      fmt, opn)
-        elif name in ("FCVT.W", "FCVT.F"):
-            # 整数 ↔ 浮点（TF64）：FCVT.W rd=freg→整数写 rd；FCVT.F 整数 rs1→freg[rd]
+        elif name in ("FCVT.W", "FCVT.W.T", "FCVT.F"):
+            # 整数 ↔ 浮点（TF64）：FCVT.W rd=freg→整数写 rd（round-to-nearest）；
+            # FCVT.W.T 向零截断（rtz，C 的 (int) cast / wasm trunc 语义）；
+            # FCVT.F 整数 rs1→freg[rd]
             if name == "FCVT.W":
                 self.regs[rd] = u(round(tf.TF64.decode(self.freg[rs1] % MOD)))
+            elif name == "FCVT.W.T":
+                self.regs[rd] = u(int(tf.TF64.decode(self.freg[rs1] % MOD)))  # int() = 向零截断
             else:
                 self.freg[rd] = tf.TF64.encode(float(s(self.regs[rs1]))) % MOD
         else:

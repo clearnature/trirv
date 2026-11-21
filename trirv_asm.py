@@ -93,7 +93,7 @@ def assemble(src):
 
         if fmt == "R":
             if mn in ("TNEG","TNOT","TPACK","TUNPACK","FSQRT","FSQRT.S",
-                      "FCVT.W","FCVT.F"):
+                      "FCVT.W","FCVT.F","FCVT.W.T"):
                 rd, rs1 = reg(ops[0]), reg(ops[1])
                 rs2 = 0
             else:

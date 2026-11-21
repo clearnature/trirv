@@ -39,9 +39,12 @@ FIXED_TAIL = """\
 #define TRI_IMM7_MAX 1093       /* (3^7-1)/2 */
 #define TRI_IMM13_MAX 797161    /* (3^13-1)/2 */
 
-/* ---- 符号地址补丁表（tri-gen 定义 / tri-link 消费） ---- */
+/* ---- 符号地址补丁表（tri-gen 定义 / tri-link 消费） ----
+ * name/elf_idx 在补丁创建时（codegen 期，Sym 存活）快照：tcc 中 extern
+ * 声明与定义是不同 Sym 对象（声明 Sym 的 c 恒 0）、static 符号的 Sym 在
+ * 其 TU 结束后被回收——存 Sym* 到 writer 期是悬垂指针（垃圾 c 实证）。 */
 enum { TRI_R_LUI_ABS = 1, TRI_R_JAL_SLOT = 2 };
-struct tri_patch { int text_off; int kind; Sym *sym; int addend; unsigned rd; };
+struct tri_patch { int text_off; int kind; const char *name; int elf_idx; int addend; unsigned rd; };
 /* 声明：ST_DATA 宏按 ONE_SOURCE 自动切 static/extern；定义在 tri-gen.c
    （C tentative definition 规则下 `ST_DATA int NTP;` 即定义） */
 ST_DATA struct tri_patch *TRI_PATCHES;

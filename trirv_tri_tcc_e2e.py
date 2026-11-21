@@ -148,6 +148,42 @@ CASES = [
     # ---- 组合 ----
     ("表达式嵌套", "int main(void){ return (1+2)*(3+4)-(5-3); }", 19),
     ("混合宽度", "int main(void){ char c = 10; short s = 1000; int i = 100000; return c + s + (i/1000); }", (10+1000+100)&0xFF),
+
+    # ---- T-1.6 浮点（F 扩展 TF64；避开 .5 边界——VM FCVT.W 是 round 不是 trunc） ----
+    ("浮点加", "int main(void){ double a=1.5; double b=2.5; return (int)(a+b); }", 4),
+    ("浮点乘", "int main(void){ double a=1.5; double b=2.0; return (int)(a*b); }", 3),
+    ("浮点除", "int main(void){ double a=6.0; double b=2.0; return (int)(a/b); }", 3),
+    ("float域", "int main(void){ float a=0.5; float b=0.25; return (int)((a+b)*4); }", 3),
+    ("浮点大于", "int main(void){ double a=2.0; return a>1.5; }", 1),
+    ("浮点小于", "int main(void){ double a=2.0; return a<1.5; }", 0),
+    ("浮点相等", "int main(void){ double a=2.5; return a==2.5; }", 1),
+    ("int转浮点", "int main(void){ int x=8; double d=x; return (int)(d/2); }", 4),
+    ("浮点负数", "int main(void){ double a=-3.0; return (int)a; }", (-3)&0xFF),
+    ("浮点实参", "double add(double a, double b){ return a+b; } int main(void){ return (int)add(1.5,2.5); }", 4),
+    ("浮点全局", "double g=2.5; int main(void){ return (int)(g*2); }", 5),
+    ("浮点组合", "int main(void){ return (int)(1.5*2.0+1.0); }", 4),
+    ("FCVT.W.T截断", "int main(void){ double d=3.7; return (int)d; }", 3),   # 拍板：rtz 变体，双轨合一
+    ("FCVT.W.T负数", "int main(void){ double d=-3.7; return (int)d; }", (-3)&0xFF),  # 向零：-3（round 给 -4）
+    ("FCVT.W.T半途", "int main(void){ double d=3.5; return (int)d; }", 3),   # 向零：3（round-half-even 给 4）
+
+    # ---- char/short mod-243 全轨（拍板 2026-11-21：char=1 tryte，截断 mod-243，
+    #      unsigned 0..242 / signed -121..121；与硬件 SB/LB/LBU、trirv_cc、
+    #      charsign 契约一致；ISO C 8-bit 语义不保留） ----
+    ("char常量折叠", "int main(void){ return (char)300; }", 57),        # RED: 折叠曾 0xff→44
+    ("char 243边界", "int main(void){ char c=243; return c; }", 0),
+    ("signed char 200", "int main(void){ signed char c=200; return c; }", (200-243)&0xFF),
+    ("char R值窄化", "int main(void){ int v=300; return (char)v + 1; }", 58),  # RED: shift 往返 8bit→45
+    ("char 算术提升", "int main(void){ char a=250; char b=10; return a+b; }", 17),
+    ("short mod-59049", "int main(void){ int v=60000; return (short)v; }", (60000 % 59049)&0xFF),  # RED: 8/16bit→96
+
+    # ---- struct 9-对齐（拍板 2026-11-21：成员起始一律 9-对齐、尺寸 9-圆整，
+    #      对齐 ABI §6 与 trirv_cc；char 数组成员元素连续、起始 9-对齐） ----
+    ("struct 成员9对齐", "struct S{char c; int *p;}; struct S s; int main(void){ return (int)((char*)&s.p - (char*)&s); }", 9),
+    ("struct 尺寸", "struct S{char c; int *p;}; int main(void){ return sizeof(struct S); }", 18),
+    ("struct 纯标量间距", "struct P{int a; int b;}; struct P p; int main(void){ return (int)((char*)&p.b - (char*)&p.a); }", 9),
+    ("struct 数组元素步长", "struct S{char c; int *p;}; struct S arr[2]; int main(void){ return (int)((char*)&arr[1] - (char*)&arr[0]); }", 18),
+    ("struct char数组成员", "struct S{char buf[4]; int i;}; struct S s; int main(void){ return (int)((char*)&s.i - (char*)&s); }", 9),
+    ("struct 嵌套", "struct I{int x;}; struct O{char c; struct I in;}; struct O o; int main(void){ return (int)((char*)&o.in - (char*)&o); }", 9),
 ]
 
 # 多 TU 用例（T-2.1）：(name, [src1, src2, ...], expected) —— 同进程多文件编译，

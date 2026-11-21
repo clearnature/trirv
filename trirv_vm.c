@@ -167,7 +167,7 @@ typedef enum {
     OP_AMOMIN, OP_AMOMAX,
     /* F 扩展（P2）：浮点算术/边界/比较/转换 */
     OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV, OP_FSQRT,
-    OP_FLW, OP_FSW, OP_FCVTW, OP_FCVTF,
+    OP_FLW, OP_FSW, OP_FCVTW, OP_FCVTW_T, OP_FCVTF,
     OP_FEQ, OP_FLT, OP_FLE,
     OP_NOP
 } Op;
@@ -214,7 +214,7 @@ static const InstDef IDEFS[] = {
     {19,3,0,'R',OP_FDIV},{19,4,0,'R',OP_FSQRT},   /* TF32 同 opcode，档位由运行期 in->funct2 已定 */
     {20,1,0,'I',OP_FLW},{20,3,0,'S',OP_FSW},      /* TF64 */
     {20,0,0,'I',OP_FLW},{20,2,0,'S',OP_FSW},      /* TF32 */
-    {20,5,0,'R',OP_FCVTW},{20,7,0,'R',OP_FCVTF},
+    {20,5,0,'R',OP_FCVTW},{20,8,0,'R',OP_FCVTW_T},{20,7,0,'R',OP_FCVTF},
     {21,0,1,'R',OP_FEQ},{21,1,1,'R',OP_FLT},{21,2,1,'R',OP_FLE},
     {21,0,0,'R',OP_FEQ},{21,1,0,'R',OP_FLT},{21,2,0,'R',OP_FLE},  /* P3: TF32 比较档 */
 };
@@ -813,6 +813,13 @@ static inline void step(VM *v){
             v->reg[rd]=u((__int128_t)llround(val));
             break;
         }
+        case OP_FCVTW_T:{
+            /* 向零截断（rtz）：C 的 (int) cast / wasm trunc 语义（拍板 2026-11-21） */
+            TFVal fv=tf_dec(&v->tf,v->freg[rs1],TF64_MAX_EXP);
+            double val=fv.sign*fv.mant*pow(3.0,(double)fv.exp3);
+            v->reg[rd]=u((__int128_t)val);   /* C double→整型 cast = 向零截断 */
+            break;
+        }
         case OP_FCVTF:{
             double val=(double)a; uint64_t mi; int e2;
             tf_double_pow2(fabs(val),&mi,&e2);
@@ -902,7 +909,7 @@ static void vm_run_cg(VM *v, long max_steps){
         [OP_FADD]=&&L_FADD,[OP_FSUB]=&&L_FSUB,[OP_FMUL]=&&L_FMUL,
         [OP_FDIV]=&&L_FDIV,[OP_FSQRT]=&&L_FSQRT,[OP_FLW]=&&L_FLW,[OP_FSW]=&&L_FSW,
         [OP_FEQ]=&&L_FEQ,[OP_FLT]=&&L_FLT,[OP_FLE]=&&L_FLE,
-        [OP_FCVTW]=&&L_FCVTW,[OP_FCVTF]=&&L_FCVTF,
+        [OP_FCVTW]=&&L_FCVTW,[OP_FCVTW_T]=&&L_FCVTW_T,[OP_FCVTF]=&&L_FCVTF,
         [OP_NOP]=&&L_NOP,
     };
     Inst *in; int rd,rs1,rs2,oldpc;
@@ -995,6 +1002,9 @@ L_FLE:   {TFFmt*fm=in->funct2?&v->tf:&v->tf32; v->reg[rd]=u(tf_cmp(fm,v->freg[rs
 L_FCVTW: {TFVal fv=tf_dec(&v->tf,v->freg[rs1],TF64_MAX_EXP);
           double val=fv.sign*fv.mant*pow(3.0,(double)fv.exp3);
           v->reg[rd]=u((__int128_t)llround(val));} NEXT();
+L_FCVTW_T: {TFVal fv=tf_dec(&v->tf,v->freg[rs1],TF64_MAX_EXP);
+          double val=fv.sign*fv.mant*pow(3.0,(double)fv.exp3);
+          v->reg[rd]=u((__int128_t)val);} NEXT();   /* rtz：C double→整型 cast */
 L_FCVTF: {double val=(double)a;uint64_t mi;int e2;
           tf_double_pow2(fabs(val),&mi,&e2);
           __uint128_t M=tf_round_mant(mi,e2,TF64_MANT_TRITS-1);

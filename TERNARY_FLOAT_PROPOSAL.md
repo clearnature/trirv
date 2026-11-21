@@ -205,6 +205,7 @@ F 扩展从预留区分配（建议 opcode 19–21 给 TF，TC 顺延），具�
 | `FSQRT.S` | 平方根，穿透 | RV32F FSQRT.S |
 | `FEQ.S` / `FLT.S` / `FLE.S` | 比较，写整数寄存器 | RV32F 同名 |
 | `FCVT.S.W` / `FCVT.W.S` | 整数↔浮点转换（整数按 45-trit 三进制读法） | RV32F FCVT |
+| `FCVT.W.T` | 向零截断变体（rtz）——C 的 (int) cast / wasm trunc 语义；RISC-V FCVT 强制 rtz 的先例。2026-11-21 拍板：F-MEM funct 8 | RV32F FCVT rtz |
 | `FMV.X.W` / `FMV.W.X` | 位模式搬运（若采用方案 B 才需要；方案 A 下退化为编码转换） | RV32F FMV |
 
 > 特殊值处理：NaN 比较全部返回 false（`FEQ`/`FLT`/`FLE` 对 NaN 均为 0），
