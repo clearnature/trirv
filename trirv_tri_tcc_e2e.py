@@ -168,6 +168,34 @@ CASES = [
     ("浮点超域正", "int main(void){ double d=1e300; return d>0; }", 1),   # 扩域：exp3≈628
     ("浮点超域负", "int main(void){ double d=-1e-300; return d<0; }", 1),  # 扩域：exp3≈-628
 
+    # ---- __tint 三值逻辑类型（批次 C1：TAND/TOR/TNOT 直发，TERNARY_COMPAT_PLAN §3.1）----
+    # Kleene 真值表：0=假 1=不定 2=真；TAND=min TOR=max TNOT=2-x
+    ("tint全组合遍历", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "int f=0; for(int i=0;i<3;i++){ for(int j=0;j<3;j++){ __tint a=v[i]; __tint b=v[j]; "
+     "if((int)(a&b) != ((i<j)?i:j)) f|=1; if((int)(a|b) != ((i>j)?i:j)) f|=2; } } return f; }", 0),
+    ("tint或max", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "return (int)(v[2]|v[0])*100 + (int)(v[0]|v[1])*10 + (int)(v[1]|v[2]); }", (2*100+1*10+2)),
+    ("tint与min", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "return (int)(v[2]&v[0])*100 + (int)(v[0]&v[1])*10 + (int)(v[1]&v[2]); }", (0*100+0*10+1)),
+    ("tint非", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "return (int)(~v[0])*100 + (int)(~v[1])*10 + (int)(~v[2]); }", ((-1)*100 + (-2)*10 + (-3)) & 0xFF),  # 带符号: −123→133
+    ("tint德摩根", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "int f=0; for(int i=0;i<3;i++){ for(int j=0;j<3;j++){ __tint a=v[i]; __tint b=v[j]; "
+     "int l=(int)(~(a&b)); int r=(int)((~a)|(~b)); if(l!=r) f|=1; } } return f; }", 0),
+    ("tint相等", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "int f=0; for(int i=0;i<3;i++) for(int j=0;j<3;j++) if(((int)(v[i]==v[j])) != (i==j)) f|=4; "
+     "return f + 100*((int)(v[1]!=v[2])); }", 100),
+    ("tint真值判断", "__tint v[3]; int main(void){ v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "int f=0; if(v[0]) f|=1; if(!v[1]) f|=2; if(!v[2]) f|=4; if(v[2]) f|=8; return f; }", 8),
+    ("tint传参返回", "__tint tmax(__tint a, __tint b){ return a|b; } int main(void){ "
+     "__tint v[3]; v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
+     "return (int)tmax(v[0],v[2]) + (int)tmax(v[1],v[1])*10; }", (2+1*10)),
+    # 全 tryte1 = 全 trit1 = (3^45-1)/2（正大数）；全 tryte2 = 全 trit2 = 3^45-1（带符号 -1）
+    ("tint全trit1不变", "int main(void){ __tint x; char *p=(char*)&x; "
+     "for(int i=0;i<9;i++) p[i]=1; return ((int)x > 0) + ((int)(~x) == (int)x); }", 2),  # TNOT 不变
+    ("tint全trit2清零", "int main(void){ __tint x; char *p=(char*)&x; "
+     "for(int i=0;i<9;i++) p[i]=2; return ((int)x == -1) + ((int)(~x) == 0); }", 2),  # TNOT 清零
+
     # ---- 大整数常量通道（T-2.4 诊断实锤：>2^32 的 VT_INT 字面量曾被 gen_cast
     #      0xffffffff 掩码截断——TriRV int=45 trit 全域需 64 位常量通道） ----
     ("int常量2^32边界", "int mod97(int x){ return x - x/97*97; } int main(void){ int x = 5000000000; return mod97(x); }", 5000000000 % 97),
@@ -222,6 +250,10 @@ NEG_CASES = [
     ("自定义节", "__attribute__((section(\".foo\"))) int g = 7; int main(void){ return g; }", "section"),
     ("移位量超限", "int main(void){ int x=1; return x << 5000; }", "shift"),
     ("移位量负", "int main(void){ int x=1; return x >> -1; }", "shift"),
+    ("tint异或报错", "__tint a; __tint b; int main(void){ __tint c = a ^ b; return 0; }", "tint"),
+    ("tint小于报错", "__tint a; __tint b; int main(void){ return a < b; }", "tint"),
+    ("tint算术报错", "__tint a; __tint b; int main(void){ __tint c = a + b; return 0; }", "tint"),
+    ("tint隐式混算报错", "int main(void){ int i=1; __tint t=(__tint)2; return (int)(i & t); }", "tint"),
 ]
 
 
@@ -241,12 +273,23 @@ def load_trv(path):
 
 def main():
     global skipped, passed, failed
+    # __tint 特性检测：未实现时 TINT 组 SKIP（TERNARY_COMPAT_PLAN 批次 C1 待专项）
+    with open("/tmp/_tint_probe.c", "w") as _f:
+        _f.write("__tint x;\nint main(void){ return (__tint)0; }\n")
+    _r = subprocess.run([TCC, "-nostdlib", "/tmp/_tint_probe.c", "-o", "/tmp/_tint_probe.trv"],
+                        capture_output=True, text=True, timeout=30)
+    _tint_ok = _r.returncode == 0
+    if not _tint_ok:
+        print("-- __tint 未实现：TINT 组 SKIP（TERNARY_COMPAT_PLAN 批次 C1 待专项）--")
     if not os.path.exists(TCC):
         print("tri-tcc 未构建（%s 不存在）—— 全部 SKIP" % TCC)
         print("\ntri-tcc 契约：0 PASS / 0 FAIL / %d 用例" % (len(CASES) + len(NEG_CASES)))
         sys.exit(0)
 
     for name, src, want in CASES:
+        if not _tint_ok and name.startswith(("tint",)):
+            skipped += 1
+            continue
         cpath = "/tmp/tri_e2e_%s.c" % abs(hash(name))
         tpath = "/tmp/tri_e2e_%s.trv" % abs(hash(name))
         with open(cpath, "w") as f:
@@ -288,6 +331,9 @@ def main():
 
     # NEG：编译必须失败且报错信息含子串（诚实报错契约）
     for name, src, sub in NEG_CASES:
+        if not _tint_ok and name.startswith(("tint",)):
+            skipped += 1
+            continue
         cpath = "/tmp/tri_e2e_neg_%s.c" % abs(hash(name))
         tpath = "/tmp/tri_e2e_neg_%s.trv" % abs(hash(name))
         with open(cpath, "w") as f:
