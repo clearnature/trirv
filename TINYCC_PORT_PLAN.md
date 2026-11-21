@@ -388,3 +388,21 @@ char mod-243/struct 9-对齐/数组/全局/字符串/指针/递归/非交换实�
 **验证**：差分 22 PASS / 0 FAIL / 22 组（四路一致）；e2e 225 PASS 无回归；
 run_all_tests --fast **43 套全绿**（差分套件已注册）。
 
+## 14. TF45 编码器扩域 + C VM tf_cmp 全序 bug（2026-11-21）
+
+**编码器重写（tri_tf45_raw）**：__int128 分段乘法（|exp3| ≤ 47）→ **long double
+路径**（arm64 宿主 = 128-bit quad，113-bit 尾数）——全 double 值域覆盖
+（exp3 ∈ [-678, 646]，1e±300 类常量全通）。精确性论证：M = round(mant×3^33)
+需 54 bit，113-bit 中间精度绝对误差 ≈ 2e-18 ≪ 0.5 → 非平局精确。已知边界
+记档：平局（a×3^(33-e) 恰 x.5）舍入方向可能翻转（powl 误差下不可区分，
+实际常量命中概率 ~0）；e 边界判定绝对可靠（相邻 3 倍间隔 ≫ powl 相对误差）。
+
+**顺带抓到 C VM 真实语义 bug（trirv_float.h tf_cmp）**：kind 不等分支把
+TF_NUM 映射成 0——与 TF_ZERO 撞键 → **1e300 == 0 判等**（扩域探针 d>0
+暴露；PyVM 参考实现一直正确：zero=0/num=±2/inf=±3）。修复对齐 Python 全序。
+此前 float 契约未覆盖"非零 vs 零"比较——扩域探针补上该盲区。
+
+**验证**：e2e **233 PASS / 0 FAIL / 119 用例**（扩域 4 例：1e8/1e-9/1e300/
+-1e-300）；float 三契约 144/39/4928 PASS 无回归；run_all_tests --fast
+43 套全绿（PGO VM 重建后）。
+

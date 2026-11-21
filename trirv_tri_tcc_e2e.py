@@ -163,6 +163,10 @@ CASES = [
     ("浮点全局", "double g=2.5; int main(void){ return (int)(g*2); }", 5),
     ("浮点组合", "int main(void){ return (int)(1.5*2.0+1.0); }", 4),
     ("FCVT.W.T截断", "int main(void){ double d=3.7; return (int)d; }", 3),   # 拍板：rtz 变体，双轨合一
+    ("浮点大常量", "int main(void){ double d=1e8; return (int)(d/1e6); }", 100),   # TF45 扩域：精确整数常量
+    ("浮点小常量", "int main(void){ double d=1e-9; return (int)(d*1e9+0.5); }", 1),  # 扩域：1e-9 装载+乘法+round
+    ("浮点超域正", "int main(void){ double d=1e300; return d>0; }", 1),   # 扩域：exp3≈628
+    ("浮点超域负", "int main(void){ double d=-1e-300; return d<0; }", 1),  # 扩域：exp3≈-628
     ("FCVT.W.T负数", "int main(void){ double d=-3.7; return (int)d; }", (-3)&0xFF),  # 向零：-3（round 给 -4）
     ("FCVT.W.T半途", "int main(void){ double d=3.5; return (int)d; }", 3),   # 向零：3（round-half-even 给 4）
 

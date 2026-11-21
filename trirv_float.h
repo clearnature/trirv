@@ -263,11 +263,18 @@ static inline int tf_cmp(const TFFmt *f, __uint128_t a, __uint128_t b, int op,
     /* 全序：负inf < 负数 < ±0 < 正数 < 正inf */
     int c;
     if (va.kind != vb.kind || va.kind != TF_NUM) {
-        int ka = va.kind == TF_ZERO ? 0 : (va.kind == TF_INF ? (va.sign > 0 ? 2 : -2) : 0);
-        int kb = vb.kind == TF_ZERO ? 0 : (vb.kind == TF_INF ? (vb.sign > 0 ? 2 : -2) : 0);
+        /* 全序键（对齐 trirv_float.py f_cmp）：zero=0、num=±2、inf=±3。
+           坑实录：曾把 TF_NUM 也映射成 0——与 TF_ZERO 撞键 → 1e300 == 0
+           判等（TF45 扩域探针 d>0 暴露；PyVM 参考实现一直正确）。 */
+        int ka = va.kind == TF_ZERO ? 0
+               : (va.kind == TF_INF ? (va.sign > 0 ? 3 : -3)
+                                    : (va.sign > 0 ? 2 : -2));
+        int kb = vb.kind == TF_ZERO ? 0
+               : (vb.kind == TF_INF ? (vb.sign > 0 ? 3 : -3)
+                                    : (vb.sign > 0 ? 2 : -2));
         if (ka != kb) c = (ka > kb) ? 1 : -1;
         else if (va.kind == TF_INF && vb.kind == TF_INF) c = (va.sign > vb.sign) - (va.sign < vb.sign);
-        else c = 0;
+        else c = 0;  /* 同键（±0 互等 / 同号同 kind 不可能到这） */
     } else {
         if (va.sign != vb.sign) c = va.sign > vb.sign ? 1 : -1;
         else {
