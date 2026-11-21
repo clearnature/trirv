@@ -365,3 +365,26 @@ switch 引擎的 case 体不会报错）→ tri-gen gen_cvt_ftoi 换 FCVT.W.T �
 -3.7→-3、3.5→3）；tri-musl 30 PASS；run_all_tests --fast 42 套全绿
 （PGO VM 重建后）。
 
+## 13. T-3.1 双工具链差分套件 + gsym_addr 后向跳转缺陷（2026-11-21）
+
+**新套件 `trirv_difftest_tcc.py`（22 组）**：同一 C 源 → trirv_cc 与 tri-tcc
+各编 TRV1 → 双 VM 四路执行，结果必须全同且等于 C 语义期望。锁定面：算术/
+char mod-243/struct 9-对齐/数组/全局/字符串/指针/递归/非交换实参/比较物化/
+二维数组/控制流组合（continue+break）/位运算方案 A/移位（含 floor 与变量量）。
+浮点（trirv_cc 无 F 代码生成）、struct 按值（tri-tcc 诚实报错）、多 TU
+（trirv_cc 单 TU）不在套件内——各自契约覆盖。
+
+**首跑即抓到真缺陷：gsym_addr 后向跳转回绕**——`uint32_t 的 (a - t)` 无符号
+减法对后向绑定回绕（(64-96) → 4294967264 → /4 = 1073741816 槽），continue
+绑定（for 循环 gsym_addr(b, d)，a<site）编出垃圾 JAL → break/continue 全废
+（此前 e2e 从未测过 continue/break！）。前向（if/else、while 退出）侥幸全对。
+修复：槽差用有符号运算 `(a_ - (int)t)/4`。插桩定位：gsym_addr 加临时 trace，
+看到 slot_off=1073741816 实锤后移除。
+
+**其余失败均为套件期望值算错**（混合算术 b/a=0、指针算术 a[2]=9、
+二维数组 12+1=13）与一个能力面外用例（trirv_cc 不支持 sizeof(struct)，
+移出——tri-tcc e2e 已锁）。**四路一致的用例即编译器正确，期望值错了改期望。**
+
+**验证**：差分 22 PASS / 0 FAIL / 22 组（四路一致）；e2e 225 PASS 无回归；
+run_all_tests --fast **43 套全绿**（差分套件已注册）。
+
