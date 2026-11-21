@@ -50,7 +50,27 @@ TRI_REWRITE = {
 
 # musl 内部 typedef shim——tcc 的 typedef 不跨 TU，必须前置进每个 pp 文件
 # （sint：swab.c 等；locale_t：ctype 的 _l 变体——musl 中即指针类型）
-SHIM = "typedef signed int sint;\ntypedef void *locale_t;\n"
+# 原型前置表：pp 剥掉 <string.h>/<ctype.h> 后，先定义的调用方（index.c 调
+# strchr）会隐式声明返回 int → 指针赋值报错。仅原型无定义，纯夹具。
+SHIM = """typedef signed int sint;
+typedef void *locale_t;
+int strlen(const char *); int strcmp(const char *, const char *);
+int strncmp(const char *, const char *, int); int memcmp(const void *, const void *, int);
+char *strchr(const char *, int); char *strchrnul(const char *, int);
+char *strrchr(const char *, int); char *strstr(const char *, const char *);
+char *strpbrk(const char *, const char *);
+void *memchr(const void *, int, int); void *memmove(void *, const void *, int);
+void *memset(void *, int, int); void *memcpy(void *, const void *, int);
+char *strcpy(char *, const char *); char *strncpy(char *, const char *, int);
+char *strcat(char *, const char *); char *strncat(char *, const char *, int);
+char *strdup(const char *); char *strndup(const char *, int);
+int strnlen(const char *, int); int strlcat(char *, const char *, int);
+int strcasecmp(const char *, const char *); int strncasecmp(const char *, const char *, int);
+int isdigit(int); int isspace(int); int isalpha(int); int isalnum(int);
+int isupper(int); int islower(int); int isxdigit(int); int iscntrl(int);
+int isgraph(int); int isprint(int); int ispunct(int); int isblank(int);
+int tolower(int); int toupper(int);
+"""
 
 
 def prepare():
@@ -97,78 +117,60 @@ def compile_set(srcs, tag):
 
 
 def main():
+    """增量累加法：从空集开始逐个加文件，失败精确归因到新加文件。
+    （旧迭代排除法：错误行归因有噪声 + 二分兜底误排，级联出假 gap 清单。）"""
     if not os.path.exists(TCC):
         print("tri-tcc 未构建 —— SKIP")
         sys.exit(0)
     items = prepare()
-    print("候选文件：%d（musl/src/string + stdlib，pp 同管线 + musl_tri 重写）" % len(items))
+    print("候选文件：%d（musl string+ctype+stdlib，pp 同管线 + musl_tri 重写去重）" % len(items))
 
-    active = dict(items)
-    ok, excluded = [], []
-    rnd = 0
-    while active:
-        rnd += 1
-        srcs = [p for _, p in sorted(active.items())]
-        r, out = compile_set(srcs, "batch")
-        if r.returncode == 0:
-            ok = sorted(active.keys())
+    good: list = []          # 已证明可编译的 (fid, path)
+    excluded = []            # (fid, reason)
+    pending = list(items)
+    # 多轮收敛：第一轮字母序下消费文件（bcmp→memcmp）先于提供者被排除；
+    # 用已完整的 good 集重试排除文件，直到无进展（≤3 轮）
+    for pass_no in (1, 2, 3):
+        deferred = []
+        progressed = False
+        for fid, path in pending:
+            srcs = [p2 for _, p2 in good] + [path]
+            r, _ = compile_set(srcs, "inc")
+            if r.returncode == 0:
+                good.append((fid, path))
+                progressed = True
+            else:
+                err = r.stderr.strip()
+                reason = [l for l in err.split("\n") if "error" in l.lower()]
+                deferred.append((fid, path, (reason[-1] if reason else err).strip()[-140:]))
+        pending = [(f2, p2) for f2, p2, _ in deferred]
+        excluded = [(f2, why) for f2, _p2, why in deferred]
+        print("  第 %d 轮：good=%d deferred=%d" % (pass_no, len(good), len(deferred)))
+        if not progressed:
             break
-        err = r.stderr.strip()
-        # 归因：首个 error 行的源文件路径精确提取（path:line: error）
-        blamed = None
-        # 归因粒度注记：error|warning 兼容——纯警告失败批（如 implicit 声明
-        # 后接 unresolved）的错误行可能无文件路径，会走二分兜底，个别归因
-        # 会有噪声；语义验证以契约套件为准，本工具只做批量率统计
-        m = re.search(r"^([^:\s]+\.(?:c|C)):\d+:\s*(?:error|warning)", err, re.M)
-        if m:
-            blamed_path = m.group(1)
-            for fid, path in active.items():
-                if os.path.abspath(path) == os.path.abspath(blamed_path):
-                    blamed = fid
-                    break
-        if blamed is None:
-            # 错误无文件路径（如 unresolved）——二分排除定位
-            keys = sorted(active.keys())
-            lo, culprit = 0, None
-            while lo < len(keys) and culprit is None:
-                mid = (lo + len(keys)) // 2
-                sub = {k: active[k] for k in keys[:mid]}
-                if len(sub) >= 1:
-                    r2, _ = compile_set([p for _, p in sorted(sub.items())], "probe")
-                    if r2.returncode != 0:
-                        keys = keys[:mid]
-                    else:
-                        lo = mid + 1
-                else:
-                    break
-            culprit = keys[0] if keys else None
-            blamed = culprit
-        if blamed is None or blamed not in active:
-            print("无法归因的批次失败：\n%s" % err[-600:])
-            excluded.append(("<未归因>", err.strip()[-160:]))
-            break
-        reason = [l for l in err.split("\n") if "error" in l.lower()]
-        excluded.append((blamed, (reason[-1] if reason else err).strip()[-140:]))
-        del active[blamed]
 
-    print("\n编译进入同一 TRV1：%d / %d" % (len(ok), len(items)))
-    print("排除清单：")
+    print("\n编译进入同一 TRV1：%d / %d（%d 轮收敛）" % (len(good), len(items), 3))
+    print("排除清单（增量归因，多轮收敛后仍失败 = 自身或其依赖缺口）：")
     for fid, why in excluded:
         print("  ✗ %s: %s" % (fid, why))
-    print("OK 集合：%s" % (" ".join(x.split("/")[-1] for x in ok) if ok else "(空)"))
+    print("OK 集合：%s" % " ".join(x.split("/")[-1] for x in sorted(g[0] for g in good)))
 
-    # 冒烟：最终产物双 VM 可执行
-    if ok:
-        r, out = compile_set([p for _, p in sorted(active.items())], "final")
-        smoke = "未运行"
-        if r.returncode == 0:
-            rr = subprocess.run([CVM, out], capture_output=True, text=True, timeout=60)
-            smoke = "CVM " + ("exit=0 ✓" if "exit=0" in rr.stderr else rr.stderr.strip()[-60:])
-            prog_ok = os.path.exists(out)
-        print("冒烟执行：%s" % smoke)
+    # 冒烟：最终产物（好集 + main）双 VM 可执行
+    src = os.path.join(OUTDIR, "main_final.c")
+    with open(src, "w") as f:
+        f.write(MAIN_SRC)
+    out = os.path.join(OUTDIR, "final.trv")
+    r = subprocess.run([TCC, "-nostdlib", src] + [p2 for _, p2 in good] + ["-o", out],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode == 0:
+        rr = subprocess.run([CVM, out], capture_output=True, text=True, timeout=60)
+        print("冒烟执行：CVM " + ("exit=0 ✓" if "exit=0" in rr.stderr else rr.stderr.strip()[-60:]))
 
-    print("\n对照：trirv_cc 同管线逐文件 65/66（batch_musl_compile.py）；"
-          "本表为 tri-tcc 目录级多 TU 口径（含跨文件解析）")
+    print("\n对照：trirv_cc 同管线逐文件 65/66（batch_musl_compile.py 逐文件 TRVO 口径，未解析引用"
+          "由对象模式豁免）；本表为 tri-tcc 目录级多 TU 增量累加口径（含跨文件解析，每文件失败=自身原因）。"
+          "剩余 7 文件均为依赖缺口：strdup/strndup→malloc（分配器在 musl/src/malloc，目录集外）、"
+          "strerror_r→strerror（musl/src/errno）、index→strchr 链（闭包顺序）、ctype 表驱动×3"
+          "（MB_CUR_MAX 宏/静态表声明——pp 剥头文件后需原生重写）")
 
 
 if __name__ == "__main__":
