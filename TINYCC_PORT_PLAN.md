@@ -276,3 +276,43 @@ LINE 里全局引用是导出期数字地址（`LUI t1, 9`），导入器按 GLO
 循环（多 TU 用例名出现在 NEG 检查、空 c 文件编译"意外成功"）——编辑测试
 框架后先跑一遍确认循环结构。
 
+## 10. T-1.6 F 扩展记档（2026-11-21，tri-tcc 浮点代码生成全绿）
+
+**能力**：double/float/long double 统一 TF64 档（type_size 均 9 tryte）——
+FADD/FSUB/FMUL/FDIV（funct2=1）、FEQ/FLT/FLE 比较物化（GT/GE 交换操作数，
+结果 int 0/1 非 VT_CMP）、FLW/FSW（搬 raw 与档位无关）、FCVT.F/FCVT.W
+双向转换、TOK_NEG = 0-x（FCVT.F 读整数 0 产 +0.0，再 FSUB；TriRV 无 FNEG）、
+浮点实参 fa0-fa7（prolog FSW / call gv(RC_F)）、浮点常量经 tccgen 既有常量池
+（gv 时转 rodata 左值）+ init_putv TF64 base-243 编码。freg 独立堆映射
+tcc r8-15 → fa0-fa7，与整数 x0-x31 分离。
+e2e 13 例全绿（197 PASS / 0 FAIL / 101 用例）；tri-musl 30 PASS 无回归。
+
+**三处新坑（防复发）**：
+1. **tri_cmp3 负指数**：`for(i<e) rhs*=3` 对负 e 得 rhs=1——修正环永真
+   → 编译器死循环（float域 0.5 暴露）。修：负指数走 ×3^|e| 后
+   tri_cmp_pow2（商+余数精确比较），修正环加 ±8 保险。
+2. **tcc token 顺序**：TOK_GE=0x9d 在 TOK_LE=0x9e/TOK_GT=0x9f 之前——
+   `op<=TOK_GE` 区间检查排除 LE/GT（"bad float op 159" 暴露）。比较族
+   分派一律显式 switch（与 D2 物化表同源教训）。
+3. **浮点常量池归 tccgen 管**：gv 时浮点常量已被前端转成 rodata 左值
+   （tccgen.c:1910），常量字节由 init_putv 写入——TF64 编码必须接进
+   init_putv 的 VT_FLOAT/VT_DOUBLE/VT_LDOUBLE（曾只接 gen 侧导致 rodata
+   里是 IEEE base-256）。tri_tf64_raw 提为 ST_FUNC 共用。
+
+**TF64 编码器**（tri_tf64_raw，ST_FUNC）：整数精确 round-half-up，
+__int128 域 |exp3| ≤ 47（|v| ∈ [2.1e-7, 4.3e7]）；域外诚实报错
+（bignum 编码器留待后续，覆盖 1e-9/1e8/1e300 类常量）。
+
+**语义偏差记档（待 ISA 层拍板）**：
+- **FCVT.W 是 round-to-nearest（VM 实现），非 C 的向零截断**——
+  (int)3.7 → 4（变量路径）；常量路径被前端折叠成 host trunc（3）。
+  同一表达式两条路径分歧（同 §1.5 char 截断双轨）。候选：ISA 加 FTRUNC
+  或 tri-gen 软件截断（比较修正法）。
+- -(-0.0) = +0.0（FSUB 0-x；IEEE 要求 -0.0）。
+- C float 不降 TF32 档（精度损失不建模）；TF32 档（funct2=0 算术）留待后续。
+
+**T-1.7 CSR 延后理由**：CSR 指令无 C 语言暴露面——tcc 的 CSR 生成需
+inline asm（tri-asm.c，tccasm 目标后端，未写）或 __builtin_csr 钩子
+（tccgen 侧新增）。ISA 层 6 条 CSR 已由 trirv_asm/trirv_csr_e2e 覆盖；
+tri-tcc 侧待 inline-asm 决策后一并做。
+

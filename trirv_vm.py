@@ -678,9 +678,9 @@ class VM:
         elif name in ("FCVT.W", "FCVT.F"):
             # 整数 ↔ 浮点（TF64）：FCVT.W rd=freg→整数写 rd；FCVT.F 整数 rs1→freg[rd]
             if name == "FCVT.W":
-                self.regs[rd] = u(round(tf.decode(self.freg[rs1] % MOD)))
+                self.regs[rd] = u(round(tf.TF64.decode(self.freg[rs1] % MOD)))
             else:
-                self.freg[rd] = tf.encode(float(s(self.regs[rs1]))) % MOD
+                self.freg[rd] = tf.TF64.encode(float(s(self.regs[rs1]))) % MOD
         else:
             raise RuntimeError(f"未实现指令: {name}")
 
