@@ -5,12 +5,12 @@
 （k trit 恰好存下 M；最高 trit ∈{1,2}，等价于 base-3 的隐含前导 1，值域 [1,3)）
 
 档位：
-  TF32: 1 符号 + 5 阶码 + 14 尾数 = 20 trit, bias=121,  max_exp=3^5-1=242
-  TF64: 1 符号 + 10 阶码 + 34 尾数 = 45 trit, bias=29524, max_exp=3^10-1=59048
+  TF20: 1 符号 + 5 阶码 + 14 尾数 = 20 trit, bias=121,  max_exp=3^5-1=242
+  TF45: 1 符号 + 10 阶码 + 34 尾数 = 45 trit, bias=29524, max_exp=3^10-1=59048
 
 raw 布局（trit 位从高到低）：
-  TF32: [s:1][E:5][M:14]   → raw = s·3^19 + E·3^14 + M
-  TF64: [s:1][E:10][M:34]  → raw = s·3^44 + E·3^34 + M
+  TF20: [s:1][E:5][M:14]   → raw = s·3^19 + E·3^14 + M
+  TF45: [s:1][E:10][M:34]  → raw = s·3^44 + E·3^34 + M
 
 特殊值：
   E=0,            M=0     → ±0      （符号由 s 决定）
@@ -241,10 +241,10 @@ def _round_mantissa(mant_int, exp2, e, k):
     return q
 
 
-TF32 = FloatFormat("TF32", exp_trits=5, mant_trits=14, bias=121)
-TF64 = FloatFormat("TF64", exp_trits=10, mant_trits=34, bias=29524)
+TF20 = FloatFormat("TF20", exp_trits=5, mant_trits=14, bias=121)
+TF45 = FloatFormat("TF45", exp_trits=10, mant_trits=34, bias=29524)
 
-FORMATS = {"TF32": TF32, "TF64": TF64}
+FORMATS = {"TF20": TF20, "TF45": TF45}
 
 
 # ===========================================================================

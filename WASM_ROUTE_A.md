@@ -39,8 +39,8 @@ Wasm 按 byte（8 bit，256 个值）编址，TriRV 按 tryte（5 trit，**243 �
 | i32（寄存器） | mod 2^32 | 45 trit + 显式规整 | **保真** | add/sub 各 2 条、mul 11 条 |
 | i32（内存） | 4 byte | 4 tryte = 平衡 243 位 | 4 byte 视图内保真 | store 4 次归位、load 4 次 LB |
 | i64 | mod 2^64 | 未支持 | — | 45 trit 装得下，回绕另计 |
-| f32（P3） | IEEE binary32 | **TF32**（1+5+14 trit）三档原生格式 | 档位自主定义，非 IEEE 逐位 | 常量编译期穿透（IEEE→TF raw）；四则/sqrt/比较/load/store 直通 F 指令 |
-| f64（P3） | IEEE binary64 | **TF64**（1+10+34 trit）三档原生格式 | 档位自主定义，非 IEEE 逐位 | 同上；尾数 34 trit，指数无 double 值域约束 |
+| f32（P3） | IEEE binary32 | **TF20**（1+5+14 trit）三档原生格式 | 档位自主定义，非 IEEE 逐位 | 常量编译期穿透（IEEE→TF raw）；四则/sqrt/比较/load/store 直通 F 指令 |
+| f64（P3） | IEEE binary64 | **TF45**（1+10+34 trit）三档原生格式 | 档位自主定义，非 IEEE 逐位 | 同上；尾数 34 trit，指数无 double 值域约束 |
 
 > 浮点 **不照搬 IEEE 语义**：IEEE 位模式只作为 wasm 字节码的外部输入编码，在编译期
 > 由宿主解码成 host double 再量化成 TF raw；运行时 VM 只见 TF raw，只跑三进制浮点

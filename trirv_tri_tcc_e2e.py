@@ -149,7 +149,7 @@ CASES = [
     ("表达式嵌套", "int main(void){ return (1+2)*(3+4)-(5-3); }", 19),
     ("混合宽度", "int main(void){ char c = 10; short s = 1000; int i = 100000; return c + s + (i/1000); }", (10+1000+100)&0xFF),
 
-    # ---- T-1.6 浮点（F 扩展 TF64；避开 .5 边界——VM FCVT.W 是 round 不是 trunc） ----
+    # ---- T-1.6 浮点（F 扩展 TF45；避开 .5 边界——VM FCVT.W 是 round 不是 trunc） ----
     ("浮点加", "int main(void){ double a=1.5; double b=2.5; return (int)(a+b); }", 4),
     ("浮点乘", "int main(void){ double a=1.5; double b=2.0; return (int)(a*b); }", 3),
     ("浮点除", "int main(void){ double a=6.0; double b=2.0; return (int)(a/b); }", 3),

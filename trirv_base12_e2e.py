@@ -80,7 +80,7 @@ check("对照 12 能被 3 整除", 12 % 3, 0)
 check("对照 10 不能被 3 整除", 10 % 3, 1)
 
 # ---- 8. 记数位换算（执行层 trit → 表示层十二进制位） ----
-# log_12(3) ≈ 0.442114；34 trit 是 TF64 尾数宽度
+# log_12(3) ≈ 0.442114；34 trit 是 TF45 尾数宽度
 ratio = math.log(3) / math.log(12)
 check("trit→十二进制位比例", round(b12.trit_to_digits(1), 6), round(ratio, 6))
 check("34 trit 换算", round(b12.trit_to_digits(34), 2), round(34 * ratio, 2))

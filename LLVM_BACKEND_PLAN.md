@@ -87,7 +87,7 @@ IR → TriRV 才需要三进制后端。这意味着：
 | **L-2.5** | M 扩展 | 8 | mul90 低半/MULH floor 语义对齐 trirv_vm，mdiff 复跑 | L-1.4 |
 | **L-2.6** | CSR/trap | 8 | Zicsr6 + MRET/WFI，csr_diff 复跑 | L-1.4 |
 | **L-2.7** | TA 原子 | 9 | LR/SC/AMO，fuzz_mem 原子段复跑 | L-2.2 |
-| **L-2.8** | F 扩展 | 20 | TF32/TF64 档位，语义对齐 trirv_float.h（tf_ratio 舍入），float_isa/wasm 契约复跑 | L-1.4 |
+| **L-2.8** | F 扩展 | 20 | TF20/TF45 档位，语义对齐 trirv_float.h（tf_ratio 舍入），float_isa/wasm 契约复跑 | L-1.4 |
 | **L-2.9** | 全覆盖守卫：trirv_isa.py INST（96 条，单一真相源）自动生成/校验 TriRV.td | — | ISA 表与 td 逐条对齐的自动一致性测试（防漂移） | L-2.1..2.8 |
 
 ### P-3 优化与代码质量（寄存器式收益兑现）

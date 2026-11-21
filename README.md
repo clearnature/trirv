@@ -199,7 +199,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
 | `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
 | `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
-| `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF32/TF64） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
+| `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF20/TF45） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
 | `trirv_float_isa_e2e.py`（F 扩展指令 P2/P3：FADD/FSUB/FMUL/FDIV/FSQRT/FLW/FSW/FEQ/FLT/FLE + .S 双档） | **39/39**（编码往返 + PyVM 语义 + PyVM×C VM 字节差分；`tf_ratio` 整数正确舍入彻底消除跨 VM 1 ulp 漂移） |
 | `trirv_base12_e2e.py`（十二进制表示层：to12/from12/frac_to12 + 数码定义 + 进制下标） | **72/72**（基数自指：'12'在十二进制=14、本进制写作'10'；18₁₂/20₁₀ 标注往返；round-trip 0 错） |
 | `trirv_tritref_test.py`（tryte 数组参考实现，无二进制容器） | 46164/46164（差分）+ 3 个端到端程序 |
@@ -241,7 +241,7 @@ $ ./trirv_vm /tmp/t.trv
    **musl 覆盖总账（2026-11-20 P4 后）**：src/string + src/stdlib 共 66 文件
    （非宽字符），批量管线 = 65 编译 OK / 1 SKIP（explicit_bzero 内联汇编屏障）/ 0 FAIL。
    浮点系 5 文件（strtod/atof/ecvt/fcvt/gcvt）自 P4 起经 musl_tri 三进制原生重写
-   （TF64 raw ABI，Fraction 精确 oracle 契约锁定），"TriRV 无浮点" SKIP 理由撤销。
+   （TF45 raw ABI，Fraction 精确 oracle 契约锁定），"TriRV 无浮点" SKIP 理由撤销。
    **musl_tri/ = 三进制原生改编层**：上游依赖二进制位运算语义的文件
    在此重写（纯三进制原则：语义适配硬件，不跳过），每文件注释逐条
    标注与上游差异。已重写：memset/memcpy/strcspn/strspn/strstr/memmem/
@@ -251,7 +251,7 @@ $ ./trirv_vm /tmp/t.trv
    （strtod/atof/ecvt/fcvt/gcvt）。原为"永久 SKIP：TriRV 无浮点"，因 wasm 必然涉及 f32/f64
    且用户定调"三进制浮点格式属 ISA 演进"，已立专项：**尾数[1,3)穿透宿主 FPU + 指数走整数
    ALU，ISA 格式与语义保持三进制**。P1–P3+P5 已完成（F 扩展 74+ 指令、wasm 浮点对接
-   112 例、穿透成本实测），P4 落地 musl_tri/strtod_tri.c + ecvt_tri.c：TF64 raw ABI、
+   112 例、穿透成本实测），P4 落地 musl_tri/strtod_tri.c + ecvt_tri.c：TF45 raw ABI、
    6 字走位 + 精确终除、Fraction oracle 契约（`trirv_float_libc_e2e.py`）、批量管线
    65/66 编译。关键更正（2026-11-20）：binary64 的"64 位"是 IEEE 软件规范而非物理事实，
    不拿 double 值域当格式天花板——全阶码可表示，无"穿透缺口"。立项书见
@@ -296,7 +296,7 @@ $ ./trirv_vm /tmp/t.trv
 - 三路差分 112/112：参考解释器 × Python VM × C VM，含 hello world 中文输出字节一致
 - **浮点已支持（P3，2026-11-20）**：f32/f64 常量在**编译期穿透** IEEE 位模式 → TF raw，
   运行时只跑三进制 F 指令；四则/sqrt/比较/load/store/浮点局部变量/双档共存全通，
-  19 个浮点用例三路字节一致。档位自主定义（TF32=1+5+14、TF64=1+10+34 trit），
+  19 个浮点用例三路字节一致。档位自主定义（TF20=1+5+14、TF45=1+10+34 trit），
   不照搬 IEEE 语义；详见 `TERNARY_FLOAT_PROPOSAL.md` §5.2/§5.3
 - **穿透成本已实测（P5，2026-11-20）**：FADD 105ns（9.1×ADD），其中 ~88% 是 base-3
   编解码、FPU 本体 ~1ns——税在进制转换不在浮点运算；FLW/FSW≈LW/SW（边界零税）；

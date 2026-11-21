@@ -50,7 +50,7 @@
    加法/乘法电路，没有"64 位浮点"这个物理实体。因此：
    - 格式的阶码/尾数宽度、值域**由我们在纯三进制下自主定义**，对标 f32/f64 只是背景参照，
      不是设计约束、不是验收标准、不是精度上限。
-   - 不存在"TF64 超出 double 值域所以有缺口"这种论证 —— 那是把软件容器错当物理边界。
+   - 不存在"TF45 超出 double 值域所以有缺口"这种论证 —— 那是把软件容器错当物理边界。
 5. **执行层与表示层分离（2026-11-20 用户定调）**：
    两个正交维度必须分清，不得互相冒充（详见 ISA §1.2.1）：
 
@@ -62,7 +62,7 @@
    - CPU 里没有"十进制电路"，十进制是二进制硬件的**表示层**；同理，三进制硬件的
      表示层选**十二进制**（`trirv_base12.py`）。`12 % 3 == 0` 而 `10 % 3 == 1` ——
      十二进制里 `1/3 = 0.4` 有限位、十进制 `1/3 = 0.333…` 无限，故 12 更契合三等分。
-   - **精度/数值的执行层度量是 trit**（如 TF64 尾数 34 trit）；"十进制有效位""十二进制位"
+   - **精度/数值的执行层度量是 trit**（如 TF45 尾数 34 trit）；"十进制有效位""十二进制位"
      都是表示层记数换算，不作为定义依据。本文凡出现位数换算均标注"表示层记数"。
 6. **数码符号与进制标注（2026-11-20 用户定调）**：表示层必须显式定义自己的数码与标注法，
    不得借用十进制写法冒充本进制定义：
@@ -80,7 +80,7 @@
 > 判定标准（与 §1.2 一致）：**语义定义不得引用"二进制位"这一概念。** 载体（宿主 `double`）
 > 是二进制的，但数值不是 —— 就像 `__uint128_t` 装 45-trit 整数。容器换成三值电路时，
 > 这套语义一个字都不用改；穿透只是当前虚拟层的实现选择。
-> 同理，**"64 位"三字不进入 TriRV 的任何定义** —— 我们的档位叫 TF32/TF64，是 wasm 档位
+> 同理，**"64 位"三字不进入 TriRV 的任何定义** —— 我们的档位叫 TF20/TF45，是 wasm 档位
 > 对应名（见 §2.3），不是二进制位宽承诺。十进制/十二进制只是**表示层记数法**，
 > 不进入执行层度量（trit 才是）。
 
@@ -101,22 +101,28 @@
 > 转换只在 load/store 边界，兼顾极致性能 —— 且 double 的值域从不约束整数指数。
 > P1 仍须实测边界转换税：若 FLW/FSW 的 base-3 ↔ (mant,exp3) 编码超过 ~50 条整数指令，需复议布局。
 
-### 2.2 三进制原生格式布局（双档 TF32/TF64，宽度待拍板 D-F2）
+### 2.2 三进制原生格式布局（双档 TF20/TF45，宽度待拍板 D-F2）
 
-**D-F3 已拍板：双档 TF32 + TF64**，仿 wasm f32/f64 两档，wasm 对接零换算。
+> **重命名记档（2026-11-21 拍板）**：原 TF64/TF32 → **TF45/TF20**——数字 = 总
+> trit 数（45/20），与 ISA 命名法（45-trit 字、20-trit 指令）同一套；旧名的
+> "64/32" 是二进制量纲数字，违背"二进制位宽不进入我们的定义"。指令助记符
+> 保留 RISC-V 式字母后缀（.S = TF20 档、无后缀 = TF45 档）；wasm 侧 f32/f64
+> 类型名不动（wasm 规范名，仅存在于桥接层）。
+
+**D-F3 已拍板：双档 TF20 + TF45**，仿 wasm f32/f64 两档，wasm 对接零换算。
 两档共用一套布局规则，只是 trit 数不同：
 
 ```
-TF32（20 trit = 4 tryte，wasm f32 档位对应）：
+TF20（20 trit = 4 tryte，wasm f32 档位对应）：
   t19       t18..t14 (5 trit)     t13..t0 (14 trit)
   符号       阶码 E (base-3)        尾数 M (base-3)
 
-TF64（45 trit = 9 tryte，wasm f64 档位对应）：
+TF45（45 trit = 9 tryte，wasm f64 档位对应）：
   t44        t43..t34 (10 trit)     t33..t0 (34 trit)
   符号        阶码 E (base-3)         尾数 M (base-3)
 ```
 
-| 项 | TF32 值 | TF64 值 | 理由（纯三进制自主定义） |
+| 项 | TF20 值 | TF45 值 | 理由（纯三进制自主定义） |
 | --- | --- | --- | --- |
 | 符号 | 1 trit | 1 trit | 3 补码无干净符号位，浮点用显式符号 |
 | 阶码 | 5 trit（243 级） | 10 trit（59049 级） | 阶码宽度由档位字长余量与动态范围需求定，非对标二进制位宽 |
@@ -133,8 +139,8 @@ TF64（45 trit = 9 tryte，wasm f64 档位对应）：
 
 | wasm 类型 | 映射 | 换算 |
 | --- | --- | --- |
-| f32 | TF32（20 trit） | 零换算，精度档对齐 |
-| f64 | TF64（45 trit） | 零换算，精度档对齐 |
+| f32 | TF20（20 trit） | 零换算，精度档对齐 |
+| f64 | TF45（45 trit） | 零换算，精度档对齐 |
 
 双档使 `trirv_wasm.py` 的 f32.*/f64.* 指令各自直通对应的 TF 档，无精度损失、无额外换算指令。
 代价是 F 扩展指令数量翻倍（P2 实现时按 `.S`/`.D` 后缀区分）。
@@ -166,7 +172,7 @@ FLW / FSW（唯一转换边界）：
 ```
 
 可执行证明：`trirv_float.py` 的 `decompose()`/`compose()` 已实现该分离表示 ——
-`trirv_float_e2e.py` 验证了 TF64 最大正规阶码 exp3=29523（3^29523，远超 3^646）
+`trirv_float_e2e.py` 验证了 TF45 最大正规阶码 exp3=29523（3^29523，远超 3^646）
 仍能拆成有限 mant + 精确 exp3，往返阶码不丢。`python3 bench_float.py` 的 C 节可复现实测。
 
 这才是"极致性能的三进制虚拟层直接调用底层硬件"的正确形态：
@@ -174,7 +180,7 @@ FLW / FSW（唯一转换边界）：
 不引入任何二进制格式语义；base-3 格式只存在于内存/ABI 边界。**
 硬件没有"64 位浮点"这个物理实体，binary64 位宽是软件规范，不进入我们的定义。
 
-> 精度边界（诚实记账）：TF64 尾数 34 trit ≈ 53.9 bit，宿主 double 只有 53 bit 有效位，
+> 精度边界（诚实记账）：TF45 尾数 34 trit ≈ 53.9 bit，宿主 double 只有 53 bit 有效位，
 > `decompose()` 把 34-trit 尾数装进 double 会有 ~1 ulp 尾数误差。这是穿透的物理代价，
 > 属实现层账；阶码与特殊值不受影响。若 P5 评估认为不可接受，用两个 double（double-double）
 > 承载尾数即可，不改 ISA 语义。
@@ -221,9 +227,9 @@ F 扩展从预留区分配（建议 opcode 19–21 给 TF，TC 顺延），具�
 | **P0 立项** | 本文 + 待拍板项裁决 | `TERNARY_FLOAT_PROPOSAL.md` | — |
 | **P1 格式与转换** ✅ 2026-11-20 | base-3 ↔ (mant,exp3) 编解码 + 分离穿透模型 + 实测 | `trirv_float.py` + `trirv_float_e2e.py`（144 PASS）+ `bench_float.py` | 往返/边界/特殊值/极端阶码；精度与全阶码可表示实测 |
 | **P1b 表示层记数** ✅ 2026-11-20 | 十二进制记数 + 数码符号定义 + 进制下标标注（执行层/表示层分离铁律落地） | `trirv_base12.py` + `trirv_base12_e2e.py`（72 PASS） | to12/from12/frac_to12、SYMBOL_SET 数码定义、基数自指（'12'₁₂=14、基数写作'10'）、labelled/parse_labelled（18₁₂）、round-trip 0 错 |
-| **P2 F 扩展指令** ✅ 2026-11-20（TF64 子集） | 两套 VM 加 freg + F 指令 + C 浮点头（分离表示穿透宿主 FPU） | `trirv_float.h` + `trirv_vm.c/.py` + `trirv_isa.py` + `trirv_float_isa_e2e.py`（27 PASS） | 编码往返无撞码 + PyVM 语义 + PyVM×C VM 字节差分；**范围：TF64 四则+sqrt+load/store+比较，TF32 编码预留未接** |
+| **P2 F 扩展指令** ✅ 2026-11-20（TF45 子集） | 两套 VM 加 freg + F 指令 + C 浮点头（分离表示穿透宿主 FPU） | `trirv_float.h` + `trirv_vm.c/.py` + `trirv_isa.py` + `trirv_float_isa_e2e.py`（27 PASS） | 编码往返无撞码 + PyVM 语义 + PyVM×C VM 字节差分；**范围：TF45 四则+sqrt+load/store+比较，TF20 编码预留未接** |
 | **P3 wasm 对接** ✅ 2026-11-20 | 解除 `f32.const`/`f64.const` 与算术指令的 `Unsupported`，编译期穿透 IEEE 位模式 → TF raw | `trirv_wasm.py` 扩展 + `trirv_asm.py` F 助记符 + C VM 档位参数化 + `tf_ratio` 舍入修复 | `trirv_wasm_e2e.py` 112 例（含 19 浮点）+ `trirv_float_isa_e2e.py` 39 项；三路差分全一致（详见 §5.2） |
-| **P4 libc 浮点系** ✅ 2026-11-20 | 重开 5 项 DECISIONED SKIP（理由已被 P2/P3 推翻），musl_tri 三进制原生重写：strtod+atof（十→TF64，正确舍入）、ecvt+fcvt+gcvt（TF64→十进制，musl 怪癖逐条镜像）（详见 §5.6/§5.7） | `musl_tri/strtod_tri.c` + `ecvt_tri.c` + `trirv_float_libc_e2e.py` | Fraction 精确 oracle × 双 VM 字节差分全绿；批量管线 65/66 |
+| **P4 libc 浮点系** ✅ 2026-11-20 | 重开 5 项 DECISIONED SKIP（理由已被 P2/P3 推翻），musl_tri 三进制原生重写：strtod+atof（十→TF45，正确舍入）、ecvt+fcvt+gcvt（TF45→十进制，musl 怪癖逐条镜像）（详见 §5.6/§5.7） | `musl_tri/strtod_tri.c` + `ecvt_tri.c` + `trirv_float_libc_e2e.py` | Fraction 精确 oracle × 双 VM 字节差分全绿；批量管线 65/66 |
 | **P5 穿透收益评估** ✅ 2026-11-20 | 实测转换税 vs 穿透收益；裁决方案 B/分离表示/double-double/硬件直通（详见 §5.5） | `bench_float.py` F/G/H 节 + PERF_REPORT + §5.5 | Q1/Q2/Q3 全部实测回答；四候选裁决入账 |
 
 **优先级**：P1→P2→P3 是打通"wasm 能跑浮点"的最短路径；
@@ -249,7 +255,7 @@ P4/P5 视 P1 实测转换税结果调整。阶段 4 LLVM 后端仍在其后，�
 
 寄存器字段：F-R 型 rd/rs1/rs2 都是 **freg 编号**（0–31，复用现有 4-trit 字段，独立寄存器堆）；
 F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字段，含义按 opcode 区分）。
-档位：先用 TF64（45 trit，单寄存器）打通，TF32（20 trit）同编码 funct2=0，后续补齐。
+档位：先用 TF45（45 trit，单寄存器）打通，TF20（20 trit）同编码 funct2=0，后续补齐。
 
 **改动文件清单（按依赖顺序）**：
 1. `trirv_isa.py` — OPCODE 加 19/20/21，INST 加 F 指令，encode/decode 已通用无需改
@@ -277,7 +283,7 @@ F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字�
 - 不做 wasm f32/f64 对接（P3）
 - 不做 C 编译器 float 类型（属 libc/编译器，P4 之后）
 - 不做 FSQRT 的硬件级收敛迭代（先用宿主 `sqrt`，穿透 FPU）
-- 不做双档全部指令，先把 TF64 四则 + load/store 打通，档位字段预留
+- 不做双档全部指令，先把 TF45 四则 + load/store 打通，档位字段预留
 
 ---
 
@@ -290,37 +296,37 @@ F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字�
 
 1. **穿透点在哪**：wasm 的 `f32.const`(0x43)/`f64.const`(0x44) 后面跟的是 IEEE 位模式
    （4/8 字节）。 TriRV 不执行 IEEE 语义——在**编译期**由宿主 Python 用 `struct.unpack`
-   把位模式解成一个 host double，再用 `trirv_float.encode()` 量化成 TF32/TF64 的 45-trit raw，
+   把位模式解成一个 host double，再用 `trirv_float.encode()` 量化成 TF20/TF45 的 45-trit raw，
    写进数据段。运行时 VM 只见 TF raw，只跑 F 指令。IEEE 只出现在 wasm 字节码的编码里，
    是"外部输入的表示"，不是 TriRV 的运算规则。这正是执行层/表示层分离铁律的又一次落地。
 
 2. **不做 IEEE 逐位差分，做 TF 语义差分**：三路差分（参考解释器 × PyVM × C VM）的
    期望值必须由 `trirv_float` 的 TF 语义算出，而不是 Python `float` 的 IEEE 结果。
-   理由：TF32 尾数 14 trit ≈ 22.2 bit < binary32 的 24 bit，TF64 34 trit ≈ 53.9 bit
+   理由：TF20 尾数 14 trit ≈ 22.2 bit < binary32 的 24 bit，TF45 34 trit ≈ 53.9 bit
    > binary64 的 53 bit——两者的舍入点不同，拿 IEEE 当 oracle 必然在中间值上错。
    用户铁律 4"不拿二进制格式当参照系"在此处直接适用。
    参考解释器对浮点指令直接调用 `trirv_float.f_*`，与 VM 共享同一语义真相源。
 
-3. **精度不对等进行诚实记账**：`f64.const` 的 IEEE double → TF64 时尾数 53→34 trit
-   （丢 ~0.9 bit 尾数，但指数无损）；`f32.const` 的 IEEE float → TF32 时尾数 24→14 trit
+3. **精度不对等进行诚实记账**：`f64.const` 的 IEEE double → TF45 时尾数 53→34 trit
+   （丢 ~0.9 bit 尾数，但指数无损）；`f32.const` 的 IEEE float → TF20 时尾数 24→14 trit
    （丢 ~1.8 bit）。这是档位自主定义的结果，不声称"零损失"——实测数值入账（§7 已有框架）。
 
 **P2 遗留缺口必须在 P3 补掉（否则 P3 无法真跑双档）**：
 - `trirv_asm.py` 没有 F 助记符与 `f0..f31` 寄存器别名。P2 的 e2e 用 `isa.encode` 直接造
   二进制绕过了汇编器，但 wasm 编译器产出的是**汇编文本**再交给 `trirv_asm.assemble`——
   这是 P3 的硬依赖，必须先补。
-- `trirv_vm.c` 的 F 指令硬编码 `TF64_MAX_EXP` / `TF64_MANT_TRITS`（`step()` 与
+- `trirv_vm.c` 的 F 指令硬编码 `TF45_MAX_EXP` / `TF45_MANT_TRITS`（`step()` 与
   `vm_run_cg()` 两个分发点都是），`TFFmt` 结构虽参数化了 P_MANT/P_NORM/P_SIGN，
-  但 bias/max_exp/mant_trits 仍是宏。要兑现 D-F3 的 f32→TF32，必须把这三个也参数化，
-  加 `tf32_init()`，VM 里放两套 `TFFmt`（tf32/tf64），按 `funct2` 选。Python VM 已支持档位。
+  但 bias/max_exp/mant_trits 仍是宏。要兑现 D-F3 的 f32→TF20，必须把这三个也参数化，
+  加 `tf20_init()`，VM 里放两套 `TFFmt`（tf20/tf45），按 `funct2` 选。Python VM 已支持档位。
 
 **改动文件清单（按依赖顺序）**：
 
 | # | 文件 | 改动 |
 |---|---|---|
-| 1 | `trirv_float.h` | `TFFmt` 加 `bias/max_exp/mant_trits` 字段；`tf_dec/tf_compose/tf_norm/tf_add/...` 用 `f->` 字段替代宏；加 `tf32_init()` |
-| 2 | `trirv_vm.c` | VM 加 `TFFmt tf32`；`step()` 与 `vm_run_cg()` 两个分发点按 `in->funct2` 选档；FLW/FSW 按档位选 raw 宽 |
-| 3 | `trirv_vm.c` 重建 | 重编 `trirv_vm` 二进制，跑 `trirv_float_isa_e2e.py` + `trirv_csr_diff.py` 确认 TF64 回归不破 |
+| 1 | `trirv_float.h` | `TFFmt` 加 `bias/max_exp/mant_trits` 字段；`tf_dec/tf_compose/tf_norm/tf_add/...` 用 `f->` 字段替代宏；加 `tf20_init()` |
+| 2 | `trirv_vm.c` | VM 加 `TFFmt tf20`；`step()` 与 `vm_run_cg()` 两个分发点按 `in->funct2` 选档；FLW/FSW 按档位选 raw 宽 |
+| 3 | `trirv_vm.c` 重建 | 重编 `trirv_vm` 二进制，跑 `trirv_float_isa_e2e.py` + `trirv_csr_diff.py` 确认 TF45 回归不破 |
 | 4 | `trirv_asm.py` | `REG` 加 `f0..f31`（映射到 0..31，**独立寄存器堆**靠 F 指令的 opcode 区分，编号可复用）；FLW/FSW 的 I/S 解析让 rd/rs2 走 freg；F-R 型用 f 寄存器 |
 | 5 | `trirv_wasm.py` | 栈槽加类型标签 `vtype[j] ∈ {i32,f32,f64}`；`f32.const/f64.const` 编译期穿透；f32/f64 算术/比较/转换分派；`f32.load/store`/`f64.load/store`；freg 栈驻留池与 spill |
 | 6 | `trirv_wasm_e2e.py` | 参考解释器加浮点（调 `trirv_float`）；`W` 构造器支持 f32/f64 类型与常量；增补 f64/f32 用例 |
@@ -331,13 +337,13 @@ F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字�
 
 | wasm 操作码 | 语义 | TriRV 指令 | 档位 |
 |---|---|---|---|
-| 0x43 `f32.const` | 编译期 IEEE→TF32 | 数据段 raw + `FLW.S` | TF32 |
-| 0x44 `f64.const` | 编译期 IEEE→TF64 | 数据段 raw + `FLW` | TF64 |
-| 0x92..0x95 `f32.add/sub/mul/div` | TF 四则 | `FADD.S/FSUB.S/...` | TF32 |
-| 0xA0..0xA3 `f64.add/sub/mul/div` | TF 四则 | `FADD/FSUB/...` | TF64 |
+| 0x43 `f32.const` | 编译期 IEEE→TF20 | 数据段 raw + `FLW.S` | TF20 |
+| 0x44 `f64.const` | 编译期 IEEE→TF45 | 数据段 raw + `FLW` | TF45 |
+| 0x92..0x95 `f32.add/sub/mul/div` | TF 四则 | `FADD.S/FSUB.S/...` | TF20 |
+| 0xA0..0xA3 `f64.add/sub/mul/div` | TF 四则 | `FADD/FSUB/...` | TF45 |
 | 0x91 `f32.sqrt` / 0x9F `f64.sqrt` | TF sqrt | `FSQRT.S` / `FSQRT` | 对应档 |
-| 0x5B..0x60 `f32.eq/lt/gt/le/ge` | TF 比较 | `FEQ.S/FLT.S/FLE.S` + 取反 | TF32 |
-| 0x61..0x66 `f64.eq/lt/gt/le/ge` | TF 比较 | `FEQ/FLT/FLE` + 取反 | TF64 |
+| 0x5B..0x60 `f32.eq/lt/gt/le/ge` | TF 比较 | `FEQ.S/FLT.S/FLE.S` + 取反 | TF20 |
+| 0x61..0x66 `f64.eq/lt/gt/le/ge` | TF 比较 | `FEQ/FLT/FLE` + 取反 | TF45 |
 | 0x2A/0x2B `f32.load`/`f64.load` | 读 TF raw | `FLW.S`/`FLW` | 对应档 |
 | 0x38/0x39 `f32.store`/`f64.store` | 写 TF raw | `FSW.S`/`FSW` | 对应档 |
 
@@ -370,10 +376,10 @@ F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字�
 **交付结果**：
 - `trirv_wasm_e2e.py`：112 PASS / 0 FAIL（原 93 例 + 19 浮点例：f64/f32 四则+sqrt、
   六比较、浮点局部变量 set/get、双档共存；三路差分参考解释器×PyVM×C VM 全一致）
-- `trirv_float_isa_e2e.py`：39 PASS / 0 FAIL（原 27 + 10 TF32 档位 + 2 舍入回归）
+- `trirv_float_isa_e2e.py`：39 PASS / 0 FAIL（原 27 + 10 TF20 档位 + 2 舍入回归）
 - 全量 43 套 43/43 PASS
-- C VM `TFFmt` 已参数化（bias/max_exp/mant_trits 全部走字段），`tf32_init()` 与
-  `tf64_init()` 共用同一套 `tf_*` 函数；`step()` 与 `vm_run_cg()` 两个分发点都按
+- C VM `TFFmt` 已参数化（bias/max_exp/mant_trits 全部走字段），`tf20_init()` 与
+  `tf45_init()` 共用同一套 `tf_*` 函数；`step()` 与 `vm_run_cg()` 两个分发点都按
   `funct2` 选档；汇编器补 `f0..f31` 别名与 FLW.S/FSW.S/FSQRT.S/FEQ.S 等 F 助记符
 
 **重要发现：`tf_ratio` 舍入修复（P2 遗留 bug，P3 暴露并修掉）**
@@ -393,8 +399,8 @@ F-I 型 FLW/FSW 的 rs1 是**整数**地址寄存器，rd 是 freg（复用字�
 宿主 Python `struct.unpack` 解成 host double，再由 `trirv_float.encode()` 量化成
 TF raw 写进数据段（FCONST_BASE=267000），运行时 VM 只见 TF raw、只跑 F 指令。
 IEEE 全程只是 wasm 字节码的**外部输入编码**，不进入 TriRV 运算语义——这是执行层/
-表示层分离铁律在 wasm 边界的落地。精度损失按档位自主定义计（TF32 尾数 14 trit、
-TF64 34 trit），不声称与 binary32/binary64 逐位等价。
+表示层分离铁律在 wasm 边界的落地。精度损失按档位自主定义计（TF20 尾数 14 trit、
+TF45 34 trit），不声称与 binary32/binary64 逐位等价。
 
 ---
 
@@ -406,7 +412,7 @@ TF64 34 trit），不声称与 binary32/binary64 逐位等价。
 | # | 待答问题 | 出处 | 裁决所需数字 |
 |---|---|---|---|
 | Q1 | 转换税是否吃掉穿透收益？ | §7 风险 1、§2.1 的 ~50 条整数指令阈值 | F 指令单条成本的 VM 实测（ns 与 ×ADD 当量），及其构成分解 |
-| Q2 | TF64 尾数装 double 的 ~1 ulp 误差是否可接受？要不要 double-double？ | §3.1 精度边界注、§7 风险 3 | decompose→compose 往返精确率 + 最大尾数误差（尾数量子计） |
+| Q2 | TF45 尾数装 double 的 ~1 ulp 误差是否可接受？要不要 double-double？ | §3.1 精度边界注、§7 风险 3 | decompose→compose 往返精确率 + 最大尾数误差（尾数量子计） |
 | Q3 | 硬件 FPU 直通方案要不要立专项？ | §5 阶段表 P5 行 | 现模型的成本构成 + 真硬件路径的账（定义层，不立项则记录理由） |
 
 **必须先讲明的实现事实（调研确认，2026-11-20）**：
@@ -427,7 +433,7 @@ P2 实现的 freg 与本文件 §5.1 计划写的分离表示**不一致**——
 |---|---|---|
 | **M1 VM 级单条成本** | 直线展开热循环（N=200k 条热指令，无循环体开销），变体：ADD（基线）/ LW / SW / FLW / FSW / FADD / FADD.S / FMUL / FMUL.S / FDIV / FDIV.S / FSQRT / FSQRT.S / FEQ / FEQ.S。程序用 `isa.encode` 直接构造（与 `trirv_float_isa_e2e.py` 同法），C VM 自带 `时间=/步数=` 计时，每项 3 次取最好，单条成本 = 时间/步数 | 每条 F 指令 ns 与 ×ADD 当量 → 回答 Q1 的"贵不贵" |
 | **M2 宿主分解微基准** | 编译一个小 C 程序 include `trirv_float.h`（POW3 本地重建），直接计时 `tf_dec` / `tf_compose` / `tf_add` 整体 / 裸 `double` 加法（同依赖链防闭式） | FADD 成本 = 分发 + 2×tf_dec + FPU + compose 的构成表；**分离表示的潜在节省 = 2×tf_dec/条** → 回答 Q1 的"贵在哪"、§3.1 改造值不值得 |
-| **M3 尾数承载精度** | Python 固定种子采样 5 万个随机正规 TF64 raw（M∈[3³³,3³⁴)），decompose → compose 往返；统计 raw 精确率与 \|mant_double×3³³ − M\| 最大误差（尾数量子计）；TF32 同法（预期 100% 精确，double 53 bit ≫ 22.2 bit） | 往返率 + 最大误差 → double-double 判定 → 回答 Q2 |
+| **M3 尾数承载精度** | Python 固定种子采样 5 万个随机正规 TF45 raw（M∈[3³³,3³⁴)），decompose → compose 往返；统计 raw 精确率与 \|mant_double×3³³ − M\| 最大误差（尾数量子计）；TF20 同法（预期 100% 精确，double 53 bit ≫ 22.2 bit） | 往返率 + 最大误差 → double-double 判定 → 回答 Q2 |
 
 **决策账（M4，用既有实测数字，不新测）**：
 
@@ -488,9 +494,9 @@ FSQRT 62ns < FADD 105ns 是内部一致性的活证据：它只解 1 个操作�
 二进制内差分，口径一致）；`tf_compose` 6.2ns；裸 double add/mul 0.9ns。
 → **FADD 的 ~88% 花在 base-3 编解码（2×解码+编码），FPU 运算本身 ~1ns。**
 
-**M3 —— TF64 尾数 double 承载精度**（5 万随机正规 raw，种子 20261120）：
-TF32 往返 **100.00% 精确**（double 53 bit ≫ 22.2 bit，承载网格更细）；
-TF64 往返 **60.97% 精确，最大漂移 2.0 个尾数量子**（= 末 1~2 个 trit；根源：
+**M3 —— TF45 尾数 double 承载精度**（5 万随机正规 raw，种子 20261120）：
+TF20 往返 **100.00% 精确**（double 53 bit ≫ 22.2 bit，承载网格更细）；
+TF45 往返 **60.97% 精确，最大漂移 2.0 个尾数量子**（= 末 1~2 个 trit；根源：
 double 间隔 2^-51/[2,3] 与 2^-52/[1,2] 比格式量子 3^-33 粗——承载网格比格式粗）；
 exp3/sign 全程精确。两套 VM 同源承载 mant → 结果逐位一致（wasm e2e 112 例已证），
 漂移只发生在"raw → 算术重组 raw"路径，FLW/FSW 直通的值不受影响。
@@ -526,12 +532,12 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 
 **目标**：重开 strtod/atof/ecvt/fcvt/gcvt 五项 DECISIONED SKIP（"TriRV 无浮点"的
 理由已被 P2/P3 推翻——F 扩展与 TF 格式已在 ISA 上），以 **musl_tri 三进制原生重写**
-落地，输出/输入均为 **TF64 raw**（45-trit 字，对 guest 就是普通 int）。
+落地，输出/输入均为 **TF45 raw**（45-trit 字，对 guest 就是普通 int）。
 
 **必须先讲明的三件事**：
 
 1. **为什么不需要编译器 float 类型**：这五个函数在 ABI 上全部是"字符串 ↔ 45-trit
-   字"的转换——`double` 形参/返回值就是 TF64 raw，guest 里用 `int` 承载即可。
+   字"的转换——`double` 形参/返回值就是 TF45 raw，guest 里用 `int` 承载即可。
    trirv_cc 依旧零浮点支持；纯整数 C 子集可实现全部语义（3 字小数大数 + 走位）。
 2. **正确舍入的算法责任在 guest**：strtod 的 round-half-even 不靠宿主——musl 用
    stdio 内部大数（`__floatscan`，这是它被 SKIP 的原因），TriRV 重写为 3 字
@@ -546,8 +552,8 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 
 | # | 文件 | 内容 |
 |---|---|---|
-| 1 | `musl_tri/strtod_tri.c` | `strtod`+`atof`。十进制串 → TF64 raw。支持：空白/±/`inf`/`infinity`/`nan`（不区分大小写）/小数/e 指数；end 写回语义同 strtol_tri（无有效数字 end=nptr）。不支持（文档注明）：十六进制浮点 `0x1p3`、errno/ERANGE |
-| 2 | `musl_tri/ecvt_tri.c` | `ecvt`+`fcvt`+`gcvt`。TF64 raw → 十进制数字串。静态 buf 用**全局数组**（TriRV C 子集无 static 局部；单线程假设与 musl 相同） |
+| 1 | `musl_tri/strtod_tri.c` | `strtod`+`atof`。十进制串 → TF45 raw。支持：空白/±/`inf`/`infinity`/`nan`（不区分大小写）/小数/e 指数；end 写回语义同 strtol_tri（无有效数字 end=nptr）。不支持（文档注明）：十六进制浮点 `0x1p3`、errno/ERANGE |
+| 2 | `musl_tri/ecvt_tri.c` | `ecvt`+`fcvt`+`gcvt`。TF45 raw → 十进制数字串。静态 buf 用**全局数组**（TriRV C 子集无 static 局部；单线程假设与 musl 相同） |
 | 3 | `trirv_float_libc_e2e.py` | 契约：**Fraction 精确 oracle**（宿主 Python 用纯整数算 round-half-even——这就是"正确舍入"的定义本身）× guest 输出 × 双 VM 字节差分 |
 | 4 | `run_all_tests.py` | 注册新套件 |
 | 5 | `batch_musl_compile.py` | TRI_REWRITE 加 5 项（strtod.c/atof.c→strtod_tri.c；ecvt.c/fcvt.c/gcvt.c→ecvt_tri.c），重算总账 |
@@ -558,7 +564,7 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 - **定长走位**：6 字数组 `w[6]`（小端 base-10¹⁶，容量 10⁹⁶≈3²⁰¹），只做
   `字×小因子`（10、10¹³、3ᵏ≤3⁹ 时单字积 <3⁴⁵ 不溢出）与 `÷小因子带余数`——
   零 90-trit 乘法。选 6 字不是 3 字的理由（tie 间隙分析）：十进制输入（≤20 位
-  有效数字）与 TF64 半点（分母 2×3³³）之间的最小可能距离 ≥ 10⁻³⁷·⁶（值域单位），
+  有效数字）与 TF45 半点（分母 2×3³³）之间的最小可能距离 ≥ 10⁻³⁷·⁶（值域单位），
   走位误差必须压到 10⁻³⁸ 以下才能在对抗性输入上保证正确舍入——6 字窗口纪律
   （只在 acc≥10⁸⁰ 时做有损步，每步相对丢失 ≤10⁻⁵⁴~10⁻⁶⁹，步数 ≤3300，总预算
   ≤10⁻⁵¹）比阈值低 13 个数量级。
@@ -567,14 +573,14 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
   ÷3ᵏ（有损，t−k，仅 A 满 时）、÷10¹³（有损，P+13，仅 A 满时）——一切有损步
   都使 R 从下方单调逼近真值；P 归零后一次性**精确终除**：u = |A|₃−33，
   (M₀, disc) = A ÷ 3ᵇ（÷3 共 u 步、disc 累加 r·3ⁱ 精确回收），按 2·disc vs 3ᵘ
-  half-even + sticky 舍入。|P| 捷径界 ±14107（TF64 值域 10^±14086 的数学必然，
+  half-even + sticky 舍入。|P| 捷径界 ±14107（TF45 值域 10^±14086 的数学必然，
   非估算）。
 - **ecvt（三→十）**：raw 拆 (s,M,e)；不变式 `V = A×3^f/10^g`（A=M 起），吸收 f→0
   （同窗口纪律，每步丢失 ≤10⁻⁷⁰，步数 ≤29523）；A 归一到 [10⁴⁴,10⁴⁵) 后
   decpt=45−g；逐位提取 = A×10 后做 45 步 ÷10 带余数累加（精确，disc 即余数），
   末位按 2·disc vs 10⁴⁵ half-even（此时 tie 可能出现：V 的分母含 3ⁿ 时十进制
   展开不终止——sticky 进位裁决）。
-- **正确性公理**：十进制串无法精确落在两个 TF64 值正中（tie 需分母含 3³³ 且
+- **正确性公理**：十进制串无法精确落在两个 TF45 值正中（tie 需分母含 3³³ 且
   3 不整除分子 → 十进制展开不终止），strtod 的 tie 分支只由 sticky 驱动；
   e2e 用 Fraction 精确 oracle 千例级随机 + 构造用例验证——oracle 即"正确舍入"
   的定义本身，不依赖任何浮点实现。
@@ -587,7 +593,7 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 - float 既有三套契约（144/39/112）不破；全量回归不破
 
 **范围边界（本阶段不做）**：
-- 不做 strtof/strtold（TF32 变体，按需后续）
+- 不做 strtof/strtold（TF20 变体，按需后续）
 - 不做十六进制浮点 `0x1p3`（IEEE 位语义的表示层，TriRV 不认）
 - 不做 errno/ERANGE（TriRV libc 层无 errno 传递，同 strtol_tri 先例）
 - 不做 trirv_stdio 的 %f/%e/%g（gcvt 自拼串；printf 集成属 stdio 层后续）
@@ -607,7 +613,7 @@ clang 做 IP 常量传播把调用整个编译期求值，测出 0.12ns 的假�
 - `strtod_tri.c`：≤20 位有效数字的 6 字小数大数走位（base 10^16，容量 10^96）+
   LSB-first 加权 disc 累加（修正版：旧 disc×3+r 位序反了）+ 精确终除
   half-up 舍入；值域捷径 exp10+sig ≥ 14100 → ±Inf、≤ −14130 → ±0
-- `ecvt_tri.c`：同构走位反向（TF64 raw → 十进制），S' = Σ(2−r)·3^i 补数
+- `ecvt_tri.c`：同构走位反向（TF45 raw → 十进制），S' = Σ(2−r)·3^i 补数
   同步累加免存 3^u；decpt = 45−g；±Inf/NaN/±0 按合同 §5.6 TriRV 定义
 - inf/infinity/nan 接受（不区分大小写）；end 指针 POSIX 语义
   （'-0' 是合法转换 end=2；纯空白/裸符号无转换 end=nptr）
@@ -648,13 +654,13 @@ denormal 0.0001s）对 300 随机 double 逐位匹配 trirv_float.encode（0 mis
 | 编号 | 决策点 | 选项 | 结论 | 状态 |
 | --- | --- | --- | --- | --- |
 | **D-F1** | 格式方案 | A 三进制原生 / B binary64 位模式直存 | **A** | ✅ 2026-11-20 拍板 |
-| **D-F2** | 阶码/尾数宽度 | 双档各一套 / 其他 | **TF32=5+14、TF64=10+34** | ✅ 2026-11-20 P1 实测锁定（见下） |
-| **D-F3** | 精度档位 | 单档 TF / 双档 TF32+TF64 | **双档 TF32+TF64** | ✅ 2026-11-20 拍板（wasm 零换算） |
+| **D-F2** | 阶码/尾数宽度 | 双档各一套 / 其他 | **TF20=5+14、TF45=10+34** | ✅ 2026-11-20 P1 实测锁定（见下） |
+| **D-F3** | 精度档位 | 单档 TF / 双档 TF20+TF45 | **双档 TF20+TF45** | ✅ 2026-11-20 拍板（wasm 零换算） |
 | **D-F4** | NaN/下溢语义 | 抽象特殊值 / 照搬 IEEE 位语义 | **抽象特殊值** | ✅ 2026-11-20 P1 落地（±0/±Inf/NaN 抽象值，无 payload） |
 
 ### 6.1 P1 实测结果（`python3 bench_float.py`，2026-11-20）
 
-| 项 | TF32 | TF64 |
+| 项 | TF20 | TF45 |
 | --- | --- | --- |
 | 尾数精度（执行层度量 = trit） | 14 trit | 34 trit |
 | 尾数精度（表示层换算，非定义） | ≈ 6.2 十二进制位 | ≈ 15.0 十二进制位 |
@@ -666,11 +672,11 @@ denormal 0.0001s）对 300 随机 double 逐位匹配 trirv_float.encode（0 mis
 二进制 f32/f64 的位数与值域**不作为验收标准**——"64 位"是 IEEE 软件规范，不是物理约束。
 若 P3 wasm 对接发现精度需求变化，按实现层账调整，不改架构。
 
-> **框架更正记录（2026-11-20）**：P1 初稿曾把"TF64 有 28877 个阶码超出 double 上限"标为
+> **框架更正记录（2026-11-20）**：P1 初稿曾把"TF45 有 28877 个阶码超出 double 上限"标为
 > "重大风险：穿透缺口"。该论证错误地把 IEEE binary64 的软件值域（3^646）当成格式天花板。
 > 更正后的正确模型是**尾数/指数分离**（§3.1）：mant∈[1,3) 进 FPU、exp3 走整数 ALU，
 > double 值域从不约束整数指数。`decompose()`/`compose()` 已实现并实测：
-> TF64 最大正规阶码 3^29523 仍能拆成有限 mant + 精确 exp3，**不存在穿透缺口**。
+> TF45 最大正规阶码 3^29523 仍能拆成有限 mant + 精确 exp3，**不存在穿透缺口**。
 > 原来的 (a) 超限返 Inf / (b) tagged 联合 / (c) 软件路径三选项全部作废 —— 问题本身不成立。
 
 ---
@@ -683,11 +689,11 @@ denormal 0.0001s）对 300 随机 double 逐位匹配 trirv_float.encode（0 mis
   把边界税搬进了每条算术指令。分离表示改造列为 VM 优化项（省 2×解码 ≈ 82% FADD）。
 - **舍入的双语义**：三进制 round-to-nearest 与 IEEE round-to-nearest-even 在 tie 点可能不同
   （base-3 的"中点"与 base-2 不同）。P1 已明确定义并测试（144 项），不照搬 IEEE。
-- **尾数穿透的物理代价（诚实记账）** ✅ **P5 已实测回答（§5.5）**：TF64 decompose→compose
-  往返 60.97% 精确、最大漂移 2.0 个尾数量子（TF32 100% 精确）；exp3/sign 全程精确；
+- **尾数穿透的物理代价（诚实记账）** ✅ **P5 已实测回答（§5.5）**：TF45 decompose→compose
+  往返 60.97% 精确、最大漂移 2.0 个尾数量子（TF20 100% 精确）；exp3/sign 全程精确；
   两套 VM 同源承载、逐位一致，e2e 差分不受影响。**double-double 暂不引入**，
   记演进项——需要完整 34-trit 实现精度时再做，不改 ISA 语义。
-- **wasm 档位对接**：wasm f32/f64 的值转成 TF32/TF64 时的精度差异按各档自主定义计，
+- **wasm 档位对接**：wasm f32/f64 的值转成 TF20/TF45 时的精度差异按各档自主定义计，
   不以二进制位宽为参照，也不声称"零损失"——实测为准。
 - **真值电路路径**：本文的穿透是虚拟层实现选择；换成真三值硬件时 FPU 不存在，
   需要原生 base-3 浮点电路。本立项不改 ISA 语义，硬件化在后 —— 与整数 DIV 的处理一致。

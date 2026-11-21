@@ -263,7 +263,7 @@ e2e 新增多 TU 组 4 例（跨文件 extern/后续 TU static/共享全局/三�
 → TRV1 → 双 VM。新套件 `trirv_tri_musl_e2e.py`（3 组 30 断言全绿）：
 memset/memcpy/strlen/strcmp/strncmp/memcmp/memchr/strcspn/strspn/strstr/memmem/
 strsep/div/ldiv/lldiv/imaxdiv/qsort(函数指针)/strtol(2/8/10/16 进制) 全部
-编译、链接、运行、断言通过。strtod/ecvt（TF64 整数编码）单独编译通过
+编译、链接、运行、断言通过。strtod/ecvt（TF45 整数编码）单独编译通过
 （调用面待 F 扩展/浮点 ABI 决策）。
 
 **TRVO 文本互通（T-2.1 的 trirv_cc 桥）评估后延后**：trirv_cc 导出的 TRVO
@@ -278,12 +278,12 @@ LINE 里全局引用是导出期数字地址（`LUI t1, 9`），导入器按 GLO
 
 ## 10. T-1.6 F 扩展记档（2026-11-21，tri-tcc 浮点代码生成全绿）
 
-**能力**：double/float/long double 统一 TF64 档（type_size 均 9 tryte）——
+**能力**：double/float/long double 统一 TF45 档（type_size 均 9 tryte）——
 FADD/FSUB/FMUL/FDIV（funct2=1）、FEQ/FLT/FLE 比较物化（GT/GE 交换操作数，
 结果 int 0/1 非 VT_CMP）、FLW/FSW（搬 raw 与档位无关）、FCVT.F/FCVT.W
 双向转换、TOK_NEG = 0-x（FCVT.F 读整数 0 产 +0.0，再 FSUB；TriRV 无 FNEG）、
 浮点实参 fa0-fa7（prolog FSW / call gv(RC_F)）、浮点常量经 tccgen 既有常量池
-（gv 时转 rodata 左值）+ init_putv TF64 base-243 编码。freg 独立堆映射
+（gv 时转 rodata 左值）+ init_putv TF45 base-243 编码。freg 独立堆映射
 tcc r8-15 → fa0-fa7，与整数 x0-x31 分离。
 e2e 13 例全绿（197 PASS / 0 FAIL / 101 用例）；tri-musl 30 PASS 无回归。
 
@@ -295,11 +295,11 @@ e2e 13 例全绿（197 PASS / 0 FAIL / 101 用例）；tri-musl 30 PASS 无回�
    `op<=TOK_GE` 区间检查排除 LE/GT（"bad float op 159" 暴露）。比较族
    分派一律显式 switch（与 D2 物化表同源教训）。
 3. **浮点常量池归 tccgen 管**：gv 时浮点常量已被前端转成 rodata 左值
-   （tccgen.c:1910），常量字节由 init_putv 写入——TF64 编码必须接进
+   （tccgen.c:1910），常量字节由 init_putv 写入——TF45 编码必须接进
    init_putv 的 VT_FLOAT/VT_DOUBLE/VT_LDOUBLE（曾只接 gen 侧导致 rodata
-   里是 IEEE base-256）。tri_tf64_raw 提为 ST_FUNC 共用。
+   里是 IEEE base-256）。tri_tf45_raw 提为 ST_FUNC 共用。
 
-**TF64 编码器**（tri_tf64_raw，ST_FUNC）：整数精确 round-half-up，
+**TF45 编码器**（tri_tf45_raw，ST_FUNC）：整数精确 round-half-up，
 __int128 域 |exp3| ≤ 47（|v| ∈ [2.1e-7, 4.3e7]）；域外诚实报错
 （bignum 编码器留待后续，覆盖 1e-9/1e8/1e300 类常量）。
 
@@ -309,7 +309,7 @@ __int128 域 |exp3| ≤ 47（|v| ∈ [2.1e-7, 4.3e7]）；域外诚实报错
   同一表达式两条路径分歧（同 §1.5 char 截断双轨）。候选：ISA 加 FTRUNC
   或 tri-gen 软件截断（比较修正法）。
 - -(-0.0) = +0.0（FSUB 0-x；IEEE 要求 -0.0）。
-- C float 不降 TF32 档（精度损失不建模）；TF32 档（funct2=0 算术）留待后续。
+- C float 不降 TF20 档（精度损失不建模）；TF20 档（funct2=0 算术）留待后续。
 
 **T-1.7 CSR 延后理由**：CSR 指令无 C 语言暴露面——tcc 的 CSR 生成需
 inline asm（tri-asm.c，tccasm 目标后端，未写）或 __builtin_csr 钩子

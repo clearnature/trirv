@@ -8,7 +8,7 @@ double 值域从不约束指数。所有数字本机实测，不写估计值。
 P5 新增（2026-11-20，见 TERNARY_FLOAT_PROPOSAL.md §5.4）：
   F. VM 级 F 指令单条成本（直线热循环 × C VM 计时，15 变体）
   G. 宿主分解微基准（tf_dec/tf_compose/裸 FPU，分解 FADD 构成）
-  H. TF64 尾数 double 承载精度（decompose→compose 往返 → double-double 判定）
+  H. TF45 尾数 double 承载精度（decompose→compose 往返 → double-double 判定）
 
     python3 bench_float.py
 """
@@ -65,8 +65,8 @@ def run_cvm_steps(path):
 def bench_vm_instructions(N=200000):
     """直线展开 N 条热指令（无循环体开销），单条成本 = 时间/步数。"""
     A_ADDR, B_ADDR = 100, 109
-    data = {A_ADDR: raw_to_trytes(tf.TF64.encode(1.5)),
-            B_ADDR: raw_to_trytes(tf.TF64.encode(2.25))}
+    data = {A_ADDR: raw_to_trytes(tf.TF45.encode(1.5)),
+            B_ADDR: raw_to_trytes(tf.TF45.encode(2.25))}
     setup = [("FLW", 0, 0, 0, A_ADDR), ("FLW", 1, 0, 0, B_ADDR),
              ("ADDI", 3, 0, 0, 1)]
     tail = [("ADDI", 10, 0, 0, 0), ("ADDI", 17, 0, 0, 93), ("ECALL", 0, 0, 0, 0)]
@@ -141,7 +141,7 @@ static double now_ns(void){
 int main(void){
     const long N = 1000000;
     POW3L[0]=1; for(int i=1;i<=45;i++) POW3L[i]=POW3L[i-1]*3;
-    tf64_init(&FMT, POW3L);
+    tf45_init(&FMT, POW3L);
     /* 1000 个变化的正规 raw，防常量折叠；全走正规数路径 */
     static __uint128_t raws[1000]; static double mants[1000];
     for(int i=0;i<1000;i++){
@@ -202,7 +202,7 @@ def bench_mant_precision(n=50000, seed=20261120):
     """随机正规 raw 的 decompose→compose 往返：精确率 + 最大尾数误差（量子计）。"""
     rng = random.Random(seed)
     res = {}
-    for F in (tf.TF32, tf.TF64):
+    for F in (tf.TF20, tf.TF45):
         P_MANT, P_NORM, P_SIGN = F.P_MANT, F.P_NORM, F.P_SIGN
         exact = 0
         max_err_q = 0.0
@@ -241,7 +241,7 @@ def report():
     print("A. 格式精度（执行层度量 = trit；表示层记数 = 十二进制位）")
     print("=" * 74)
     print("  执行层度量是 trit；bit/十进制位/十二进制位都只是表示层换算，不作定义依据")
-    for f in (tf.TF32, tf.TF64):
+    for f in (tf.TF20, tf.TF45):
         k = f.mant_trits - 1
         d12 = b12.trit_to_digits(k)
         print(f"  {f.name}: 尾数 {f.mant_trits} trit（执行层） ≈ {d12:4.1f} 十二进制位（表示层）")
@@ -251,7 +251,7 @@ def report():
     print("=" * 74)
     print("B. 动态范围（阶码，base-3 整数指数；指数本身就是执行层度量）")
     print("=" * 74)
-    for f in (tf.TF32, tf.TF64):
+    for f in (tf.TF20, tf.TF45):
         emin, emax = -f.bias + 1, f.max_exp - f.bias - 1
         print(f"  {f.name}: exp3∈[{emin},{emax}]（base-3 整数，执行层）")
 
@@ -261,7 +261,7 @@ def report():
     print("=" * 74)
     print("  规范表示 = sign × mant[1,3) × 3^exp3；mant 进 FPU，exp3 走整数 ALU")
     print("  宿主 double 只装 mant（恒在[1,3)），其 3^646 上限不约束整数 exp3")
-    for f in (tf.TF32, tf.TF64):
+    for f in (tf.TF20, tf.TF45):
         emax = f.max_exp - f.bias - 1
         samples = (-f.bias + 1, 0, emax - 1, emax)
         ok = True
@@ -272,7 +272,7 @@ def report():
             ok = ok and math.isfinite(mant) and 1.0 <= mant < 3.0 and exp3 == e3
         print(f"  {f.name}: 阶码 10^[-{abs(-f.bias)*math.log10(3):.0f},"
               f"{emax*math.log10(3):.0f}] 抽样全部 mant 有限/exp3 精确 → {'PASS' if ok else 'FAIL'}")
-        beyond = "远超 double 上限 3^646" if emax > 646 else "在 double 上限内（TF32 档位小）"
+        beyond = "远超 double 上限 3^646" if emax > 646 else "在 double 上限内（TF20 档位小）"
         print(f"    极端 exp3={emax}（3^{emax}，{beyond}）仍无需把 3^exp3 塞进 double")
 
     print()
@@ -281,7 +281,7 @@ def report():
     print("=" * 74)
     N = 200000
     vals = [1.0 + i / 1000.0 for i in range(N)]
-    for f in (tf.TF32, tf.TF64):
+    for f in (tf.TF20, tf.TF45):
         t0 = time.perf_counter()
         for v in vals:
             f.encode(v)
@@ -329,12 +329,12 @@ def report():
 
     print()
     print("=" * 74)
-    print("H. TF64 尾数 double 承载精度（P5-M3：5 万随机正规 raw，固定种子）")
+    print("H. TF45 尾数 double 承载精度（P5-M3：5 万随机正规 raw，固定种子）")
     print("=" * 74)
     prec = bench_mant_precision()
     verdicts = {}
     for name, (exact, n, maxq, expok, nlo, nhi, qlo, qhi) in prec.items():
-        F = tf.TF32 if name == "TF32" else tf.TF64
+        F = tf.TF20 if name == "TF20" else tf.TF45
         quantum_bits = (F.mant_trits - 1) * math.log2(3)
         print(f"  {name}: 往返精确 {exact}/{n}（{exact/n*100:.2f}%），"
               f"exp3/sign 全程精确 → {'PASS' if expok else 'FAIL'}")
@@ -343,12 +343,12 @@ def report():
         print(f"    分区: mant∈[1,2) 最大 {qlo:.3f} 量子（{nlo} 例），"
               f"mant∈[2,3) 最大 {qhi:.3f} 量子（{nhi} 例）")
         verdicts[name] = (exact, n, maxq)
-    if "TF64" in verdicts:
-        _, _, maxq64 = verdicts["TF64"]
-        print(f"  判读：TF64 往返漂移以尾数量子计（实测最大 {maxq64:.0f} 量子 = 末 1~2 个 trit），")
+    if "TF45" in verdicts:
+        _, _, maxq64 = verdicts["TF45"]
+        print(f"  判读：TF45 往返漂移以尾数量子计（实测最大 {maxq64:.0f} 量子 = 末 1~2 个 trit），")
         print("  根源是 double 在 [2,3) 的间隔 2^-51 > 量子 3^-33——承载网格比格式粗；")
         print("  两套 VM 同用 double 承载 mant → 结果逐位一致（wasm e2e 112 例已证），")
-        print("  代价仅是 VM 内 TF64 实现精度 ≈ 53 bit ≈ 33.5 trit < 格式 34 trit。")
+        print("  代价仅是 VM 内 TF45 实现精度 ≈ 53 bit ≈ 33.5 trit < 格式 34 trit。")
 
     print()
     print("=" * 74)
@@ -370,9 +370,9 @@ def report():
         print(f"     代价是 FLW/FSW 各付一次，算术密集链净赚）；")
         print(f"     对比方案 B（IEEE 直存）：每条算术还要在三进制指令上抽二进制位段，")
         print(f"     既有实测代理 372–753 条动态指令/op，比 A 的税贵约两个数量级。A 仍是对的。")
-        if "TF64" in verdicts:
-            exact, n, maxq = verdicts["TF64"]
-            print(f"  3. TF64 尾数承载：往返精确 {exact/n*100:.1f}%，最大漂移 {maxq:.0f} 个尾数量子")
+        if "TF45" in verdicts:
+            exact, n, maxq = verdicts["TF45"]
+            print(f"  3. TF45 尾数承载：往返精确 {exact/n*100:.1f}%，最大漂移 {maxq:.0f} 个尾数量子")
             print(f"     （= 末 1~2 个 trit；根源：double 间隔 2^-51/2^-52 > 格式量子 3^-33）。")
             print(f"     两套 VM 同源承载、逐位一致，e2e 差分不受影响 → double-double 暂不引入，")
             print(f"     记为演进项（需要完整 34-trit 实现精度时再做）。")

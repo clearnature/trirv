@@ -21,7 +21,7 @@ from export_trv import export as _unused_export  # 仅确认模块存在；本�
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(_HERE, "trirv_vm"))
-F = tf.TF64
+F = tf.TF45
 PASS = FAIL = 0
 
 
@@ -188,10 +188,10 @@ else:
     print("SKIP C VM 差分：未找到 trirv_vm 二进制")
 
 
-# ---------------- 4. TF32 档位（P3）：.S 后缀指令 + 双 VM 差分 ----------------
+# ---------------- 4. TF20 档位（P3）：.S 后缀指令 + 双 VM 差分 ----------------
 # P3 把 C VM 的 TFFmt 参数化（bias/max_exp/mant_trits），档位由 funct2 选。
-# 这里锁住 TF32 四则 + sqrt + 比较的 PyVM 语义与 PyVM×C VM 字节差分。
-F32 = tf.TF32
+# 这里锁住 TF20 四则 + sqrt + 比较的 PyVM 语义与 PyVM×C VM 字节差分。
+F32 = tf.TF20
 DT = {A_ADDR: list(raw_to_trytes(F32.encode(1.5))),
       B_ADDR: list(raw_to_trytes(F32.encode(2.25)))}
 
@@ -205,20 +205,20 @@ for mn, expr, expect in [
            (mn, 2, 0, 1, 0), ("FSW.S", 0, 0, 2, C_ADDR)]
     c = run_py(ops, DT)
     r = trytes_to_raw(bytes(c.mem[C_ADDR:C_ADDR + 9]))
-    check(f"PyVM TF32 {expr}", round(F32.decode(r), 5), round(expect, 5))
+    check(f"PyVM TF20 {expr}", round(F32.decode(r), 5), round(expect, 5))
 
-# TF32 sqrt(9)=3；比较结果写整数寄存器
+# TF20 sqrt(9)=3；比较结果写整数寄存器
 c = run_py([("FLW.S", 0, 0, 0, A_ADDR),
             ("FSQRT.S", 1, 0, 0, 0), ("FSW.S", 0, 0, 1, C_ADDR)],
            {A_ADDR: list(raw_to_trytes(F32.encode(9.0)))})
 r = trytes_to_raw(bytes(c.mem[C_ADDR:C_ADDR + 9]))
-check("PyVM TF32 sqrt(9)=3", F32.decode(r), 3.0)
+check("PyVM TF20 sqrt(9)=3", F32.decode(r), 3.0)
 for cmp_op, expect in [("FEQ", 0), ("FLT", 1), ("FLE", 1)]:
     c = run_py([("FLW.S", 0, 0, 0, A_ADDR), ("FLW.S", 1, 0, 0, B_ADDR),
                 (cmp_op, 5, 0, 1, 0)], DT)
-    check(f"PyVM TF32 {cmp_op}(1.5,2.25)", c.regs[5], expect)
+    check(f"PyVM TF20 {cmp_op}(1.5,2.25)", c.regs[5], expect)
 
-# 双 VM 字节差分：TF32 FADD.S/FMUL.S 的输出 raw 必须逐字节一致
+# 双 VM 字节差分：TF20 FADD.S/FMUL.S 的输出 raw 必须逐字节一致
 if os.path.exists(CVM):
     for mn in ("FADD.S", "FMUL.S"):
         ops = [("FLW.S", 0, 0, 0, A_ADDR), ("FLW.S", 1, 0, 0, B_ADDR),
@@ -232,7 +232,7 @@ if os.path.exists(CVM):
         write_trv(path, prog, mem)
         r = subprocess.run([CVM, path, "/dev/null"], capture_output=True)
         os.unlink(path)
-        check(f"C VM TF32 {mn} 差分", r.stdout, py_out)
+        check(f"C VM TF20 {mn} 差分", r.stdout, py_out)
 
     # P3 修复：tf_dec 的 q+r/P 双重舍入 bug（5.0 的 mant 偏 1 ulp）。
     # 5.0+3.0=8.0 在修复前 PyVM 最低 tryte=+2、C VM=-1（字节不一致）。

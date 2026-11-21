@@ -546,11 +546,11 @@ class Gen:
         IEEE 只活在 wasm 字节码的编码里；运行时 VM 只见 TF raw，不执行二进制语义。"""
         if vt == F32:
             v = struct.unpack("<f", ieee_bytes)[0]
-            fmt = tf.TF32
+            fmt = tf.TF20
             mn = "FLW.S"
         else:
             v = struct.unpack("<d", ieee_bytes)[0]
-            fmt = tf.TF64
+            fmt = tf.TF45
             mn = "FLW"
         raw = fmt.encode(v)
         addr = self.fconst_raw(raw)
@@ -564,7 +564,7 @@ class Gen:
         self.h -= 2
         i0, i1 = self.h, self.h + 1
         self.kill(i1)
-        # 档位助记符：TF64 用无后缀，TF32 用 .S
+        # 档位助记符：TF45 用无后缀，TF20 用 .S
         mn = op_name if vt == F64 else op_name + ".S"
         self.L(f"    FLW {FT0}, {self.slot(i0)}(s0)")
         self.L(f"    FLW {FT1}, {self.slot(i1)}(s0)")

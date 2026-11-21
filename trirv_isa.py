@@ -147,7 +147,7 @@ INST = {
     "AMOOR":(18,1,3,"R"), "AMOXOR":(18,1,4,"R"), "AMOMIN":(18,1,5,"R"), "AMOMAX":(18,1,6,"R"),
     # F 扩展（P2）：rd/rs1/rs2 字段对 F-ARITH/F-CMP 是 freg 编号；
     # F-MEM 的 rs1 是整数地址寄存器、rd 是 freg（FLW）或 rs2 是 freg（FSW）。
-    # funct2 低 1 trit 表示档位：0=TF32(.S) 1=TF64(.D)，本阶段先实现 TF64。
+    # funct2 低 1 trit 表示档位：0=TF20(.S) 1=TF45(.D)，本阶段先实现 TF45。
     "FADD":(19,0,1,"R"), "FSUB":(19,1,1,"R"), "FMUL":(19,2,1,"R"),
     "FDIV":(19,3,1,"R"), "FSQRT":(19,4,1,"R"),
     "FADD.S":(19,0,0,"R"), "FSUB.S":(19,1,0,"R"), "FMUL.S":(19,2,0,"R"),
@@ -161,7 +161,7 @@ INST = {
     # （对齐 RISC-V FCVT 强制 rtz 的先例；funct 2-trit 恰余 8 槽）。拍板 2026-11-21。
     "FCVT.W.T":(20,8,0,"R"),
     "FEQ":(21,0,1,"R"), "FLT":(21,1,1,"R"), "FLE":(21,2,1,"R"),
-    # P3：TF32 档比较（funct2=0，与上面的 TF64 funct2=1 不撞码）
+    # P3：TF20 档比较（funct2=0，与上面的 TF45 funct2=1 不撞码）
     "FEQ.S":(21,0,0,"R"), "FLT.S":(21,1,0,"R"), "FLE.S":(21,2,0,"R"),
 }
 

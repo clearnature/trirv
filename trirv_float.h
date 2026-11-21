@@ -1,6 +1,6 @@
 /* trirv_float.h —— TF 三进制浮点的 C 实现（P2）。
  * 与 trirv_float.py 逐位对齐；Python 版作差分 oracle。
- * freg 存 TF64 的 45-trit raw（分离表示 (sign,mant,exp3) 的无损打包）。
+ * freg 存 TF45 的 45-trit raw（分离表示 (sign,mant,exp3) 的无损打包）。
  * 穿透模型：mant 走宿主 FPU（恒在 [1,3)），exp3 走整数 ALU。
  *
  * 作为头文件被 trirv_vm.c #include（单翻译单元，无链接烦恼）。
@@ -10,14 +10,14 @@
 #include <math.h>
 #include <stdint.h>
 
-/* ---- TF64 常量：1 符号 + 10 阶码 + 34 尾数 = 45 trit ---- */
-#define TF64_EXP_TRITS 10
-#define TF64_MANT_TRITS 34
-#define TF64_BIAS 29524                 /* (3^10-1)/2 */
-#define TF64_MAX_EXP 59048              /* 3^10 - 1 */
-#define TF64_P_MANT 16677181699666569ULL /* 3^34 */
-#define TF64_P_NORM 5559060566555523ULL  /* 3^33 */
-#define TF64_P_SIGN 0                    /* 3^44 > 2^64，运行时用 POW3[44] */
+/* ---- TF45 常量：1 符号 + 10 阶码 + 34 尾数 = 45 trit ---- */
+#define TF45_EXP_TRITS 10
+#define TF45_MANT_TRITS 34
+#define TF45_BIAS 29524                 /* (3^10-1)/2 */
+#define TF45_MAX_EXP 59048              /* 3^10 - 1 */
+#define TF45_P_MANT 16677181699666569ULL /* 3^34 */
+#define TF45_P_NORM 5559060566555523ULL  /* 3^33 */
+#define TF45_P_SIGN 0                    /* 3^44 > 2^64，运行时用 POW3[44] */
 
 /* 说明：3^34=16677181699666569 < 2^64(1.8e19)，可用 uint64。
  * 3^44≈2.8e20 > 2^64，符号权重用 __uint128_t POW3[44]（由 trirv_vm.c 传入）。
@@ -26,40 +26,40 @@
 typedef struct {
     __uint128_t P_MANT, P_NORM, P_SIGN;  /* 3^mant, 3^(mant-1), 3^(exp+mant) */
     __uint128_t ZERO_POS, ZERO_NEG, INF_POS, INF_NEG, QNAN;
-    long bias, max_exp;                   /* P3：档位参数化，替代硬编码 TF64_* 宏 */
+    long bias, max_exp;                   /* P3：档位参数化，替代硬编码 TF45_* 宏 */
     int mant_trits;
 } TFFmt;
 
-static inline void tf64_init(TFFmt *f, const __uint128_t *POW3) {
+static inline void tf45_init(TFFmt *f, const __uint128_t *POW3) {
     f->P_MANT = POW3[34];
     f->P_NORM = POW3[33];
     f->P_SIGN = POW3[44];
-    f->bias = TF64_BIAS;
-    f->max_exp = TF64_MAX_EXP;
-    f->mant_trits = TF64_MANT_TRITS;
+    f->bias = TF45_BIAS;
+    f->max_exp = TF45_MAX_EXP;
+    f->mant_trits = TF45_MANT_TRITS;
     f->ZERO_POS = 0;
     f->ZERO_NEG = f->P_SIGN;
-    f->INF_POS = (__uint128_t)TF64_MAX_EXP * f->P_MANT;
+    f->INF_POS = (__uint128_t)TF45_MAX_EXP * f->P_MANT;
     f->INF_NEG = f->P_SIGN + f->INF_POS;
     f->QNAN = f->INF_POS + 1;
 }
 
-/* P3：TF32 档位 = 1 符号 + 5 阶码 + 14 尾数 = 20 trit（wasm f32 对应）。
- * 与 TF64 共用同一套 tf_* 函数，仅格式常量不同——这是档位参数化的意义。 */
-#define TF32_EXP_TRITS 5
-#define TF32_MANT_TRITS 14
-#define TF32_BIAS 121                    /* (3^5-1)/2 */
-#define TF32_MAX_EXP 242                 /* 3^5 - 1 */
-static inline void tf32_init(TFFmt *f, const __uint128_t *POW3) {
-    f->P_MANT = POW3[TF32_MANT_TRITS];
-    f->P_NORM = POW3[TF32_MANT_TRITS - 1];
-    f->P_SIGN = POW3[TF32_EXP_TRITS + TF32_MANT_TRITS];
-    f->bias = TF32_BIAS;
-    f->max_exp = TF32_MAX_EXP;
-    f->mant_trits = TF32_MANT_TRITS;
+/* P3：TF20 档位 = 1 符号 + 5 阶码 + 14 尾数 = 20 trit（wasm f32 对应）。
+ * 与 TF45 共用同一套 tf_* 函数，仅格式常量不同——这是档位参数化的意义。 */
+#define TF20_EXP_TRITS 5
+#define TF20_MANT_TRITS 14
+#define TF20_BIAS 121                    /* (3^5-1)/2 */
+#define TF20_MAX_EXP 242                 /* 3^5 - 1 */
+static inline void tf20_init(TFFmt *f, const __uint128_t *POW3) {
+    f->P_MANT = POW3[TF20_MANT_TRITS];
+    f->P_NORM = POW3[TF20_MANT_TRITS - 1];
+    f->P_SIGN = POW3[TF20_EXP_TRITS + TF20_MANT_TRITS];
+    f->bias = TF20_BIAS;
+    f->max_exp = TF20_MAX_EXP;
+    f->mant_trits = TF20_MANT_TRITS;
     f->ZERO_POS = 0;
     f->ZERO_NEG = f->P_SIGN;
-    f->INF_POS = (__uint128_t)TF32_MAX_EXP * f->P_MANT;
+    f->INF_POS = (__uint128_t)TF20_MAX_EXP * f->P_MANT;
     f->INF_NEG = f->P_SIGN + f->INF_POS;
     f->QNAN = f->INF_POS + 1;
 }

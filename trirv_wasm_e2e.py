@@ -317,28 +317,28 @@ class Ref:
                 i, pc = trirv_wasm.uleb(body, pc); self.glob[i] = st.pop()
             elif op == 0x41:
                 v, pc = trirv_wasm.sleb(body, pc); st.append(s32(v))
-            elif op == 0x43:                       # f32.const：IEEE → TF32 raw
+            elif op == 0x43:                       # f32.const：IEEE → TF20 raw
                 v = struct.unpack("<f", body[pc:pc + 4])[0]; pc += 4
-                st.append(tf.TF32.encode(v))
-            elif op == 0x44:                       # f64.const：IEEE → TF64 raw
+                st.append(tf.TF20.encode(v))
+            elif op == 0x44:                       # f64.const：IEEE → TF45 raw
                 v = struct.unpack("<d", body[pc:pc + 8])[0]; pc += 8
-                st.append(tf.TF64.encode(v))
+                st.append(tf.TF45.encode(v))
             elif op in (0x92, 0x93, 0x94, 0x95):   # f32.add/sub/mul/div
-                b2 = st.pop(); a2 = st.pop(); F = tf.TF32
+                b2 = st.pop(); a2 = st.pop(); F = tf.TF20
                 st.append({0x92: lambda x,y,f: tf.f_add(x,y,f),
                            0x93: lambda x,y,f: tf.f_add(x,y,f,subtract=True),
                            0x94: tf.f_mul, 0x95: tf.f_div}[op](a2, b2, F))
             elif op in (0xA0, 0xA1, 0xA2, 0xA3):   # f64.add/sub/mul/div
-                b2 = st.pop(); a2 = st.pop(); F = tf.TF64
+                b2 = st.pop(); a2 = st.pop(); F = tf.TF45
                 st.append({0xA0: lambda x,y,f: tf.f_add(x,y,f),
                            0xA1: lambda x,y,f: tf.f_add(x,y,f,subtract=True),
                            0xA2: tf.f_mul, 0xA3: tf.f_div}[op](a2, b2, F))
             elif op in (0x91, 0x9F):               # f32.sqrt / f64.sqrt
-                F = tf.TF32 if op == 0x91 else tf.TF64
+                F = tf.TF20 if op == 0x91 else tf.TF45
                 st.append(tf.f_sqrt(st.pop(), F))
             elif 0x5B <= op <= 0x66:              # f32/f64 比较
                 b2 = st.pop(); a2 = st.pop()
-                F = tf.TF32 if op <= 0x60 else tf.TF64
+                F = tf.TF20 if op <= 0x60 else tf.TF45
                 base = 0x5B if op <= 0x60 else 0x61
                 k = op - base
                 opn = ("eq", "eq", "lt", "lt", "le", "le")[k]
@@ -531,10 +531,10 @@ def float_suite():
         return w
 
     def near(v, tol=1e-4):
-        return lambda raw: abs(tf.TF64.decode(raw) - v) <= tol
+        return lambda raw: abs(tf.TF45.decode(raw) - v) <= tol
 
     def near32(v, tol=1e-2):
-        return lambda raw: abs(tf.TF32.decode(raw) - v) <= tol
+        return lambda raw: abs(tf.TF20.decode(raw) - v) <= tol
 
     cases64 = [
         ("wasm f64 1.5+2.25=3.75", F64C(1.5) + F64C(2.25) + F64ADD, near(3.75)),

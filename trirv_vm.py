@@ -66,7 +66,7 @@ class VM:
 
     def __init__(self, program, mem_init=None, stdin=b"", argv=None):
         self.regs = [0] * isa.NREG
-        # F 扩展浮点寄存器堆：f0..f31，存 TF64 的 45-trit raw（= (sign,mant,exp3)
+        # F 扩展浮点寄存器堆：f0..f31，存 TF45 的 45-trit raw（= (sign,mant,exp3)
         # 分离表示的无损打包）。裸 double 会把指数卡在 3^646，违背全阶码模型；
         # raw 打包天然无损，算术时才 decompose → mant 进 FPU、exp3 走整数 → compose。
         self.freg = [0] * 32
@@ -655,8 +655,8 @@ class VM:
                     self.lr_valid = False
         elif name in ("FADD", "FSUB", "FMUL", "FDIV", "FSQRT",
                       "FADD.S", "FSUB.S", "FMUL.S", "FDIV.S", "FSQRT.S"):
-            # 档位：带 .S 后缀或 funct2==0 → TF32，否则 TF64。
-            fmt = tf.TF32 if (name.endswith(".S") or d.get("funct2", 1) == 0) else tf.TF64
+            # 档位：带 .S 后缀或 funct2==0 → TF20，否则 TF45。
+            fmt = tf.TF20 if (name.endswith(".S") or d.get("funct2", 1) == 0) else tf.TF45
             base = name.split(".")[0]
             av, bv = self.freg[rs1] % MOD, self.freg[rs2] % MOD
             if base == "FADD":
@@ -671,20 +671,20 @@ class VM:
                 r = tf.f_sqrt(av, fmt)
             self.freg[rd] = r % MOD
         elif name in ("FEQ", "FLT", "FLE", "FEQ.S", "FLT.S", "FLE.S"):
-            fmt = tf.TF64 if d.get("funct2", 1) == 1 else tf.TF32
+            fmt = tf.TF45 if d.get("funct2", 1) == 1 else tf.TF20
             opn = {"FEQ": "eq", "FLT": "lt", "FLE": "le"}[name.split(".")[0]]
             self.regs[rd] = tf.f_cmp(self.freg[rs1] % MOD, self.freg[rs2] % MOD,
                                      fmt, opn)
         elif name in ("FCVT.W", "FCVT.W.T", "FCVT.F"):
-            # 整数 ↔ 浮点（TF64）：FCVT.W rd=freg→整数写 rd（round-to-nearest）；
+            # 整数 ↔ 浮点（TF45）：FCVT.W rd=freg→整数写 rd（round-to-nearest）；
             # FCVT.W.T 向零截断（rtz，C 的 (int) cast / wasm trunc 语义）；
             # FCVT.F 整数 rs1→freg[rd]
             if name == "FCVT.W":
-                self.regs[rd] = u(round(tf.TF64.decode(self.freg[rs1] % MOD)))
+                self.regs[rd] = u(round(tf.TF45.decode(self.freg[rs1] % MOD)))
             elif name == "FCVT.W.T":
-                self.regs[rd] = u(int(tf.TF64.decode(self.freg[rs1] % MOD)))  # int() = 向零截断
+                self.regs[rd] = u(int(tf.TF45.decode(self.freg[rs1] % MOD)))  # int() = 向零截断
             else:
-                self.freg[rd] = tf.TF64.encode(float(s(self.regs[rs1]))) % MOD
+                self.freg[rd] = tf.TF45.encode(float(s(self.regs[rs1]))) % MOD
         else:
             raise RuntimeError(f"未实现指令: {name}")
 

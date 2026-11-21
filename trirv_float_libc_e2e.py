@@ -10,7 +10,7 @@ trirv_float.encode 逐位一致（见 §0）。
 踩进字符串/初始化全局区——本套件按 ≤40 case 分块规避（记入立项书 §5.6）。
 
 语义要点（契约锁定，详见 TERNARY_FLOAT_PROPOSAL.md §5.6）：
-  - double 形参/返回值 = TF64 raw（45-trit 字，guest 视角就是 int）
+  - double 形参/返回值 = TF45 raw（45-trit 字，guest 视角就是 int）
   - strtod：≤20 位有效数字正确舍入（Fraction oracle 全量锁定）；
     inf/infinity/nan 接受（不区分大小写）；十六进制浮点不接受
   - ecvt：n∈{1..16} 保留否则 15（musl 无符号钳制怪癖）；±Inf/NaN →
@@ -64,7 +64,7 @@ _P33 = 3 ** 33
 
 
 def exact_round(num, den):
-    """正确舍入 num/den → TF64 raw（half-up，对齐 trirv_float）。num/den > 0"""
+    """正确舍入 num/den → TF45 raw（half-up，对齐 trirv_float）。num/den > 0"""
     x = 0
     # 归一化：bit_length 精确估计 3^k 大步长 + 单位步校正
     # （纯逐 ×3 在 den ≈ 10^643 的 denormal 案例上是 ~1400 次大整数乘，分钟级）
@@ -101,15 +101,15 @@ def oracle_strtod(s):
         i += 1
     low = s[i:].lower()
     if low.startswith('infinity'):
-        return (tf.TF64.INF_NEG if neg else tf.TF64.INF_POS), i + 8, 'inf'
+        return (tf.TF45.INF_NEG if neg else tf.TF45.INF_POS), i + 8, 'inf'
     if low.startswith('inf'):
-        return (tf.TF64.INF_NEG if neg else tf.TF64.INF_POS), i + 3, 'inf'
+        return (tf.TF45.INF_NEG if neg else tf.TF45.INF_POS), i + 3, 'inf'
     if low.startswith('nan'):
         j = i + 3
         if j < len(s) and s[j] == '(':
             k = s.find(')', j)
             j = (k + 1) if k != -1 else j
-        return tf.TF64.NAN, j, 'nan'
+        return tf.TF45.NAN, j, 'nan'
     digs = []
     dot = False
     exp10 = 0
@@ -158,7 +158,7 @@ def oracle_strtod(s):
     sig = len(digs[:20])
     mag = P + sig
     if mag >= 14100:
-        raw = tf.TF64.INF_NEG if neg else tf.TF64.INF_POS
+        raw = tf.TF45.INF_NEG if neg else tf.TF45.INF_POS
         return raw, i, 'inf'
     if mag <= -14130:
         raw = 3 ** 44 if neg else 0
@@ -308,7 +308,7 @@ def self_check():
             continue
         n += 1
         oraw = exact_round(*d.as_integer_ratio())
-        if oraw != tf.TF64.encode(d):
+        if oraw != tf.TF45.encode(d):
             bad += 1
     check("oracle 自校验 vs encode", bad, 0)
 
@@ -465,7 +465,7 @@ def suite_ecvt_fcvt_gcvt():
         e3 = random.randint(-200, 200)
         M = random.randint(3 ** 33, 3 ** 34 - 1)
         raws.append(M + (e3 + 29524) * 3 ** 34)
-    raws += [0, 3 ** 44, tf.TF64.INF_POS, tf.TF64.INF_NEG, tf.TF64.NAN,
+    raws += [0, 3 ** 44, tf.TF45.INF_POS, tf.TF45.INF_NEG, tf.TF45.NAN,
              3 ** 33 + 29524 * 3 ** 34,          # 1.0
              2 * 3 ** 33 + 29524 * 3 ** 34]      # 2.0
     N = len(raws)

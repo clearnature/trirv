@@ -2,8 +2,8 @@
  *
  * 与上游差异：
  *   1. 上游是 sprintf("%.*e"/"%.*f"/"%.*g") 的薄包装——TriRV 无 stdio 浮点格式化，
- *      直接从 TF64 raw 的 (s, M, E) 走位生成十进制数字串。
- *   2. 入参 double = TF64 raw（45-trit 字，guest 视角就是 int）。
+ *      直接从 TF45 raw 的 (s, M, E) 走位生成十进制数字串。
+ *   2. 入参 double = TF45 raw（45-trit 字，guest 视角就是 int）。
  *   3. 静态 buf 用全局数组（TriRV C 子集无 static 局部；单线程假设与 musl 相同）。
  *   4. 负 raw 归一（重要）：s=1 且 E 大的 raw（如 ±Inf 负数）以 45-trit 平衡
  *      解读为负数（mod ≥ 1.477e21 的字全部读负），入口必须先归一
