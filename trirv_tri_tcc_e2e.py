@@ -167,6 +167,14 @@ CASES = [
     ("浮点小常量", "int main(void){ double d=1e-9; return (int)(d*1e9+0.5); }", 1),  # 扩域：1e-9 装载+乘法+round
     ("浮点超域正", "int main(void){ double d=1e300; return d>0; }", 1),   # 扩域：exp3≈628
     ("浮点超域负", "int main(void){ double d=-1e-300; return d<0; }", 1),  # 扩域：exp3≈-628
+
+    # ---- 大整数常量通道（T-2.4 诊断实锤：>2^32 的 VT_INT 字面量曾被 gen_cast
+    #      0xffffffff 掩码截断——TriRV int=45 trit 全域需 64 位常量通道） ----
+    ("int常量2^32边界", "int mod97(int x){ return x - x/97*97; } int main(void){ int x = 5000000000; return mod97(x); }", 5000000000 % 97),
+    ("int常量3^34", "int mod97(int x){ return x - x/97*97; } int main(void){ int x = 16677181699666569; return mod97(x); }", 16677181699666569 % 97),
+    ("int常量3^38", "int mod97(int x){ return x - x/97*97; } int main(void){ int x = 1350851717672992089; return mod97(x); }", 1350851717672992089 % 97),
+    ("int常量静态初值", "int g = 16677181699666569; int mod97(int x){ return x - x/97*97; } int main(void){ return mod97(g); }", 16677181699666569 % 97),
+    ("int常量1e16系数", "int g = 10000000000000000; int main(void){ return g - g/97*97; }", 10**16 % 97),
     ("FCVT.W.T负数", "int main(void){ double d=-3.7; return (int)d; }", (-3)&0xFF),  # 向零：-3（round 给 -4）
     ("FCVT.W.T半途", "int main(void){ double d=3.5; return (int)d; }", 3),   # 向零：3（round-half-even 给 4）
 

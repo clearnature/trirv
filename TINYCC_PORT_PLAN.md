@@ -412,3 +412,37 @@ TF_NUM 映射成 0——与 TF_ZERO 撞键 → **1e300 == 0 判等**（扩域探
 -1e-300）；float 三契约 144/39/4928 PASS 无回归；run_all_tests --fast
 43 套全绿（PGO VM 重建后）。
 
+## 15. T-2.4 第一增量：64 位整数常量通道修复（2026-11-22）
+
+**RED 实证**：tri-tcc 的 >2^32 VT_INT 字面量全错（5e9→38 vs oracle 73、
+3^34→214 vs 24）——边界扫描闭合模型：gen_cast 常量路径 0xffffffff 掩码
+截断（笔记 §1.4 "⚠ TriRV 落点"的第一个真实消费者）。trirv_cc 同源码
+oracle 全对（128 位常量通道）——责任在 tri-tcc。
+
+**修复（A'，四处 TRIRV 守卫）**：value64 VT_INT 不截断、gen_cast 源端/
+目标端 VT_INT 豁免、int→long double 判号分支 63 位。
+**坑实录（本次 patch 自伤被门控拦截）**：目标掩码的 TRIRV 块曾写成
+"if(B/S){...} else if(INT);"——#endif 后的 uint32 块变无条件执行，
+VT_INT 豁免被二次掩码击穿（char 57 碰巧再掩无害，5e9 仍截断）——
+TRIRV 分支必须自带完整 if/else-if/else，#else 保留上游原块。
+**构建坑**：rm trirv-tcc.o 不够——真正主体是 trirv-tcc.o（551KB ONE_SOURCE
+单对象）之外还有 tcc.o(19KB 壳)；stale 排查用"文件尾加语法错误探针"验证
+编译链活性。
+
+**修复语义边界（记档）**：覆盖 |v| < 2^63 ≈ 3^38.7 的全部字面量
+（10^16 系数/3^34 等）；>2^63 字面量（SD_INF≈9.8e20 等 4 个）超 tccpp
+词法 int64 上限，需 musl_tri 惰性运行时计算（下一增量）。gen_opic 折叠
+仍 uint64（§1.3 LP32 折叠拍板不变——分歧仅大数乘溢出场景）。
+
+**strtod 剩余错码（第二个独立 bug，已登记待专项）**：A' 后 strtod("3")
+仍返回 0。调试链（本轮资产）：入口 s[0]=51 ✓、主循环 D=1/E=111
+（anydigit=1 seen=1）✓、辅助函数（setw/mul/div/cmp/copy/trimag）单独
+指纹全对 ✓、stage 停 100（走位/组装段未达）→ **主循环后控制流跳飞**、
+JALR 落回 main 尾部"正常"ECALL exit=0（伪正常）。trirv_cc 同源码单 TU
+oracle 全对。调试资产：/tmp/strtod_dbg{,2,3,4,5,6}.c 插桩链 +
+fdbg*/fst/fdump 探针族 + PyVM trace 脚本 + slot 级反汇编（可疑点
+slot1196-1252 段的 JAL 序列）。
+
+**验证**：e2e **243 PASS / 0 FAIL / 124 用例**（大常量 5 例 RED→GREEN）；
+run_all_tests --fast 43 套全绿。
+
