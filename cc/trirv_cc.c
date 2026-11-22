@@ -1193,6 +1193,10 @@ static int SPILL_TOP;            /* 溢出区 tryte 偏移(相对 sp) */
 static char **FNRETS; static int *FNVARGS; static char **FNEYS;
 static int NFNRET, CAPFNRET, CAPFNVARGS, CAPFNEYS;
 static char **STRSEG; static int *STRLEN; static int NSTR, CAPSTR, CAPSTRLEN; static int STRBASE=100;
+/* 栈基址（tryte）：VM sp 初值（PyVM regs[2]=C VM reg[2]，一致）。
+ * 内存映射：数据 200..STACK_BASE-1（全局+字符串），栈 STACK_BASE+ 向上。
+ * 契约文档 trirv-unified-memory-abi.md §3；编译器链接期静态检查越界拒绝。 */
+#define TRI_STACK_BASE 4096
 static int STRSEG_START=100;             /* 字符串段写出的起始地址（= 分配前的 STRBASE） */
 static void assign_glob_addrs(void);     /* 全局地址分配（会改写 STRBASE），实现见下方 */
 static void gen_glob_data(void);         /* 全局数据生成（依赖字符串地址），实现见下方 */
@@ -3380,6 +3384,16 @@ int main(int argc,char**argv){
         strings_walk(GLOBS[i].init);
     }
     for(int i=0;i<NFN;i++){ strings_walk(FNS[i]->fbody); }
+    /* C2 内存映射纪律（2026-11-22）：数据区顶（全局+字符串末尾）不得越过栈基址。
+       旧行为：静默编译 → 栈帧与静态数据重叠 → 运行期互相踩踏（静默错码）。
+       布局：数据 200..STACK_BASE-1（GBASE=200 起全局、字符串接后），栈向上。 */
+    if (STRBASE > TRI_STACK_BASE) {
+        fprintf(stderr,
+                "UNSUPPORTED: 数据区顶 %d 越过栈基址 %d——全局/字符串过大 "
+                "（内存映射：数据 %d..%d，栈 %d+；需内存映射升级或缩小静态数据）\n",
+                STRBASE, TRI_STACK_BASE, GBASE, TRI_STACK_BASE - 1, TRI_STACK_BASE);
+        exit(2);
+    }
     gen_glob_data();
     NOUT=0; LBL=0;
     /* 是否有用户定义的 __libc_start_main（决定 crt0 走 musl 链还是直连 main） */

@@ -4,10 +4,13 @@
 覆盖: 算术/比较/逻辑、while/for/if、break/continue、函数、递归。
 """
 import os
+import tempfile
+import subprocess
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
+CC_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cc", "bin", "trirv_cc")
 
 S = isa.to_signed_word
 
@@ -68,9 +71,58 @@ def main():
     for line in [l for l in txt.splitlines() if l.strip()][:12]:
         print("   " + line.strip())
     total = len(CASES) + 4 + 2
+    ok_dr, tot_dr = test_data_region()
+    passed += ok_dr
+    total += tot_dr
     print(f"\n总计通过 {passed}/{total}")
     assert passed == total, "存在失败用例"
     print("全部通过 ✓ 工具链已具备编译 C + syscall 的 libc 地基能力")
+
+
+def test_data_region():
+    """C2 内存映射纪律（2026-11-22）：数据区顶（全局+字符串）不得越过栈基址。
+
+    内存映射（trirv-unified-memory-abi.md §3）：数据 200..4095，栈 4096+ 向上。
+    旧行为：trirv_cc 不检查——超大全局静默编译，栈帧与静态数据重叠 → 运行期
+    互相踩踏（静默错码）。新行为：链接期静态检查 STRBASE ≤ 4096，越界诚实拒绝。
+    边界精确例锁定 9 tryte/字的算术（432 int 恰好 4095 ≤ 4096）。"""
+    print("-" * 60)
+    print("数据区 vs 栈基址边界（C2 内存映射纪律）")
+    cf = tempfile.mktemp(suffix=".c")
+    tf = tempfile.mktemp(suffix=".trv")
+    ok = 0
+    total = 0
+
+    def compile_rc(src):
+        with open(cf, "w") as f:
+            f.write(src)
+        r = subprocess.run([CC_BIN, cf, tf], capture_output=True, text=True)
+        return r.returncode, r.stderr
+
+    cases = [
+        # (名, 源, 期望 rc==0?, 报错 needle 或 None)
+        ("越界拒绝 big[600]", "int big[600]; int id(int x){return x;} "
+         "int main(void){ big[599]=1; return id(0)+big[0]; }", False, "栈基址"),
+        ("越界精确 b[433]", "int b[433]; int main(void){ b[432]=9; return 0; }",
+         False, "栈基址"),
+        ("边界安全 b[432](4095≤4096)", "int b[432]; int main(void){ b[431]=9; return b[431]&255; }",
+         True, None),
+        ("常规正例 ok[300]", "int ok[300]; int main(void){ ok[299]=7; return ok[299]&255; }",
+         True, None),
+    ]
+    for name, src, want_ok, needle in cases:
+        total += 1
+        rc, err = compile_rc(src)
+        good = (rc == 0) == want_ok and (needle is None or needle in err)
+        if good:
+            ok += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}: rc={rc} stderr={err.strip()[:100]}")
+    os.unlink(cf)
+    if os.path.exists(tf):
+        os.unlink(tf)
+    return ok, total
 
 
 def test_rejects():
