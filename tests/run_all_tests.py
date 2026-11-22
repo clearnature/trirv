@@ -65,6 +65,7 @@ def _build_binaries():
 # (脚本, 显示名, 是否慢, 已知缺口)
 SUITES = [
     ("trirv_e2e.py",              "汇编端到端",              False, None),
+    ("../debugger/test_trirv_dbg.py", "调试器 MVP 18 项",       False, None),
     ("test_isa_completeness.py",  "ISA 完整性 86 项",        False, None),  # 仓库根（目录重组后路径）
     ("trirv_tdd_contract.py",     "契约测试（TDD 83 项）",    False, None),
     ("trirv_tritlogic_e2e.py",    "AND/OR/XOR 逐 trit 锁定",  False, None),
