@@ -16,6 +16,7 @@ wasm 前端 + 三进制浮点（TF45/TF20）。
 | `float/` | 三进制浮点：trirv_float.py（TF45/TF20 编解码+运算）、trirv_float.h（C VM 侧） |
 | `wasm/` | wasm 前端（trirv_wasm.py，f32/f64 编译期穿透） |
 | `libc-musl/` | musl 1.2.5 移植：musl_tri/（三进制原生重写 16 文件）、preprocess_musl.py、batch_musl_compile.py（trirv_cc 管线 65/66）、batch_musl_tri_tcc.py（tri-tcc 管线） |
+| `libc-musl/musl_tri/arch_tri/` | **TriRV arch 层**（2026-11-23）：syscall_tri.h（read/write→read8/write8 路由，musl 唯一 syscall 对接面）+ atomic_tri.h（a_cas/a_swap/a_fetch_add/a_and/a_or/a_ctz_64/a_barrier 纯 C 化，单核口径）——上游 riscv64 arch 层全内联汇编，本层纯 C 重写；契约 trirv_arch_e2e 12 项 |
 | `tests/` | 契约套件 47 个（e2e/差分/fuzz），run_all_tests.py 聚合（--fast 43 套） |
 | `bench/` | 性能基准（bitops/div/float/wasm + perf 系列） |
 | `tools/` | 工具：export_trv.py（TRV1 导出）、build.sh、trirv_encoder.py、trirv_difftest.py、trirv_adiff.py |
