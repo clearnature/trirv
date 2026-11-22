@@ -688,6 +688,15 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
   语义统一），sh≥45 时结果为 0。两版 VM 实现一致。
 - **SLL/SLLI**：结果 mod 3^45；用恒等式 `(w·3^sh) mod 3^45 = (w mod 3^(45-sh))·3^sh`
   规避大移位量下的 128 位溢出。
+- **__tint 类型规范（2026-11-22 登记，C1 DoD 欠账清偿）**：45-trit 三值逻辑
+  整数类型，编码为 VT_INT|VT_TINT 修饰位（long 模式同构，不占 BTYPE 槽）。
+  逻辑运算 TAND(min)/TOR(max)/TNOT(2−t) 直发 TT 门；`==/!=` 位型全等走整数
+  路径；Kleene 门控拒绝：`^`（Kleene 无异或）、序比较（三值无序）、算术
+  （+ − * / % << >>）、与 int 隐式混算（0 中性零豁免 if/! 合成的 ==0/!=0）。
+  尺寸 9 tryte（同 int）；punning 经 char* 逐 tryte 写全 trit 模式
+  （全 1 = (3^45−1)/2、全 2 = 3^45−1 ≡ −1）。契约：trirv_tri_tcc_e2e TINT 组
+  15 用例（TERNARY_COMPAT_PLAN §3.1 真值表推导）。批次 C2（__tbool/__tint2）
+  见 docs/TERNARY_COMPAT_PLAN.md。
 - **MUL**：乘积在 `__int128` 上直接相乘会溢出（45-trit × 45-trit → 90 trit ≫ 128 bit）。
   两版都改走 `mul90()` 取低半 `lo = (a·b) mod 3^45`（与 MULH 共用 90-trit schoolbook 乘
   法，零硬件除法、零溢出）。Python 侧大整数 `u(a*b)` 本就精确，作为参考实现。

@@ -3028,9 +3028,9 @@ static void tvo_import(const char*path){
         fprintf(stderr,"link error: %s is not TRVO\n",path); exit(1);
     }
     int lblbase=0;
-    if(fgets(line,sizeof line,fp)&&sscanf(line,"LBLBASE %d",&lblbase)==1){
-        LBL+=lblbase;                       /* 标签计数续接：单元间 _L* 不冲突 */
-    }
+    /* LBLBASE 死码清理（2026-11-22 A5b）：主流程 LBL=0 重置令导入端续接失效
+     * （防冲突实际靠 tvo_relabel 的 _X<seq>_ 改写）。格式字段保留兼容旧文件，
+     * 导入端不再累加。 */
     /* 第一遍：先扫 FUNC 边界数，给 OUT 行预留单元前缀改写需要原行 */
     while(fgets(line,sizeof line,fp)){
         if(!strncmp(line,"GLOB ",5)){
@@ -3390,6 +3390,22 @@ int main(int argc,char**argv){
      * struct 按值传参/返回已于 2026-11-19 实现（见 gen_func 的 prologue 拷贝与
      * N_RETURN 的 sret 拷贝），不再拦截。位运算/移位工作寄存器闸门
      * （gate_check 循环）已于 2026-11-22 随本征直发退役。 */
+    /* A5a（2026-11-22）：导入体 LINE 的 JAL 符号引用同样受 UNDEF 检测——
+     * 闭包导出不携带缺失上游时，链接期诚实报错（旧行为：导入体不扫描，
+     * 缺失引用静默通过 → 运行期跳空）。syscall 内建豁免。 */
+    for(int k2=0;k2<NTVO;k2++){
+        const char*t=TVO_OUT[k2];
+        if(!strncmp(t,"JAL ra, ",8)){
+            const char*fn=t+8;
+            int known=0;
+            { int q; for(q=0;q<NFN;q++) if(!strcmp(FNS[q]->s,fn)){known=1;break;} }
+            if(!known && syscall_no((char*)fn)<0){
+                fprintf(stderr,"link error: undefined reference to '%s' (in imported body)\n",fn);
+                exit(1);
+            }
+        }
+    }
+
     /* 函数名表 */
     for(int i=0;i<NFN;i++){
         GROW(FNRETS,CAPFNRET,NFNRET,char*); GROW(FNVARGS,CAPFNVARGS,NFNRET,int);
@@ -3527,7 +3543,6 @@ int main(int argc,char**argv){
         fprintf(out,"TRVO 1\n");
         fprintf(out,"LBLBASE %d\n",LBL);          /* 标签计数续接用 */
         for(int i=0;i<NGLOB;i++){
-            fprintf(stderr,"[dbg] GLOB %s data=%p size=%d\n",GLOBS[i].name,(void*)GLOBS[i].data,GLOBS[i].size);
             fprintf(out,"GLOB %s %s ",GLOBS[i].name,GLOBS[i].ty);
             /* 初值字节 hex（gen_glob_data 后 data 有效；坑实录：曾不导初值——
                导入端 global_add(init=NULL) 全零，strtod_tri 的 SD_P34=3^34
@@ -3543,9 +3558,11 @@ int main(int argc,char**argv){
             fprintf(out,"\n");
         }
         for(int i=0;i<NFN;i++){
-            /* TRVO 导入的函数（fbody==NULL）不转发导出——它们属于
-             * 上游 .trvo，下游链接时应直接 -l 上游文件，否则重复定义 */
-            if(!FNS[i]->fbody) continue;
+            /* A5a 闭包转发导出（2026-11-22）：导入函数（fbody==NULL）连同
+             * 本单元函数一并导出——.trvo 链可传递，下游一次 -l 拿到完整闭包。
+             * 若下游同时 -l 上游原件 → duplicate function 诚实报错（安全网）。
+             * TRV_NO_FORWARD=1 恢复旧行为（平铺半闭包）。 */
+            if(!FNS[i]->fbody && getenv("TRV_NO_FORWARD")) continue;
             fprintf(out,"FUNC %s %d\n",FNS[i]->s,FNS[i]->nparams);
             for(int p=0;p<FNS[i]->nparams;p++)
                 fprintf(out,"PARAM %d %s %s\n",p,FNS[i]->params[p],FNS[i]->ptypes[p]);

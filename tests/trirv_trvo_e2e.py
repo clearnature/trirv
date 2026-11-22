@@ -268,6 +268,45 @@ else:
     c3 = vm.VM(pp, mem_init=mem2).run(max_steps=2000000)
     check("跨单元/字符串行为位图", c3.exit_code & 0xFF, 0)
 
+# ================ Z. 两级 .trvo 闭包链（A5a，2026-11-22） ================
+# lib1 → lib1.trvo；lib2 导入 lib1 编出 lib2_closure.trvo（闭包转发导出）；
+# main 只 -l lib2_closure.trvo——增量构建的传递闭包形态（下游一次 -l）。
+# 坑实录：旧导出跳过导入函数（fbody==NULL），闭包只有一半——下游必须再
+# -l 全部上游单元；且 GLOB/STR 本来就转发（半闭包自相矛盾）。
+lib1 = tempfile.mktemp(suffix=".c")
+with open(lib1, "w") as f:
+    f.write("int lib1_fn(void){ return 11; }\n")
+lib1_trvo = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib1, lib1_trvo], check=True, capture_output=True)
+lib2 = tempfile.mktemp(suffix=".c")
+with open(lib2, "w") as f:
+    f.write("int lib1_fn(void);\n"
+            "int lib2_fn(void){ return lib1_fn() * 2; }\n")
+lib2_closure = tempfile.mktemp(suffix=".trvo")
+r = subprocess.run([CC, lib2, lib2_closure, "-l", lib1_trvo], capture_output=True, text=True)
+check("闭包/二级导出编译", r.returncode, 0)
+main_z = tempfile.mktemp(suffix=".c")
+with open(main_z, "w") as f:
+    f.write("int lib2_fn(void);\n"
+            "int main(void){ return lib2_fn(); }\n")
+r = subprocess.run([CC, main_z, tfz := tempfile.mktemp(suffix=".trv"), "-l", lib2_closure],
+                   capture_output=True, text=True)
+if r.returncode != 0:
+    check("闭包/主程序单 -l 链接", "link ok", (r.stderr or "")[:120])
+else:
+    check("闭包/主程序单 -l 链接", 0, 0)
+    prog_data = open(tfz, "rb").read()
+    nn = struct.unpack_from("<I", prog_data, 8)[0]
+    pp = list(struct.unpack_from("<%dI" % nn, prog_data, 16))
+    off2 = 16 + 4 * nn
+    mem2 = {}
+    for _ in range(struct.unpack_from("<I", prog_data, 12)[0]):
+        a3, l3 = struct.unpack_from("<II", prog_data, off2); off2 += 8
+        mem2[a3] = list(prog_data[off2:off2 + l3]); off2 += l3
+    c3 = vm.VM(pp, mem_init=mem2).run(max_steps=2000000)
+    check("闭包/行为位图(11*2=22)", c3.exit_code & 0xFF, 22)
+
 print(f"\nTRVO 目标文件端到端：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)

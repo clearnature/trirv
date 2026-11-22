@@ -85,15 +85,23 @@ def run_dual(trv_path, max_steps=30000):
 
 
 # ================ 编译 4 个 tri 文件 ================
-# strstr 依赖 strncmp/strlen/strchr 的 TRVO（批量产物）；memmem 依赖 memcmp
-DEPS = [os.path.join(BATCH, f) for f in
-        ("strncmp.trvo", "strlen.trvo", "memcmp.trvo")]
+# strstr 依赖 strncmp/strlen（+memcmp）TRVO（批量产物）；memmem 依赖 memcmp。
+# 2026-11-22 闭包转发导出（A5a）后：闭包必须**不相交**链接——两个闭包同携
+# strncmp 体 → duplicate 诚实报错（安全网）。链形：strstr 先吸收
+# strncmp/strlen/memcmp 成 C1；memmem 链入 C1（∪ memcmp 已在 C1 内）；
+# 最终 main -l memmem闭包 ∪ strcspn ∪ strspn，成员互斥。
+DEPS_ALL = [os.path.join(BATCH, f) for f in
+            ("strncmp.trvo", "strlen.trvo", "memcmp.trvo")]
 tri_trvos = {}
 for tri_c in ("strcspn_tri", "strspn_tri", "strstr_tri", "memmem_tri"):
     src = os.path.join(TRI, tri_c + ".c")
     tvo = tempfile.mktemp(suffix=".trvo")
-    libs = [d for d in DEPS if os.path.exists(d)] if "strstr" in tri_c or "memmem" in tri_c else []
-    r = compile_to(src, tvo, libs)
+    libs = []
+    if tri_c == "strstr_tri":
+        libs = [d for d in DEPS_ALL if os.path.exists(d)]
+    elif tri_c == "memmem_tri":
+        libs = [tri_trvos["strstr_tri"]]       # strstr 闭包 ⊇ memcmp，再 -l 原件即 duplicate
+    r = compile_to(src, tvo, [x for x in libs if x])
     check(f"tri/{tri_c} 编译", r.returncode, 0)
     tri_trvos[tri_c] = tvo
 
@@ -138,11 +146,10 @@ cf = tempfile.mktemp(suffix=".c")
 with open(cf, "w") as f:
     f.write(TEST_SRC)
 args = [CC, cf, trv]
-for t in tri_trvos.values():
-    args += ["-l", t]
-for d in DEPS:
-    if os.path.exists(d):
-        args += ["-l", d]
+for t in (tri_trvos["memmem_tri"], tri_trvos["strcspn_tri"], tri_trvos["strspn_tri"]):
+    args += ["-l", t]       # memmem 闭包 ⊇ strstr/strncmp/strlen/memcmp；互斥补 strcspn/strspn
+# 2026-11-22 闭包转发导出（A5a）后：strstr/memmem 的 .trvo 已闭包含
+# strncmp/strlen/memcmp 依赖体，DEPS 平铺 -l 会 duplicate 报错（安全网）
 r = subprocess.run(args, capture_output=True, text=True)
 if r.returncode != 0:
     print(f"  [link rc={r.returncode}] {r.stderr.strip()[:200]}")
