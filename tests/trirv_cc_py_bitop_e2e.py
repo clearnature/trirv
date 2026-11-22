@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""trirv_cc_py_bitop_e2e —— Python 参考后端 vs C 后端的位运算/移位差分。
+"""trirv_cc_py_bitop_e2e —— Python 参考后端位运算/移位契约。
 
 同一份 C 源码用 trirv_cc.py（Python 参考后端，TRV_CC=py）编译，
-PyVM 执行，退出码对齐方案 A（72-bit 位视图）语义——锁定两套后端一致。
+PyVM 执行，退出码对齐三值本征语义（2026-11-22 方言拍板，方案 A 退役）。
 
-覆盖：& | ^ ~（NOT 方案 A 语义：~0 != -1）<< >>（常数移位/变量移位/
-无符号右移/负数右移）、组合表达式。负数操作数的期望值取方案 A
-参考模型真值（mod 3^45 回绕与二进制直觉不同，如 -6&3=1 而非 2）。
+覆盖：& | ^ ~（TNOT：~0 = -1）<< >>（SLL ×3^k / SRA ÷3^k 向零截断 /
+SRL raw ÷3^k、常数/变量移位）、组合表达式。期望值全部由本征 oracle
+推导：& | ^ = 逐 trit min/max/mod-3 加（如 12&10=9、-6&3=3 而非 1）；
+本征 XOR 不自反（a^a≠0）；a^-1 = 逐 trit 数字递减 ≠ TNOT。
 """
 import os
 import sys
@@ -49,21 +50,21 @@ def run_py_backend(src):
 
 
 CASES = [
-    ("AND 基础", "int main(){ return (12 & 10); }", 8),
-    ("OR 基础", "int main(){ return (12 | 10); }", 14),
-    ("XOR 基础", "int main(){ return (12 ^ 10); }", 6),
-    ("NOT 方案A（~0 != -1）", "int main(){ return (~0 == -1); }", 0),
-    ("NOT 非零", "int main(){ return (~5 < 0); }", 1),
-    ("SHL 常数", "int main(){ return (10 << 3); }", 80),
-    ("SHL 大移位（8bit 退出码内）", "int main(){ return (1 << 7); }", 128),
-    ("SHR 常数无符号", "int main(){ unsigned u=200; return u >> 3; }", 25),
-    ("SHR 常数负数", "int main(){ return (-24 >> 2) == -6; }", 1),
-    ("变量移位", "int main(){ int i=3; return (10 << i); }", 80),
-    ("变量右移", "int main(){ int i=2; unsigned u=200; return u >> i; }", 50),
-    ("组合 a&b|c", "int main(){ return ((12 & 10) | 1); }", 9),
-    ("负数 AND（方案 A 真值）", "int main(){ return (-6 & 3); }", 1),
-    ("负数 OR（方案 A 真值）", "int main(){ return (-6 | 3) == -4; }", 1),
-    ("XOR 对合", "int main(){ int x=42; int y=x^123; return (y^123)==x; }", 1),
+    ("AND 基础（逐 trit min）", "int main(){ return (12 & 10); }", 9),
+    ("OR 基础（逐 trit max）", "int main(){ return (12 | 10); }", 13),
+    ("XOR 基础（mod-3 加）", "int main(){ return (12 ^ 10); }", 22),
+    ("NOT（~0 = -1）", "int main(){ return (~0 == -1); }", 1),
+    ("NOT 非零（~5 = -6）", "int main(){ return (~5 < 0); }", 1),
+    ("SHL 常数（×3^k）", "int main(){ return (10 << 3); }", 270 & 0xFF),
+    ("SHL 大移位（3^7）", "int main(){ return (1 << 7); }", 2187 & 0xFF),
+    ("SHR 常数无符号（raw ÷3^k）", "int main(){ unsigned u=200; return u >> 3; }", 7),
+    ("SHR 常数负数（÷3^k 向零截断）", "int main(){ return (-24 >> 2) == -2; }", 1),
+    ("变量移位", "int main(){ int i=3; return (10 << i); }", 270 & 0xFF),
+    ("变量右移", "int main(){ int i=2; unsigned u=200; return u >> i; }", 22),
+    ("组合 a&b|c", "int main(){ return ((12 & 10) | 1); }", 10),
+    ("负数 AND（本征真值）", "int main(){ return (-6 & 3); }", 3),
+    ("负数 OR（本征真值）", "int main(){ return (-6 | 3) == -4; }", 0),  # TOR(-6,3) = -6
+    ("XOR 不自反（mod-3 固有）", "int main(){ int x=42; return (x^x)!=0; }", 1),
 ]
 
 for name, src, want in CASES:

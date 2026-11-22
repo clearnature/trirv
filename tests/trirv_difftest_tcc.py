@@ -5,7 +5,7 @@ C 语义期望值。
 
 锁定面（两编译器共同声称支持的语义）：int/char/short 算术、char mod-243
 截断（2026-11-21 拍板）、struct 9-对齐（同拍板）、数组/全局/字符串/指针、
-控制流、递归、多实参（非交换序敏感）、位运算方案 A、移位（含 floor）。
+控制流、递归、多实参（非交换序敏感）、位运算三值本征（2026-11-22 方言拍板）、移位（×3^k / ÷3^k 截断）。
 
 明确不在本套件（各自契约覆盖）：
   - 浮点：trirv_cc 无 F 代码生成（P4 走整数编码 TF45）——tri-tcc 侧由
@@ -49,11 +49,11 @@ CASES = [
     ("比较物化", "int main(void){ int a=3; int b=4; return (a!=b)*10+(a==b); }", 10),
     ("二维数组", "int main(void){ int m[2][3]; int i=0; int j; while(i<2){ j=0; while(j<3){ m[i][j]=i*10+j; j=j+1; } i=i+1; } return m[1][2]+m[0][1]; }", 13),
     ("控制流组合", "int main(void){ int s=0; int i; for(i=1;i<=10;i=i+1){ if(i==3) continue; if(i==8) break; s=s+i; } return s; }", 25),
-    ("位运算与", "int main(void){ int a=6; int b=4; return a & b; }", 4),
-    ("位运算异或", "int main(void){ int a=3; int b=1; return a ^ b; }", 2),
+    ("位运算与", "int main(void){ int a=6; int b=4; return a & b; }", 3),  # TAND 逐 trit min
+    ("位运算异或", "int main(void){ int a=3; int b=1; return a ^ b; }", 4),  # XOR mod-3 加
     ("对合律", "int main(void){ int a=123; return (~(~a))==a; }", 1),
-    ("移位floor", "int main(void){ int a=-65; return a>>3; }", (-65>>3)&0xFF),
-    ("移位变量", "int main(void){ int s=10; int i=2; return s<<i; }", 40),
+    ("移位截断", "int main(void){ int a=-65; return a>>3; }", 254),  # ÷3^3 向零 = -2（floor 会给 -3）
+    ("移位变量", "int main(void){ int s=10; int i=2; return s<<i; }", 90),  # ×3^2
 ]
 
 

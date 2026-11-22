@@ -27,3 +27,4 @@ __pycache__/
 # 临时/实验基准（实验代码单独在 experiments/ 分支存档）
 /tmp/
 *.tmp
+.zcode/

@@ -693,11 +693,9 @@ class CodeGen:
             elif n.op == "!":
                 self.emit("SLTIU t0, t0, 1")
             elif n.op == "~":
-                # 方案 A：~a = ((2^72-1) - bits(a)) mod 3^45。
-                # TILDE=((2^72-1) mod 3^45) 可表示，一条 SUB 完成（模域回绕）。
-                # 注意 ~0 != -1（方案 A 回绕语义的必然结果）。
-                self.load_imm("t2", ((1 << 72) - 1) % (3 ** 45))
-                self.emit("SUB  t0, t2, t0")
+                # 三值本征（2026-11-22 方言拍板）：~ = TNOT 直发（2-t/trit，
+                # ~0 = -1）。方案 A 的 TILDE-SUB 折叠退役。
+                self.emit("TNOT t0, t0")
             self.push("t0"); return "int" if ty != "char*" else ty
         elif k in ("preinc", "postinc"):
             lty = self.gen_addr(n.lv)            # 栈顶 = 左值地址
@@ -755,6 +753,21 @@ class CodeGen:
                 self.push("t0"); return pty
             # C 通常算术转换：任一操作数为 unsigned -> 整式按无符号运算
             uns = is_unsigned(lty) or is_unsigned(rty)
+            if op in ("<<", ">>"):
+                # 编译期移位量闸门（与 trirv_cc.c node_const_int 同口径）：
+                # 常量移位量 <0 / >4096 硬拒绝——本征 SLL 取移位量 mod 3^7，
+                # 负数会静默变成巨移，比编译失败危险得多。
+                rr = n.r
+                k = None
+                if rr.kind == "num":
+                    k = rr.val
+                elif rr.kind == "un" and rr.op == "-" and rr.e.kind == "num":
+                    k = -rr.e.val
+                if k is not None:
+                    if k < 0:
+                        raise RuntimeError(f"UNSUPPORTED: 移位量为负 {k}（C 语义未定义）")
+                    if k > 4096:
+                        raise RuntimeError(f"UNSUPPORTED: 移位量 {k} 过大")
             self.gen_bin(op, uns); self.push("t0")
             return "unsigned" if uns and op in ("/", "%") else "int"
         elif k == "va_start":
@@ -871,154 +884,29 @@ class CodeGen:
     # 语义正确优先，不优化指令数。
 
     P345 = 3 ** 45
-    B71 = 1 << 71
-
-    def _pow2_mod(self, k):
-        """2^k mod 3^45（k 为常数移位量；编译期折叠）。"""
-        m = 1
-        for _ in range(k):
-            m <<= 1
-            if m >= self.P345:
-                m -= self.P345
-        return m
 
     def _gen_bitop(self, op):
-        """& | ^：操作数已在 t0(左)/t1(右)。工作区 sp 下推 5 字：
-        0=acc, W=va, 2W=vb, 3W=p, 4W=two。结果（mod 3^45 的 raw）压栈。"""
-        W = self.WORD
-        kind = {"&": "TMIN", "|": "TMAX", "^": "XOR"}[op]
-        loop = self.new_label("bl"); s1 = self.new_label("b1")
-        s2 = self.new_label("b2"); s3 = self.new_label("b3"); end = self.new_label("be")
-        self.emit(f"ADDI sp, sp, {6 * W}")
-        # raw 化：PyVM regs 是有符号域，负数先加 3^45 转位模式
-        # （ADD 走 u() mod 3^45 回绕；x>=0 时不动）
-        skip = self.new_label("raw")
-        self.load_imm("t2", self.P345)
-        self.emit("SLT  t3, t0, zero")
-        self.emit(f"BEQ  t3, zero, {skip}")
-        self.emit("ADD  t0, t0, t2")
-        self.out.append(skip + ":")
-        skip2 = self.new_label("raw")
-        self.emit("SLT  t3, t1, zero")
-        self.emit(f"BEQ  t3, zero, {skip2}")
-        self.emit("ADD  t1, t1, t2")
-        self.out.append(skip2 + ":")
-        self.emit(f"SW   t0, {W}(sp)")          # va = 左（raw）
-        self.emit(f"SW   t1, {2 * W}(sp)")      # vb = 右（raw）
-        self.emit(f"SW   zero, 0(sp)")          # acc = 0
-        self.load_imm("t2", self.B71)           # p = 2^71
-        self.emit(f"SW   t2, {3 * W}(sp)")
-        self.emit(f"ADDI t2, zero, 2")
-        self.emit(f"SW   t2, {4 * W}(sp)")      # two = 2
-        self.out.append(loop + ":")
-        # ta = (va >=u p)；真则 va -= p
-        self.emit(f"LW   t0, {W}(sp)")
-        self.emit(f"LW   t1, {3 * W}(sp)")
-        self.emit("SLTU t2, t0, t1")
-        self.emit("SLTIU t2, t2, 1")
-        self.emit(f"SW   t2, {5 * W}(sp)")      # ta 标志 ∈{0,1}
-        self.emit(f"BEQ  t2, zero, {s1}")
-        self.emit("SUB  t0, t0, t1")
-        self.emit(f"SW   t0, {W}(sp)")
-        self.out.append(s1 + ":")
-        # tb 同理（借 t0=va槽 临时）
-        self.emit(f"LW   t0, {2 * W}(sp)")
-        self.emit(f"LW   t1, {3 * W}(sp)")
-        self.emit("SLTU t2, t0, t1")
-        self.emit("SLTIU t2, t2, 1")
-        self.emit(f"BEQ  t2, zero, {s2}")
-        self.emit("SUB  t0, t0, t1")
-        self.emit(f"SW   t0, {2 * W}(sp)")
-        self.out.append(s2 + ":")
-        # ta=5W槽, tb=t2（vb 剥位分支的 SLTIU 结果 ∈{0,1}）→ 组合
-        self.emit(f"LW   t0, {5 * W}(sp)")
-        self.emit("ADDI t1, t2, 0")
-        if kind == "TMIN":
-            self.emit("TMIN t2, t0, t1")
-        elif kind == "TMAX":
-            self.emit("TMAX t2, t0, t1")
-        else:                                    # xor = |ta-tb|
-            self.emit("SUB  t2, t0, t1")
-            self.emit("TMAX t1, t2, zero")
-            self.emit("TMIN t2, t2, zero")
-            self.emit("SUB  t2, t1, t2")
-        # acc += ta*pp（组合位为 1 时加当前权重 p）
-        self.emit(f"BEQ  t2, zero, {s3}")
-        self.emit(f"LW   t0, 0(sp)")
-        self.emit(f"LW   t1, {3 * W}(sp)")
-        self.emit("ADD  t0, t0, t1")
-        self.emit(f"SW   t0, 0(sp)")
-        self.out.append(s3 + ":")
-        # p /= 2；p!=0 → loop
-        self.emit(f"LW   t0, {3 * W}(sp)")
-        self.emit(f"LW   t1, {4 * W}(sp)")
-        self.emit("DIVU t0, t0, t1")
-        self.emit(f"SW   t0, {3 * W}(sp)")
-        self.emit(f"BNE  t0, zero, {loop}")
-        # 结果 = acc（raw 值本身，无需映回）
-        self.emit(f"LW   t0, 0(sp)")
-        self.emit(f"ADDI sp, sp, {-6 * W}")
-        self.push("t0")
+        """& | ^：操作数已在 t0(左)/t1(右)。三值本征直发（2026-11-22 方言拍板，
+        方案 A 位游标退役）：& = TAND(min)、| = TOR(max)、^ = XOR((ta+tb) mod 3)，
+        各 1 条指令、零工作区。勿混口径：本征 XOR 不自反（a^a≠0）；
+        a^-1 = 逐 trit 数字递减 (t+2)%3，≠ TNOT。"""
+        ins = {"&": "TAND", "|": "TOR", "^": "XOR"}[op]
+        self.emit(f"{ins}  t0, t0, t1")
 
     def _gen_shift(self, op, uns):
-        """<< >>：操作数 t0=左（值）、t1=右（移位量）。
-        常数移位走编译期折叠（×2^k mod 3^45 / 除法）；变量移位走
-        循环单步（ADD 自加回绕 / DIVU / DIV+REM 余数修正）。"""
-        W = self.WORD
-        # 读写右操作数槽：sp 下推 1 字存移位量（循环内递减）
+        """<< >>：操作数 t0=左（值）、t1=右（移位量）。三值本征直发：
+        << = SLL ×3^k；>> 有符号 = SRA ÷3^k 向零截断（≡ 除法口径 a>>k≡a/3^k）、
+        无符号 = SRL raw ÷3^k。各 1 条指令（移位量硬件取 mod 3^7）。"""
         if op == "<<":
-            # 左移 k 位 = raw*2^k mod 3^45 —— ADD 自加天然回绕
-            # 变量移位量循环：cnt=t1（栈），t0 每轮自加
-            loop = self.new_label("sl"); end = self.new_label("sle")
-            self.emit(f"ADDI sp, sp, {W}")
-            self.emit(f"SW   t1, {4 * W}(sp)")
-            self.out.append(loop + ":")
-            self.emit(f"LW   t1, {4 * W}(sp)")
-            self.emit("SLT  t2, zero, t1")          # cnt>0?（负数按 0 次）
-            self.emit(f"BEQ  t2, zero, {end}")
-            self.emit("ADD  t0, t0, t0")            # raw 自加 = ×2 mod 3^45
-            self.emit(f"LW   t1, {4 * W}(sp)")
-            self.emit("ADDI t1, t1, -1")
-            self.emit(f"SW   t1, {4 * W}(sp)")
-            self.emit(f"JAL  x0, {loop}")
-            self.out.append(end + ":")
-            self.emit(f"ADDI sp, sp, {-W}")
-            self.push("t0")
-            return
-        # 右移：对数学值取 floor(x / 2^k)
-        # 无符号：DIVU 对 raw 除（除法天然向下取整）
-        # 有符号：DIV 向零截断 + 负余数时商再减 1
-        loop = self.new_label("sr"); end = self.new_label("sre")
-        adj = self.new_label("srs")
-        self.emit(f"ADDI sp, sp, {W}")
-        self.emit(f"SW   t1, {4 * W}(sp)")
-        self.out.append(loop + ":")
-        self.emit(f"LW   t1, {4 * W}(sp)")
-        self.emit("SLT  t2, zero, t1")
-        self.emit(f"BEQ  t2, zero, {end}")
-        self.emit("ADDI t2, zero, 2")
-        if uns:
-            self.emit("DIVU t0, t0, t2")
+            self.emit("SLL  t0, t0, t1")
+        elif uns:
+            self.emit("SRL  t0, t0, t1")
         else:
-            self.emit("REM  t1, t0, t2")            # 余数（借 t1 槽前先算）
-            self.emit("DIV  t0, t0, t2")
-            self.emit("SLT  t1, t1, zero")          # 余数为负 ⇒ 截断方向错
-            self.emit(f"BEQ  t1, zero, {adj}")
-            self.emit("ADDI t1, zero, 1")
-            self.emit("SUB  t0, t0, t1")
-            self.out.append(adj + ":")
-        self.emit(f"LW   t1, {4 * W}(sp)")
-        self.emit("ADDI t1, t1, -1")
-        self.emit(f"SW   t1, {4 * W}(sp)")
-        self.emit(f"JAL  x0, {loop}")
-        self.out.append(end + ":")
-        self.emit(f"ADDI sp, sp, {-W}")
-        self.push("t0")
+            self.emit("SRA  t0, t0, t1")
 
     def gen_bin(self, op, uns=False):
-        # 三进制 ISA 的 AND/OR/XOR 是逐 trit 三值逻辑，不是二进制按位。
-        # C 的 & | ^ 要二进制语义，只能软件模拟（尚未实现）—— 必须硬报错，
-        # 静默映射会让 x&1 算成三值 min，比编译失败危险得多。
+        # & | ^ << >> 三值本征直发（2026-11-22 方言拍板）：TAND/TOR/XOR 逐 trit、
+        # SLL/SRL/SRA 三进制移位——历史注释「只能软件模拟」是方案 A 时代口径，已废。
         if op in ("&", "|", "^"):
             self._gen_bitop(op); return
         if op in ("<<", ">>"):

@@ -197,8 +197,8 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_csr_diff.py`（CSR/trap 差分） | 4/4 |
 | `trirv_charsign_e2e.py`（char 符号性 / LB-LBU 语义） | 21/21（含 C VM 交叉 21/21） |
 | `trirv_tritlogic_e2e.py`（AND/OR/XOR 逐 trit 语义锁定） | 42/42（期望值 × PyVM × C VM） |
-| `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，方案 A 72 位视图） | **245/245**（PyVM + C VM 双跑） |
-| `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位差分，方案 A 对齐） | **15/15**（含负数 raw 化、`~0!=-1`、变量移位） |
+| `trirv_bitview_e2e.py`（C 的 `& | ^ ~` 与 `<< >>`，三值本征直发） | **245/245**（PyVM + C VM 双跑） |
+| `trirv_cc_py_bitop_e2e.py`（Python 后端位运算/移位契约，三值本征） | **15/15**（含 `~0=-1`、XOR 不自反、×3^k 移位） |
 | `trirv_float_e2e.py`（TF 浮点 P1：base-3 ↔ (mant,exp3) 分离穿透，双档 TF20/TF45） | **144/144**（含 ±0/±Inf/NaN、3^e、舍入 1 ULP、极端 exp3=29523 分离往返） |
 | `trirv_float_isa_e2e.py`（F 扩展指令 P2/P3：FADD/FSUB/FMUL/FDIV/FSQRT/FLW/FSW/FEQ/FLT/FLE + .S 双档） | **39/39**（编码往返 + PyVM 语义 + PyVM×C VM 字节差分；`tf_ratio` 整数正确舍入彻底消除跨 VM 1 ulp 漂移） |
 | `trirv_base12_e2e.py`（十二进制表示层：to12/from12/frac_to12 + 数码定义 + 进制下标） | **72/72**（基数自指：'12'在十二进制=14、本进制写作'10'；18₁₂/20₁₀ 标注往返；round-trip 0 错） |
@@ -264,10 +264,12 @@ $ ./trirv_vm /tmp/t.trv
    `TRV_CC_STRICT=1` 下通过**（此前是 9/11 与整套失败）。
    > ⚠️ **验证陷阱仍在**：默认模式下 e2e 全绿，可能是因为失败用例悄悄回退到 Python
    > 后端。考核 C 后端必须加 `TRV_CC_STRICT=1`，`run_all_tests.py` 已默认带上。
-2. ~~**二进制位运算 / 移位只在 C 后端**~~ —— **2026-11-20 已对齐**：`& | ^ ~ << >>`
-   的方案 A 适配层现在 **C 后端（`trirv_cc.c`）与 Python 参考后端（`trirv_cc.py`）都有**，
-   15 项差分锁定（`trirv_cc_py_bitop_e2e.py`），含负数 raw 化、`~0 != -1`、
-   变量移位与组合表达式。两套后端语义一致，不再需要为位运算专门切 C。
+2. ~~**二进制位运算 / 移位只在 C 后端**~~ —— **2026-11-22 本征化**：C 方言拍板
+   三值本征（不模拟 ISO C 二进制语义，方案 A 适配层退役）——`& | ^ ~ << >>` 在
+   **C 后端（`trirv_cc.c`）与 Python 参考后端（`trirv_cc.py`）都直发**本征指令
+   （TAND/TOR/XOR/TNOT + SLL 系，各 1 条、零工作寄存器），15 项契约锁定
+   （`trirv_cc_py_bitop_e2e.py`），含 `~0 = -1`、XOR 不自反、×3^k 移位。
+   两套后端语义一致，不再需要为位运算专门切 C。
 3. ~~**VM 的 DIV 慢**~~ —— **2026-11-19 已优化，DIV 不再是热点**（`python3 bench_div.py`
    实测，含循环/调用开销，Apple M2）：
    - 默认快路径（宿主 128 位整数除法）：**3.7 ns/op**（纯指令 ~0.7ns）

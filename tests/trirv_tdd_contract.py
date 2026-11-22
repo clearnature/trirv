@@ -17,7 +17,7 @@
   §5 后端 STRICT 契约   README 的"验证陷阱"：非 STRICT 下失败用例静默回退 Python，
                         12/14 套全绿的假象就是这么来的。
   §6 大栈帧契约         帧大小 > 1093 必须走 load_imm + ADD，不能 ADDI 直接塞。
-  §7 位运算代数律       方案 A（72 位视图）的性质锁，比逐个数值更强。
+  §7 位运算代数律       三值本征（min/max/mod-3/TNOT）的性质锁，比逐个数值更强。
 
 用法：
     python3 trirv_tdd_contract.py          # 任一断言失败 -> 退出码 1
@@ -319,36 +319,57 @@ def section_big_frame():
 # ---------------------------------------------------------------- §7 位运算代数律
 P45 = 3 ** 45
 HALF45 = (P45 - 1) // 2
-M72 = (1 << 72) - 1
 
 
-def _bits(x): return x if x >= 0 else x + P45
+def _raw(x): return x % P45
 def _val(v):
     v %= P45
     return v if v <= HALF45 else v - P45
 
 
-def b_and(a, b): return _val(_bits(a) & _bits(b))
-def b_or(a, b):  return _val(_bits(a) | _bits(b))
-def b_xor(a, b): return _val(_bits(a) ^ _bits(b))
-def b_not(a):    return _val(M72 - _bits(a))
-# 移位：左移按位模式乘 2^k 再回绕；右移无符号看位模式、有符号取 floor
-def b_shl(a, k):  return _val((_bits(a) << k) % P45)
-def b_shru(a, k): return _val(_bits(a) >> k)
+def _trits(x):
+    x = _raw(x); ts = []
+    for _ in range(45):
+        ts.append(x % 3); x //= 3
+    return ts
+
+
+def _from_trits(ts):
+    r = 0
+    for i, t in enumerate(ts):
+        r += t * 3 ** i
+    return r
+
+
+# 三值本征 oracle（2026-11-22 方言拍板，方案 A 72 位视图退役）
+def b_and(a, b):
+    ta, tb = _trits(a), _trits(b)
+    return _val(_from_trits([x if x < y else y for x, y in zip(ta, tb)]))
+def b_or(a, b):
+    ta, tb = _trits(a), _trits(b)
+    return _val(_from_trits([x if x > y else y for x, y in zip(ta, tb)]))
+def b_xor(a, b):
+    ta, tb = _trits(a), _trits(b)
+    return _val(_from_trits([(x + y) % 3 for x, y in zip(ta, tb)]))
+def b_not(a):    return _val(P45 - 1 - _raw(a))          # TNOT ≡ -1-a
+# 移位：<< = ×3^k 回绕；>> 无符号 raw ÷3^k、有符号 ÷3^k 向零截断（≡ 除法）
+def b_shl(a, k):  return _val(_raw(a) * 3 ** k % P45)
+def b_shru(a, k): return _val(_raw(a) // 3 ** k)
 def b_shrs(a, k):
-    q = a >> k
-    return q if -HALF45 - 1 <= q <= HALF45 else _val(q % P45)
+    q = abs(a) // 3 ** k
+    return -q if a < 0 else q
 
 
 def section_bitlaws():
-    section("§7 位运算代数律（方案 A：72 位视图 / 回绕在 3^45）")
+    section("§7 位运算代数律（三值本征：min/max/mod-3/TNOT，2026-11-22 方言拍板）")
     a, b, c = 123456789, -987654321, HALF45
 
     # --- 7.1 成立的律（每条都是单个运算或对合，不跨运算组合）---
     holds = [
         ("幂等 a&a==a",   f"int main(){{int a={a};return a&a;}}", b_and(a, a)),
         ("幂等 a|a==a",   f"int main(){{int a={a};return a|a;}}", b_or(a, a)),
-        ("消去 a^a==0",   f"int main(){{int a={a};return a^a;}}", 0),
+        # 本征 XOR 不自反（mod-3 固有）：a^a = 逐 trit 2ta mod 3 ≠ 0
+        ("不自反 a^a!=0", f"int main(){{int a={a};return (a^a)!=0;}}", 1),
         ("零元 a&0==0",   f"int main(){{int a={a};return a&0;}}", 0),
         ("单位元 a|0==a", f"int main(){{int a={a};return a|0;}}", a),
         ("对合 ~~a==a",   f"int main(){{int a={a};return ~~a;}}", a),
@@ -361,23 +382,23 @@ def section_bitlaws():
         got, _p, _s = compile_run_py(src)
         check(name, got == want, f"得 {got}，期望 {want}")
 
-    # --- 7.2 不成立的律（方案 A 的定义后果，锁成回归的事实）---
-    # 原因：每次运算的结果都按 3^45 回绕（emit_bitview_out），72 位视图**不是闭合的**。
-    # 单次运算语义清晰，但组合表达式的结果依赖求值顺序 —— 这与"位运算是纯函数"的
-    # 直觉相反，必须显式写下来，否则下一个人会把它当 bug 去"修"。
-    breaks = [
-        ("德摩根 ~(a&b) != ~a|~b",
+    # --- 7.2 德摩根代数完整性（本征下全部成立）---
+    # min/max/TNOT(2-t) 构成完整 De Morgan 代数：逆是序反转对合。
+    # 方案 A 时代这四条「不成立」（72 位视图回绕非闭合）——2026-11-22 本征化
+    # 后语义反转，本小节从「锁错误」变「锁正确」。
+    demorgan = [
+        ("德摩根 ~(a&b) == ~a|~b",
          f"int main(){{int a={a};int b={b};return ~(a&b)==(~a|~b);}}"),
-        ("德摩根 ~(a|b) != ~a&~b",
+        ("德摩根 ~(a|b) == ~a&~b",
          f"int main(){{int a={a};int b={b};return ~(a|b)==(~a&~b);}}"),
-        ("结合 (a|b)|c != a|(b|c)",
+        ("结合 (a|b)|c == a|(b|c)",
          f"int main(){{int a={a};int b={b};int c={c};return ((a|b)|c)==(a|(b|c));}}"),
-        ("分配 a&(b|c) != (a&b)|(a&c)",
-         f"int main(){{int a={a};int b={b};int c={c};return a&(b|c)==((a&b)|(a&c));}}"),
+        ("分配 a&(b|c) == (a&b)|(a&c)",
+         f"int main(){{int a={a};int b={b};int c={c};return (a&(b|c))==((a&b)|(a&c));}}"),  # 注意 == 优先级低于 & |，必须整括
     ]
-    for name, src in breaks:
+    for name, src in demorgan:
         got, _p, _s = compile_run_py(src)
-        check(name + "（回绕导致，非 bug）", got == 0, f"得 {got}，若为 1 说明语义变了")
+        check(name + "（本征成立）", got == 1, f"得 {got}，若为 0 说明语义变了")
 
     # --- 7.3 同一条链上左结合的参考模型对拍 ---
     # 参考模型必须**逐步回绕**，才与编译器一致；一次性算完再回绕是错的。
@@ -469,11 +490,11 @@ def section_nested_calls():
 
 
 def section_shifts():
-    section("§10 二进制移位契约（x<<k = 位模式·2^k 回绕；x>>k = floor(x/2^k)）")
+    section("§10 三值移位契约（x<<k = ×3^k 回绕；x>>k = ÷3^k 向零截断 ≡ 除法）")
     import re as _re
     a_vals = [0, 1, -1, -8, 242, 123456789, -987654321, HALF45]
 
-    # --- 10.1 左移就是乘 2^k（按 3^45 回绕），不是乘 3^k ---
+    # --- 10.1 左移就是乘 3^k（按 3^45 回绕），不是乘 2^k ---
     bad = 0
     for a in a_vals:
         for k in (0, 1, 3, 11, 45, 71):
@@ -483,10 +504,10 @@ def section_shifts():
             if got != want:
                 bad += 1
                 print(f"  [FAIL] {a}<<{k}: 得 {got}，期望 {want}"
-                      f"{'（×3 而不是 ×2？）' if got == a * (3 ** k) else ''}")
-    check("左移 = ×2^k 并按 3^45 回绕（48 例）", bad == 0, f"{bad} 例错")
+                      f"{'（×2 而不是 ×3？）' if got == a * (2 ** k) else ''}")
+    check("左移 = ×3^k 并按 3^45 回绕（48 例）", bad == 0, f"{bad} 例错")
 
-    # --- 10.2 右移：无符号看位模式，有符号是算术右移（floor）---
+    # --- 10.2 右移：无符号 raw ÷3^k，有符号 ÷3^k 向零截断（≡ 除法口径）---
     bad = 0
     for a in a_vals:
         for k in (1, 3, 45, 71):
@@ -496,12 +517,12 @@ def section_shifts():
             g2, _p, _s = compile_run_py(f"int main(){{ int a={a}; return a >> {k}; }}", 800000)
             if g2 != b_shrs(a, k):
                 bad += 1; print(f"  [FAIL] (int){a}>>{k}: 得 {g2}，期望 {b_shrs(a, k)}")
-    check("右移：无符号按位模式 / 有符号按算术（64 例）", bad == 0, f"{bad} 例错")
+    check("右移：无符号 raw / 有符号向零截断（64 例）", bad == 0, f"{bad} 例错")
 
-    # -7>>1 = -4（floor），-7/2 = -3（截断）—— 两者必须不同，否则就是拿 DIV 直译
+    # 本征 >> ≡ 除法：-7>>1 = -7/3 = -2（向零截断；floor 会给 -3）——同值是口径
     g1, _p, _s = compile_run_py("int main(){ int a=-7; return a>>1; }")
-    g2, _p, _s = compile_run_py("int main(){ int a=-7; return a/2; }")
-    check("有符号 >> 是 floor，除法是截断", g1 == -4 and g2 == -3, f">>1 得 {g1}，/2 得 {g2}")
+    g2, _p, _s = compile_run_py("int main(){ int a=-7; return a/3; }")
+    check("有符号 >> ≡ 除以 3^k（向零截断）", g1 == -2 and g2 == -2, f">>1 得 {g1}，/3 得 {g2}")
 
     # --- 10.3 常量路径与变量路径必须逐值一致（两条独立代码路径）---
     bad = 0
@@ -518,10 +539,10 @@ def section_shifts():
     # 事故：第一版把"a、b 里不是 dst 的那个"当临时，`1<<i` 里的 i 正是常驻寄存器，
     # 写进去就把循环变量改了（s=Σ2^i 算出 49999）。
     cases = [
-        ("循环里 1<<i 累加", "int main(){ int s=0; int i; for(i=0;i<5;i++) s=s+(1<<i); return s; }", 31),
+        ("循环里 1<<i 累加", "int main(){ int s=0; int i; for(i=0;i<5;i++) s=s+(1<<i); return s; }", 121),  # Σ3^i
         ("移位量取自数组元素", "int main(){ int n[3]; n[0]=1; n[1]=4; n[2]=8;"
-                                " int s=0; int i; for(i=0;i<3;i++) s=s+(1<<n[i]); return s; }", 274),
-        ("移位后继续用移位量", "int main(){ int n=3; int x=1<<n; return x+n; }", 11),
+                                " int s=0; int i; for(i=0;i<3;i++) s=s+(1<<n[i]); return s; }", 3+81+6561),  # Σ3^n
+        ("移位后继续用移位量", "int main(){ int n=3; int x=1<<n; return x+n; }", 30),  # 27+3
     ]
     bad = 0
     for label, src, want in cases:
@@ -530,17 +551,19 @@ def section_shifts():
             bad += 1; print(f"  [FAIL] {label}: 得 {got}，期望 {want}")
     check("变量移位不破坏同时在用的变量（3 例）", bad == 0, f"{bad} 例错")
 
-    # --- 10.5 反悔锁：汇编里绝不能出现三进制移位 ---
-    # 早期把 `<<` 直译成 SLL（×3^k），x=10 时 x<<1 静默返回 30。
+    # --- 10.5 产物锁（2026-11-22 反转）：必须直发本征移位指令 ---
+    # 方案 A 时代此锁方向相反（禁止 SLL/SRL/SRA）；本征化后 SLL/SRL/SRA
+    # 就是 << >> 的定义本身，必须出现在产物里。
     bad = 0
-    for src in ("int main(){ int a=10; return a<<1; }",
-                "int main(){ int a=10; int n=2; return a<<n; }",
-                "int main(){ unsigned a=10; return a>>1; }",
-                "int main(){ int a=-10; int n=2; return a>>n; }"):
+    for src, must in (
+            ("int main(){ int a=10; return a<<1; }", "SLLI"),
+            ("int main(){ int a=10; int n=2; return a<<n; }", "SLL"),
+            ("int main(){ unsigned a=10; return a>>1; }", "SRLI"),
+            ("int main(){ int a=-10; int n=2; return a>>n; }", "SRA")):
         p, _l, txt, _s = cc.compile_c(src)
-        if _re.search(r"\b(SLL|SRL|SRA)\b", txt):
-            bad += 1; print(f"  [FAIL] 汇编出现三进制移位：{src}")
-    check("汇编里没有三进制移位 SLL/SRL/SRA", bad == 0, f"{bad} 处")
+        if not _re.search(r"\b" + must + r"\b", txt):
+            bad += 1; print(f"  [FAIL] 汇编缺本征移位 {must}：{src}")
+    check("汇编直发本征移位 SLLI/SLL/SRLI/SRA", bad == 0, f"{bad} 处")
 
     # --- 10.6 与其他运算组合时的求值顺序 ---
     combos = [

@@ -7,9 +7,11 @@
 
 覆盖（T-1.1/1.2 + T-1 收尾批次）：
   - ALU：+ - * / % 与全部六种比较（含 unsigned，物化/分支两路、等号边界）
-  - 方案 A（B4）：& | ^ ~ 的 C 二进制语义 + 代数律锁定（幂等/零元/对合/交换 ✓，
-    ~0≠-1 回绕后果锁定）
-  - 移位（方案 A）：const/变量移位量、算术右移 floor 修正、无符号右移
+  - 位运算三值本征（2026-11-22 方言拍板，方案 A 退役）：& | ^ = 逐 trit
+    TAND(min)/TOR(max)/XOR(mod-3)，~ = TNOT（~0=-1）；代数律锁定
+    （幂等/零元/对合/交换/德摩根 ✓，XOR 不自反锁定）
+  - 移位本征：<< = ×3^k（SLLI/SLL）、>> = ÷3^k 向零截断（SRAI/SRA ≡ 除法）、
+    无符号 raw（SRLI/SRL）、k≥45 恒 0
   - 常量装载（B2）：负常量借位双向、i32 窗口溢出走 3×20 分段
   - 链接（B3）：静态初值 base-243（≥243/负数/long long）、text 基址、
     UNDEF 符号/自定义节诚实报错（NEG 用例）
@@ -55,30 +57,43 @@ CASES = [
     ("乘", "int main(void){ int a=123; int b=456; return a*b; }", (123*456)&0xFF),
     ("除", "int main(void){ int a=100000; int b=7; return a/b; }", (100000//7)&0xFF),
     ("模", "int main(void){ int a=100000; int b=7; return a%b; }", (100000%7)&0xFF),
-    # 位运算：方案 A（C 二进制语义，B4 落地）——变量版走位游标；
-    # 常量版会被 tccgen 前端以宿主二进制语义折叠（2|1→3），测不到生成代码。
-    ("与二进制", "int main(void){ int a=6; int b=4; return a & b; }", 4),
-    ("或二进制", "int main(void){ int a=2; int b=1; return a | b; }", 3),
-    ("异或二进制", "int main(void){ int a=3; int b=1; return a ^ b; }", 2),
-    ("掩码与", "int main(void){ int a=0x1234; return a & 0xFF; }", 0x34),
-    ("掩码或", "int main(void){ int a=0x1200; return a | 0x34; }", 0x34),
-    ("掩码异或", "int main(void){ int a=0xFF; return a ^ 0x0F; }", 0xF0),
-    ("分配组合", "int main(void){ int a=0xF0; int b=0x0F; int c=0xFF; return (a&b)|(a&c); }", 0xF0),
-    # 方案 A 代数律锁定（ternary-isa-design.md §5.1：幂等/零元/对合/交换成立）
+    # 位运算：三值本征（2026-11-22 方言拍板，方案 A 位游标退役）——& | ^ =
+    # 逐 trit TAND(min)/TOR(max)/XOR((ta+tb) mod 3)，~ = TNOT（~0 = -1），
+    # 移位 = ×3^k（SLL/SLLI）/ ÷3^k 向零截断（SRA/SRAI ≡ 除法口径）。
+    # 期望值全部由本征 oracle 推导；gen_opic 已同步三值折叠——常量版用例
+    # 第一次真正锁定后端/折叠口径一致。本征 XOR 不自反（a^a≠0）；
+    # a^-1 = 逐 trit 数字递减 (t+2)%3，≠ TNOT（12^-1=-25 vs ~12=-13）。
+    ("与逐tritmin", "int main(void){ int a=6; int b=4; return a & b; }", 3),
+    ("或逐tritmax", "int main(void){ int a=2; int b=1; return a | b; }", 2),
+    ("异或mod3", "int main(void){ int a=3; int b=1; return a ^ b; }", 4),
+    ("与常量折叠", "int main(void){ return 12 & 10; }", 9),
+    ("或常量折叠", "int main(void){ return 12 | 10; }", 13),
+    ("异或常量折叠", "int main(void){ return 3 ^ 1; }", 4),
+    ("与非零trit掩", "int main(void){ int a=0x1234; return a & 0xFF; }", 255),  # min 不清 trit：保留 0xFF 的全部非零 trit
+    ("或组合", "int main(void){ int a=0x1200; return a | 0x34; }", 4615 & 0xFF),
+    ("异或组合", "int main(void){ int a=0xFF; return a ^ 0x0F; }", 261 & 0xFF),
+    ("分配组合", "int main(void){ int a=0xF0; int b=0x0F; int c=0xFF; return (a&b)|(a&c); }", 15),
+    # 本征代数律锁定（min/max/TNOT(2-t) 是完整 De Morgan 代数）
     ("幂等律", "int main(void){ int a=123; return (a&a)==a; }", 1),
     ("零元律", "int main(void){ int a=123; return ((a|0)==a) && ((a^0)==a); }", 1),
     ("对合律", "int main(void){ int a=123; return (~(~a))==a; }", 1),
     ("交换律", "int main(void){ int a=0xF0; int b=0x0F; return (a&b)==(b&a); }", 1),
-    ("非回绕锁定", "int main(void){ int z=0; return (~z)==(-1); }", 0),  # 方案 A：~0 ≠ -1（~0 双常量会被前端折叠，须用变量探后端）
-    # 256 & 0xFF = 0（exit 低 8 位）
-    ("左移", "int main(void){ return 1 << 8; }", 0),
-    ("逻辑右移", "int main(void){ unsigned u = 0x80000000u; return (int)(u >> 31); }", 1),
-    ("算术右移", "int main(void){ int a = -64; return a >> 3; }", (-64 >> 3) & 0xFF),
-    ("算术右移floor", "int main(void){ int a = -65; return a >> 3; }", (-65 >> 3) & 0xFF),
-    ("变量左移", "int main(void){ int s=10; int i=2; return s<<i; }", 40),
-    ("变量右移", "int main(void){ int s=10; int i=2; return s>>i; }", 2),
-    ("变量算术右移", "int main(void){ int a=-65; int i=3; return a>>i; }", (-65>>3)&0xFF),
-    ("变量无符号右移", "int main(void){ unsigned u=0x80000000u; int i=31; return u>>i; }", 1),
+    ("德摩根与或", "int main(void){ int a=123; int b=456; return (~(a&b))==((~a)|(~b)); }", 1),
+    ("德摩根或与", "int main(void){ int a=123; int b=456; return (~(a|b))==((~a)&(~b)); }", 1),
+    ("XOR不自反", "int main(void){ int a=123; return (a^a)!=0; }", 1),  # mod-3 固有
+    ("XOR负1递减", "int main(void){ int a=12; return (a^-1)==-25; }", 1),  # (t+2)%3 ≠ TNOT
+    ("TNOT等负1减", "int main(void){ int a=12; return (~a)==-13; }", 1),
+    ("回绕锁定", "int main(void){ int z=0; return (~z)==(-1); }", 1),  # 本征 TNOT(0) = 全 trit 2 = -1（方案 A 时代此例为 0）
+    # 6561 & 0xFF = 161（exit 低 8 位）；×3^45 ≡ 0 mod 3^45
+    ("左移", "int main(void){ return 1 << 8; }", 6561 & 0xFF),
+    ("移位K过45清零", "int main(void){ return 1 << 45; }", 0),
+    ("逻辑右移", "int main(void){ unsigned u = 0x80000000u; return (int)(u >> 31); }", 0),  # raw ÷3^31 = 0
+    ("算术右移", "int main(void){ int a = -64; return a >> 3; }", 254),   # trunc(-64/27) = -2
+    ("算术右移截断对照", "int main(void){ int a = -65; return a >> 3; }", 254),  # trunc(-65/27) = -2（floor 会给 -3——锁定截断口径）
+    ("变量左移", "int main(void){ int s=10; int i=2; return s<<i; }", 90),
+    ("变量右移", "int main(void){ int s=10; int i=2; return s>>i; }", 1),
+    ("变量算术右移", "int main(void){ int a=-65; int i=3; return a>>i; }", 254),
+    ("变量无符号右移", "int main(void){ unsigned u=0x80000000u; int i=31; return u>>i; }", 0),
     ("负数", "int main(void){ return -100; }", (-100) & 0xFF),
 
     # ---- 比较（真=1） ----
