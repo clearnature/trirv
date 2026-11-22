@@ -2728,6 +2728,7 @@ static void collect_decls(Node*n){
     case N_SWITCH: collect_decls(n->cond); for(int i=0;i<n->nitems;i++) collect_decls(n->items[i]); break;
     case N_POSTINC: collect_decls(n->e); break;
     case N_DEREF: collect_decls(n->e); break;
+    case N_CAST: collect_decls(n->e); break;   /* *(int*)&x：取址藏在 cast 里，漏扫则 x 留寄存器 → 取址 UNSUPPORTED */
     case N_INDEX: collect_decls(n->l); collect_decls(n->r); break;
     case N_MEMBER: collect_decls(n->l); break;
     case N_CALL: for(int i=0;i<n->nargs;i++) collect_decls(n->args[i]); break;

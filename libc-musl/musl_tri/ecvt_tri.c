@@ -34,9 +34,21 @@ int g_ec_tmp[6];
 int g_ec_w3[6];
 
 int SD_E_BASE = 10000000000000000;     /* 10^16 */
+/* 3^44 级常量运行时化（同 strtod_tri 坑：字面量 > uint64 前端截断）。
+   契约：消费前必调 ec_big_init()。 */
+int SD_E_P10 = 59049;                  /* 3^10（P44 合成因子） */
 int SD_E_P34 = 16677181699666569;      /* 3^34 */
-int SD_E_P44 = 984770902183611232881;  /* 3^44 */
-int SD_E_P2M44 = 1969541804367222465762; /* 2×3^44 = 3^45-3^44（负 raw 归一） */
+int SD_E_P44 = 0;                      /* 3^44 = SD_E_P34*SD_E_P10（运行时合成） */
+int SD_E_P2M44 = 0;                    /* 2×3^44 = 3^45-3^44（运行时合成，负 raw 归一） */
+int SD_E_BIG_INIT = 0;
+
+void ec_big_init(void)
+{
+    if (SD_E_BIG_INIT) return;
+    SD_E_P44 = SD_E_P34 * SD_E_P10;
+    SD_E_P2M44 = SD_E_P44 + SD_E_P44;
+    SD_E_BIG_INIT = 1;
+}
 
 int ec_isroom(int *w)
 {
@@ -210,8 +222,16 @@ int *ec_core(int raw, int n, int *decpt, int *sign)
     return g_ec_buf;
 }
 
-char *ecvt(int raw, int n, int *decpt, int *sign)
+/* 入参口径（2026-11-22 调用面修复）：C 正语义 double 形参经 ABI 走 freg，
+   musl 调用方（printf 系）与契约测试都按此传；内部 punning 桥
+   *(int*)&value 经 freg→栈→ireg 读 TF45 raw（tri-tcc punning 实证一致）。
+   曾写 int raw 直接接——调用方 double 落 freg、本函数读 ireg 得垃圾
+   （探针 ecvt(3.5,2) exit=208 ≠ 35 实锤）。 */
+char *ecvt(double value, int n, int *decpt, int *sign)
 {
+    int raw;
+    ec_big_init();
+    raw = *(int *)&value;
     return (char *)ec_core(raw, n, decpt, sign);
 }
 
@@ -224,13 +244,16 @@ int ec_peek_decpt(int raw, int *sign)
     return d;
 }
 
-char *fcvt(int raw, int n, int *decpt, int *sign)
+char *fcvt(double value, int n, int *decpt, int *sign)
 {
     int i;
     int s;
     int d;
     int lz;
+    int raw;
 
+    ec_big_init();
+    raw = *(int *)&value;
     if (n > 1400) n = 1400;
     if (n < 0) n = 0;
 
@@ -280,7 +303,7 @@ char *fcvt(int raw, int n, int *decpt, int *sign)
     return (char *)ec_core(raw, n + d, decpt, sign);
 }
 
-char *gcvt(int raw, int n, char *buf)
+char *gcvt(double value, int n, char *buf)
 {
     int d = 0;
     int s = 0;
@@ -290,7 +313,10 @@ char *gcvt(int raw, int n, char *buf)
     int X;
     int last;
     int *digits;
+    int raw;
 
+    ec_big_init();
+    raw = *(int *)&value;
     if (n <= 0) n = 1;
     if (n > 16) n = 16;
 

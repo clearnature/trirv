@@ -120,8 +120,10 @@ class TriRVDebugger:
                 v = self.vm.regs[r]
                 row.append("x%-2d=%-6d" % (r, _signed(v)))
             out.append(" ".join(row))
-        frow = " ".join("f%-2d=%-4d" % (r, self.vm.freg[r]) for r in range(0, 6))
-        out.append(frow)
+        out.append(" ".join("f%-2d=%-4d" % (r, self.vm.freg[r]) for r in range(0, 6)))
+        # fa0-fa7 = freg[0..7]（tri-gen freg(r)=r-8：tcc 浮点槽 r8-15 直落 freg 0-7）
+        out.append("fa0-fa3 = " + " ".join("%d" % self.vm.freg[k] for k in range(4)))
+        out.append("fa4-fa7 = " + " ".join("%d" % self.vm.freg[k] for k in range(4, 8)))
         return "\n".join(out)
 
     def _dump_mem(self, addr, n=18):

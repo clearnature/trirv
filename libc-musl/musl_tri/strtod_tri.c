@@ -38,10 +38,27 @@ int g_sd_tmp[6];      /* 终除 scratch */
 int SD_BASE = 10000000000000000;       /* 10^16 */
 int SD_P33  = 5559060566555523;        /* 3^33 */
 int SD_P34  = 16677181699666569;       /* 3^34 */
-int SD_P44  = 984770902183611232881;   /* 3^44 */
-int SD_INF  = 984754225001911566312;   /* +Inf raw = max_exp·3^34 */
-int SD_NINF = 1969525127185522799193;  /* −Inf raw = 3^44 + SD_INF */
-int SD_NAN  = 984754225001911566313;   /* NaN raw = SD_INF + 1 */
+/* 3^44 级常量运行时化（2026-11-22 坑实录）：字面量 9.85e20/1.97e21 > uint64
+   （CValue.i 容器 2^64=1.8e19），tri-tcc 前端截断 + 只给 warning——截断值作
+   "==比较" 两处同截断巧合自洽，作数学界（rest>=SD_P44 判负域）则界错位。
+   解法：小因子（3^34/59048/59048 均在 uint64 内）编译期给定，45-trit 运行时
+   MUL/ADD 精确合成（积 < 3^45）。契约：消费前必调 sd_big_init()。 */
+int SD_P10  = 59049;                   /* 3^10（P44 合成因子） */
+int SD_P44  = 0;                       /* 3^44 = SD_P34*SD_P10（运行时合成） */
+int SD_INF  = 0;                       /* +Inf = 59048*SD_P34（运行时合成） */
+int SD_NINF = 0;                       /* −Inf = SD_P44+SD_INF（运行时合成） */
+int SD_NAN  = 0;                       /* NaN = SD_INF+1（运行时合成） */
+int SD_BIG_INIT = 0;
+
+void sd_big_init(void)
+{
+    if (SD_BIG_INIT) return;
+    SD_P44  = SD_P34 * SD_P10;
+    SD_INF  = 59048 * SD_P34;
+    SD_NINF = SD_P44 + SD_INF;
+    SD_NAN  = SD_INF + 1;
+    SD_BIG_INIT = 1;
+}
 
 /* ---- 6 字原语（只做 字×小因子 / ÷小因子，单字积 < 3^45 不溢出）---- */
 
@@ -179,6 +196,7 @@ int sd_match(const char *s, int kind)
 int strtod(const char *s, char **end)
 {
     const char *start = s;
+    sd_big_init();
     int neg = 0;
     int seen = 0;
     int sticky = 0;
