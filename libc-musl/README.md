@@ -1,6 +1,6 @@
 # TriRV —— 三进制 RISC-V 风格软核全栈
 
-45-trit 三进制 ISA（97 条指令）+ 双模拟器（PyVM 参考 / C VM 性能）+ 自研 C 编译器
+45-trit 三进制 ISA（99 条指令）+ 双模拟器（PyVM 参考 / C VM 性能）+ 自研 C 编译器
 （trirv_cc，寄存器式，~95%）+ TinyCC 移植（tri-tcc，正式工具链路线）+ musl 移植 +
 wasm 前端 + 三进制浮点（TF45/TF20）。
 
@@ -33,7 +33,7 @@ python3 tests/run_all_tests.py --fast    # 全量回归（43 套）
 
 ## 模块完善度（2026-11-22）
 
-- 模拟器 / 汇编器：✅（97 条指令、双 VM 差分、CSR/原子/浮点全）
+- 模拟器 / 汇编器：✅（99 条指令、双 VM 差分、CSR/原子/浮点全）
 - 自研编译器：🟡 ~95%（musl 65/66；未声明标识符 XFAIL 待 fn-as-value 设计）
 - tri-tcc（TinyCC 移植）：🟡 主体完成（T-1 全条目；for+指针元素写 bug 待修；__tint 批次 C1 进行中）
 - 链接器：🟡 ~60%（TRVO 导入可用但依赖分配顺序；符号化引用待做）

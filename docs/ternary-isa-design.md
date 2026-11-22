@@ -576,15 +576,42 @@ PyVM × C VM）；`trirv_fuzz.py` 的 1500 例随机指令池含 `AND/OR/XOR` �
 | 16 | ZICSR（CSRRW/S/C + 立即数版） | I |
 | 17 | PRIV（MRET/WFI） | I |
 | 18 | ATOMIC（LRW/SCW/AMO*） | R |
-| 19–26 | 保留（TC 压缩扩展预留） | — |
+| 19 | F-ARITH（FADD/FSUB/FMUL/FDIV/FSQRT/FCVTW…） | R/I |
+| 20 | F-MEM（FLW/FSW） | I/S |
+| 21 | F-CMP（FEQ/FLT/FLE） | R |
+| 22 | **T-LIT（文字运算 x^a，2026-11-23 预留登记，未实现）** | R |
+| 23–26 | 保留（TC 压缩扩展预留） | — |
 
-> **分配现状（以代码为唯一真相源，2026-11-19 核对）**：3-trit opcode 共 27 个槽位
-> （0..26），已用 19 个（0–18），余 8 个（19–26）留给 TC。
-> 明细见 `trirv_isa.py` 的 `OPCODE` / `INST` 表，当前共 **74 条指令**。
-> 校验：`python3 -c "import trirv_isa as i; print(len(i.INST))"` → `74`。
+> **分配现状（以代码为唯一真相源，2026-11-23 核对）**：3-trit opcode 共 27 个槽位
+> （0..26），已用 22 个（0–21 + 22 预留），余 4 个（23–26）留给 TC。
+> 明细见 `trirv_isa.py` 的 `OPCODE` / `INST` 表，当前共 **99 条指令**。
+> 校验：`python3 -c "import trirv_isa as i; print(len(i.INST))"` → `99`。
 >
-> 本节旧版仅列出 0–12，把 13–26 整段标为"保留"，与 §2「M/A/Zicsr/PRIV 扩展两套 VM 均已实现」
-> 相矛盾；现已按实际分配补齐，与代码一致。
+> 漂移记档（2026-11-23）：旧版把 19–26 整段标"保留（TC）"——F 扩展（P2）
+> 落地时占用 19/20/21 但未回写本表，且指令计数停在 74；TERNARY_COMPAT_PLAN
+> 「文字运算 ISA 预留登记（opcode 19 区）」即基于该陈旧表，实际空区为
+> 22–26，文字运算登记于 **22**（见 §6.1）。
+
+### 6.1 文字运算预留区 T-LIT（opcode 22，2026-11-23 登记，未实现）
+
+Post 文字运算 literal `x^a`（a∈{0,1,2}，逐 trit 循环）——Kleene 体系闭环
+（批次 C1/C2）之后的 Post 代数扩展预留：
+
+| a | 记号 | 逐 trit 语义 | 名称 |
+| --- | --- | --- | --- |
+| 0 | x^0 | (2−t) mod 3 | 补 literal（Kleene ¬；逐 trit ≡ 既有 TNOT） |
+| 1 | x^1 | (t+1) mod 3 | 循环后继（0→1→2→0） |
+| 2 | x^2 | (t+2) mod 3 | 循环前驱（0→2→1→0） |
+
+- **编码（计划）**：opcode=22（T-LIT），R 型，funct=a（0/1/2），funct2=0，
+  rd=目的，rs1=源（rs2 忽略）
+- **现状：预留未实现**——ISA 元数据已登记（`trirv_isa.py` OPCODE 名 +
+  本节），INST 表、双 VM 执行面、trirv_cc/tri-tcc 前端均未落地；落地时
+  按 TDD 流程补 RED 契约 → 双 VM → 前端
+- ^0 与既有 TNOT 逐 trit 语义相同（TNOT ≡ 2−t 逐 trit）；登记 ^0 仅为
+  文字记法完备性，落地时可别名为 TNOT 或独立编码保三变体同构（落地时拍板）
+- 用途：Post 代数（循环加/乘 `^` 循环加）与三值逻辑综合器的基础算子——
+  C1 拍板「Kleene 体系先闭环」（本计划 §4 明确不做项）延后至此补档
 
 ---
 

@@ -85,6 +85,8 @@ OPCODE = {
     "M-EXT":13, "DIV-EXT":14, "REM-EXT":15,  # M 扩展（复用空闲 opcode，见 INST）
     "ATOMIC":18,                    # A 扩展：LR/SC + AMO（原子读改写）
     "F-ARITH":19, "F-MEM":20, "F-CMP":21,    # F 扩展：浮点算术/边界转换/比较（P2，见 §5.1）
+    "T-LIT":22,                     # 文字运算预留（Post literal x^a，未实现——
+                                    #   ternary-isa-design.md §6.1；23-26 TC 预留）
 }
 # 常用 M 态 CSR 地址（沿用 RISC-V 编号，均 < 3^7=2187 可放入 imm7 字段）
 CSR = {
