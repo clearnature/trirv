@@ -207,7 +207,7 @@ static void tok_push(Token t){
 }
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
-        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else",NULL};
+        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else","extern",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -352,6 +352,8 @@ static char* parse_type(void){
     }
     if(!(atk(TK_KW)||atk(TK_ID))){ fprintf(stderr,"parse_type: bad token '%s'\n",cur()->s); exit(1); }
     while(accept("const")){ }               /* 限定符：解析后丢弃（无写保护检查） */
+    while(accept("extern")){ }              /* 存储类说明符：纯引用语义（2026-11-22 A3）——
+                                               不分配存储，绑定到定义单元的符号 */
     char base[128];
     /* char 的符号性：RISC-V psABI 规定 char 默认无符号（GCC DEFAULT_SIGNED_CHAR=0），
      * 与 TriRV 的 tryte 值域 0..242 天然吻合。故 char/unsigned char 走 LBU 零扩展，
@@ -648,7 +650,7 @@ static int is_decl_start(void){
     Token*t=cur();
     if(t->kind==TK_ID && typedef_find(t->s)) return 1;   /* typedef 别名 */
     if(t->kind==TK_KW){
-        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const",NULL};
+        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const","extern",NULL};
         for(int i=0;dt[i];i++) if(!strcmp(t->s,dt[i])){
             /* struct X; 与 struct X f() 区分：先看后面 */
             return 1;
@@ -902,6 +904,24 @@ static Global* global_find(const char*name){
     return NULL;
 }
 static Global* global_add(const char*name,char*ty,int size,Node*init){
+    /* A3 同名合并（2026-11-22，C file-scope tentative/common 语义）：
+     * - 双方均有初值 → 重复定义，诚实报错；
+     * - 单方有初值 → 初值方为准（tentative 让位，槽共用）；
+     * - 双方 tentative → 合并一块，尺寸取大。
+     * 坑实录：旧实现同名全局各得一块独立存储且无报错——跨单元读写静默不同步
+     * （R2 实证：库 GLOB hex=42 与主 tentative 零条目并存，两路读不一致）。 */
+    Global*ex=global_find(name);
+    if(ex){
+        int ex_init=(ex->init!=NULL);
+        int nw_init=(init!=NULL);
+        if(ex_init && nw_init){
+            fprintf(stderr,"link error: duplicate global '%s'（双方均有初始化）\n",name);
+            exit(1);
+        }
+        if(size>ex->size) ex->size=size;        /* common 模型：尺寸取大 */
+        if(nw_init && !ex_init){ ex->init=init; }
+        return ex;
+    }
     GROW(GLOBS,CAPGLOB,NGLOB,Global);
     Global*g=&GLOBS[NGLOB++];
     memset(g,0,sizeof(*g));
@@ -3017,6 +3037,11 @@ static void tvo_import(const char*path){
             char name[128],ty[128],hex[1024];
             hex[0]=0;
             if(sscanf(line,"GLOB %127s %127s %1023s",name,ty,hex)>=2){
+                Global*exg=global_find(name);
+                if(exg && exg->init && hex[0]){
+                    fprintf(stderr,"link error: duplicate global '%s'（主单元有初始化，导入单元亦有数据）\n",name);
+                    exit(1);
+                }
                 Global*g=global_add(name,ty,ty_bytes(ty),NULL);
                 if(hex[0]){
                     TVO_GNAME=grow(TVO_GNAME,&CAPTGN,NTG+1,sizeof(char*));

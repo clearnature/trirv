@@ -221,6 +221,94 @@ r = link_and_load(open(main_g2).read(), [trvo_g2])
 got, _ = run_py(*r)
 check("跨单元/导入函数作值(fn-ptr 形参)", got, 0)
 
+# ================ 10. 跨单元全局同名合并（A3，2026-11-22） ================
+# C file-scope 语义：tentative（无 init）跨单元合并共享存储；有 init 者为准；
+# 双 init = 重复定义诚实报错；extern 声明 = 纯引用。
+# 坑实录：旧实现同名全局各得一块独立存储且无任何报错——跨单元读写静默不同步。
+# --- R1 tentative 共享：库写 shared[3]=7，主写 shared[0]=3 读 shared[3] ---
+lib_r1 = tempfile.mktemp(suffix=".c")
+with open(lib_r1, "w") as f:
+    f.write("int shared[4];\n"
+            "int lib_set3(void){ shared[3] = 7; return 0; }\n")
+trvo_r1 = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_r1, trvo_r1], check=True, capture_output=True)
+main_r1 = tempfile.mktemp(suffix=".c")
+with open(main_r1, "w") as f:
+    f.write("int lib_set3(void);\n"
+            "int shared[4];\n"
+            "int main(void){ shared[0] = 3; lib_set3(); return shared[3]*10 + shared[0]; }\n")
+r = link_and_load(open(main_r1).read(), [trvo_r1])
+got, _ = run_py(*r)
+check("A3/tentative 共享(库写7主写3)", got, 73)
+
+# --- R2 有 init 者为准：库 GLOB 带 hex 初值 42，主 tentative 读取 ---
+lib_r2 = tempfile.mktemp(suffix=".c")
+with open(lib_r2, "w") as f:
+    f.write("int cfg = 42;\n"
+            "int cfg_get(void){ return cfg; }\n")
+trvo_r2 = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_r2, trvo_r2], check=True, capture_output=True)
+main_r2 = tempfile.mktemp(suffix=".c")
+with open(main_r2, "w") as f:
+    f.write("int cfg_get(void);\n"
+            "int cfg;\n"
+            "int main(void){ return cfg_get()*10 + cfg; }\n")
+r = link_and_load(open(main_r2).read(), [trvo_r2])
+got, _ = run_py(*r)
+check("A3/有init者为准(两路读都42)", got, (42*10 + 42) & 0xFF)
+
+# --- R3 双初始化 = 重复定义诚实报错 ---
+lib_r3 = tempfile.mktemp(suffix=".c")
+with open(lib_r3, "w") as f:
+    f.write("int dup = 5;\n")
+trvo_r3 = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_r3, trvo_r3], check=True, capture_output=True)
+main_r3 = tempfile.mktemp(suffix=".c")
+with open(main_r3, "w") as f:
+    f.write("int dup = 7;\n"
+            "int main(void){ return dup; }\n")
+cf3 = tempfile.mktemp(suffix=".c")
+with open(cf3, "w") as f:
+    f.write(open(main_r3).read())
+r = subprocess.run([CC, cf3, tempfile.mktemp(suffix=".trv"), "-l", trvo_r3],
+                   capture_output=True, text=True)
+good = r.returncode != 0 and "duplicate global" in r.stderr
+if good:
+    passed += 1
+    print("PASS A3/双初始化诚实报错")
+else:
+    failed += 1
+    print(f"FAIL A3/双初始化诚实报错: rc={r.returncode} stderr={r.stderr.strip()[:100]}")
+
+# --- R4 extern 声明 = 纯引用（lib_g.trvo: lib_bump/lib_counter） ---
+lib_g4 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tmp_symtest", "lib_g.trvo")
+if not os.path.exists(lib_g4):
+    lib_g4_src = tempfile.mktemp(suffix=".c")
+    with open(lib_g4_src, "w") as f:
+        f.write("int lib_counter = 100;\n"
+                "int lib_bump(void){ lib_counter = lib_counter + 5; return lib_counter; }\n")
+    lib_g4 = tempfile.mktemp(suffix=".trvo")
+    subprocess.run([CC, lib_g4_src, lib_g4], check=True, capture_output=True)
+main_r4 = tempfile.mktemp(suffix=".c")
+with open(main_r4, "w") as f:
+    f.write("extern int lib_counter;\n"
+            "extern int lib_bump(void);\n"
+            "int main(void){ lib_bump(); return lib_counter - 105; }\n")
+try:
+    r = link_and_load(open(main_r4).read(), [lib_g4])
+    got, _ = run_py(*r)
+    good = got == 0
+    if good:
+        passed += 1
+        print("PASS A3/extern 声明纯引用")
+    else:
+        failed += 1
+        print(f"FAIL A3/extern 声明纯引用: got={got}")
+except Exception as e:
+    failed += 1
+    print(f"FAIL A3/extern 声明纯引用: 编译失败 {str(e)[:80]}")
+
 print(f"\n多文件链接端到端：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)

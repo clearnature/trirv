@@ -183,7 +183,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_tdd_contract.py`（契约测试：寄存器字段 / 立即数越界 / STRICT / 代数律 / struct ABI / 嵌套调用 / 移位） | **83/83** |
 | `trirv_crt_e2e.py`（**crt0 + musl 启动链**：全局变量 / argc-argv / `__libc_start_main` / 函数指针 / 双 VM 零页 ABI 差分） | **29/29** |
 | `trirv_musl_e2e.py`（**musl 风格 libc 层 + mini-busybox**：typedef/const/do-while/三目/复合赋值/cast、string+stdlib API、8 个 applet、stdin 文件/管道/argv 三通道） | **48/48** |
-| `trirv_link_e2e.py`（**多文件链接**：`-l` 拼接、跨文件调用、重复定义检测、busybox 分层、跨单元全局独立（数据符号化 §5.7）、导入函数作值） | **16/16** |
+| `trirv_link_e2e.py`（**多文件链接**：`-l` 拼接、跨文件调用、重复定义检测、busybox 分层、跨单元全局独立、**同名全局合并**（tentative 共享/init 让位/双 init 报错）、导入函数作值、extern 声明） | **20/20** |
 | `trirv_octet_e2e.py`（**8-bit 视图层**：read8/write8 边界编解码，octet↔双 tryte，全 256 值无损往返，musl 的 CHAR_BIT 依赖在此满足） | **13/13** |
 | `trirv_trvo_e2e.py`（**TRVO 目标文件**：导出/导入、UNDEF 检测、标签改写、全量去重 61 单元增量链接 + **跨单元字符串符号化**（PyVM+CVM 双跑）） | **18/18** |
 | `trirv_musl_real_e2e.py`（**真 musl 源码编译试点**：musl 1.2.5 官方源码 string/stdlib 6 文件原样编译（仅预处理），15 项行为断言 + strstr 集成场景，双 VM） | **11/11** |
