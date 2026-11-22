@@ -211,7 +211,8 @@ static int is_kw(const char*s){
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
-static void alias_add(const char*a,const char*b);   /* 弱别名注册（定义见 find_label 区）*/
+static void alias_add(const char*a,const char*b);
+static void weakg_add(const char*n);   /* 弱别名注册（定义见 find_label 区）*/
 static const char*alias_follow(const char*n);       /* 弱别名跟随：a → b 的体（find_label 区）*/
 static void lex(const char*src){
     const char*p=src;
@@ -235,6 +236,10 @@ static void lex(const char*src){
                         k=0; while(*p&&!isspace((unsigned char)*p)&&k<127) b[k++]=*p++;
                         b[k]=0;
                         if(b[0]) alias_add(a,b);
+                    } else {
+                        /* 无目标形态 = 弱全局（A6 顺延）：同名强定义让位之 */
+                        weakg_add(a);
+                        if(getenv("TRV_ASM_DEBUG")) fprintf(stderr,"[weakg] %s\n",a);
                     }
                 }
             }
@@ -918,6 +923,7 @@ typedef struct {
     int size;          /* tryte 数 */
     Node *init;        /* 初始化表达式（编译期常量 / INITLIST / 字符串），NULL=零 */
     int strinit;       /* 1 = init 是 N_STR 且 ty 是指针：数据=字符串地址，延迟回填 */
+    int weak;          /* A6 顺延：弱全局（#pragma weak 无目标）——合并时让位强定义 */
     unsigned char *data;   /* 最终数据（gen_glob_data 之后有效） */
 } Global;
 
@@ -927,6 +933,16 @@ static Global* global_find(const char*name){
     for(int i=0;i<NGLOB;i++) if(!strcmp(GLOBS[i].name,name)) return &GLOBS[i];
     return NULL;
 }
+static char**WEAKG_NAMES; static int NWEAKG, CAPWEAKG;   /* 弱全局名集合（无目标形态）*/
+static int is_weakg(const char*n){
+    for(int i=0;i<NWEAKG;i++) if(!strcmp(WEAKG_NAMES[i],n)) return 1;
+    return 0;
+}
+static void weakg_add(const char*n){
+    GROW(WEAKG_NAMES,CAPWEAKG,NWEAKG,sizeof(char*));
+    WEAKG_NAMES[NWEAKG++]=strdup(n);
+}
+
 static Global* global_add(const char*name,char*ty,int size,Node*init){
     /* A3 同名合并（2026-11-22，C file-scope tentative/common 语义）：
      * - 双方均有初值 → 重复定义，诚实报错；
@@ -938,12 +954,14 @@ static Global* global_add(const char*name,char*ty,int size,Node*init){
     if(ex){
         int ex_init=(ex->init!=NULL);
         int nw_init=(init!=NULL);
-        if(ex_init && nw_init){
+        if(ex_init && nw_init && !ex->weak){
             fprintf(stderr,"link error: duplicate global '%s'（双方均有初始化）\n",name);
             exit(1);
         }
         if(size>ex->size) ex->size=size;        /* common 模型：尺寸取大 */
-        if(nw_init && !ex_init){ ex->init=init; }
+        if(nw_init && (!ex_init || ex->weak)){  /* 弱让位：新强定义接管（弱标记清除） */
+            ex->init=init; ex->weak=0;
+        }
         return ex;
     }
     GROW(GLOBS,CAPGLOB,NGLOB,Global);
@@ -1131,7 +1149,9 @@ static void parse_program(void){
                     char buf[256]; snprintf(buf,sizeof(buf),"%s[%d]",el,cnt);
                     gty=strdup(buf);
                 }
-                global_add(decl->dnames[i],gty,0,decl->dinit[i]);
+                {   Global*gg=global_add(decl->dnames[i],gty,0,decl->dinit[i]);
+                    gg->weak = is_weakg(decl->dnames[i]);
+                    if(getenv("TRV_ASM_DEBUG")&&gg->weak) fprintf(stderr,"[weakg] parse 标记 %s\n",decl->dnames[i]); }
             }
             free(decl->dnames); free(decl->dtypes); free(decl->dinit);
             continue;
@@ -3081,7 +3101,24 @@ static void tvo_import(const char*path){
      * 导入端不再累加。 */
     /* 第一遍：先扫 FUNC 边界数，给 OUT 行预留单元前缀改写需要原行 */
     while(fgets(line,sizeof line,fp)){
-        if(!strncmp(line,"GLOB ",5)){
+        if(!strncmp(line,"GLOBW ",6)){
+            /* 弱全局（2026-11-22 A6 顺延）：主单元已有强初始化（AST init 非空）
+               → 弱定义与 hex 数据整体让位（不注册回填，防覆盖强值）；
+               否则同 GLOB（弱默认生效）。 */
+            char name[128],ty[128],hex[1024]={0};
+            if(sscanf(line,"GLOBW %127s %127s %1023s",name,ty,hex)>=2){
+                Global*exg=global_find(name);
+                if(!(exg && exg->init)){
+                    Global*g=global_add(name,ty,ty_bytes(ty),NULL);
+                    if(hex[0]){
+                        GROW(TVO_GNAME,CAPTGN,NTG,sizeof(char*));
+                        GROW(TVO_GHEX,CAPTGH,NTG,sizeof(char*));
+                        TVO_GNAME[NTG]=strdup(name); TVO_GHEX[NTG]=strdup(hex); NTG++;
+                    }
+                    (void)g;
+                }
+            }
+        } else if(!strncmp(line,"GLOB ",5)){
             char name[128],ty[128],hex[1024];
             hex[0]=0;
             if(sscanf(line,"GLOB %127s %127s %1023s",name,ty,hex)>=2){
@@ -3598,7 +3635,7 @@ int main(int argc,char**argv){
         fprintf(out,"TRVO 1\n");
         fprintf(out,"LBLBASE %d\n",LBL);          /* 标签计数续接用 */
         for(int i=0;i<NGLOB;i++){
-            fprintf(out,"GLOB %s %s ",GLOBS[i].name,GLOBS[i].ty);
+            fprintf(out,"%s %s %s ",GLOBS[i].weak?"GLOBW":"GLOB",GLOBS[i].name,GLOBS[i].ty);
             /* 初值字节 hex（gen_glob_data 后 data 有效；坑实录：曾不导初值——
                导入端 global_add(init=NULL) 全零，strtod_tri 的 SD_P34=3^34
                等常量全丢 → raw=0。真实管线此前全走源码拼接未触发。） */

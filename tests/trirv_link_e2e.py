@@ -308,7 +308,46 @@ except Exception as e:
     failed += 1
     print(f"FAIL A3/extern 声明纯引用: 编译失败 {str(e)[:80]}")
 
+# ================ 11. 弱全局变量（A6 顺延，2026-11-22） ================
+# #pragma weak <名>（无目标）= 弱全局定义：合并时同名单方有强初始化 → 强胜出。
+# TRVO 格式扩 GLOBW 记录（弱全局+hex）。musl 场景：weak 定义的默认值让位平台强定义。
+# W1 强胜弱：库弱定义 cfg=42，主强定义 cfg=99 → 两路读 99（今天 duplicate 报错 → RED）
+lib_w1 = tempfile.mktemp(suffix=".c")
+with open(lib_w1, "w") as f:
+    f.write("#pragma weak cfg\n"
+            "int cfg = 42;\n"
+            "int cfg_get(void){ return cfg; }\n")
+trvo_w1 = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_w1, trvo_w1], check=True, capture_output=True)
+main_w1 = tempfile.mktemp(suffix=".c")
+with open(main_w1, "w") as f:
+    f.write("int cfg_get(void);\n"
+            "int cfg = 99;\n"
+            "int main(void){ return cfg_get()*10 + cfg; }\n")
+cf_w1 = tempfile.mktemp(suffix=".c")
+with open(cf_w1, "w") as f:
+    f.write(open(main_w1).read())
+tf_w1 = tempfile.mktemp(suffix=".trv")
+r = subprocess.run([CC, cf_w1, tf_w1, "-l", trvo_w1], capture_output=True, text=True)
+if r.returncode != 0:
+    # RED 期形态：A3 双初始化报错——弱标记落地后此路径消失
+    check("A3s/强胜弱(两路读99)", "compile error", 0)
+else:
+    got, _ = run_py(*link_and_load(open(main_w1).read(), [trvo_w1]))
+    check("A3s/强胜弱(两路读99)", got, (99*10 + 99) & 0xFF)
+
+# W2 弱默认：主无强定义（tentative 无 init）→ 库弱默认 42 生效
+main_w2 = tempfile.mktemp(suffix=".c")
+with open(main_w2, "w") as f:
+    f.write("int cfg_get(void);\n"
+            "int cfg;\n"
+            "int main(void){ return cfg_get()*10 + cfg; }\n")
+r = link_and_load(open(main_w2).read(), [trvo_w1])
+got, _ = run_py(*r)
+check("A3s/弱默认生效(两路读42)", got, (42*10 + 42) & 0xFF)
+
 print(f"\n多文件链接端到端：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
