@@ -106,10 +106,7 @@ SUITES = [
     ("trirv_difftest_tcc.py",     "双工具链差分 22 组四路一致", False, None),
     ("trirv_tri_isa_guard.py",    "T-1.8 ISA 一致性守卫",      False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
-    ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False,
-     "case8 width=1 msort_wide 在套件布局下写坏 dest（独立跑/宿主 gcc/tri-tcc 三方仲裁算法正确）"
-     "——TRVO 导入布局或跨单元槽位脆弱域（§5.7），归链接器专项首案；"
-     "2026-11-22 本征化真 memcpy 落地暴露（旧编译器 memcpy=跳地址0→程序重启，假绿掩盖）"),
+    ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),
     ("trirv_mdiff.py",            "M 扩展差分 700 项",        True,  None),
     ("trirv_wasm_e2e.py",         "Wasm 三路差分 112 例(含 P3 浮点 19)", True, None),

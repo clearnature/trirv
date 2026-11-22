@@ -190,7 +190,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_musl_wide_e2e.py`（**musl string/ 全目录覆盖**：46 文件批量管线——40 编译成功 / 6 语义不适用 SKIP（字节位图打包依赖二进制位运算）/ 0 失败；strsep/strlcpy/memmove/strcasecmp/memccpy 功能断言） | **7/7** |
 | `trirv_switch_e2e.py`（**switch 契约**：匹配+break / fall-through / default / 无匹配 / 负 case 值 / 嵌套 switch / 乱序声明 / CVM 一致） | **9/9** |
 | `trirv_compound_e2e.py`（**复合字面量契约**：return/初始化/实参三语境、负值截断、嵌套表达式成员、CVM 一致） | **6/6** |
-| `trirv_qsort_tri_e2e.py`（**qsort 三进制重写契约**：乱序/已序/逆序/重复/单元素/负数/大数组/char 数组，双 VM） | XFAIL（case8 width=1 套件布局踩栈——算法经宿主 gcc/tri-tcc 仲裁正确，归链接器专项；期望值已于 2026-11-22 修正） |
+| `trirv_qsort_tri_e2e.py`（**qsort 三进制重写契约**：乱序/已序/逆序/重复/单元素/负数/大数组/char 数组，双 VM） | **4/4**（2026-11-22 转正：函数地址符号化修复 fn-ptr 陈旧烘焙；期望值同步修正） |
 | `trirv_strtol_tri_e2e.py`（**strtol 三进制重写契约**：各 base/0x 自动判定/正负号/溢出钳制/end 写回/坏输入，双 VM） | **4/4** |
 | `trirv_difftest.py`（Python VM vs C VM） | 11/11 |
 | `trirv_mdiff.py`（M 扩展差分，含 3⁴⁵ 边界） | 700/700 |

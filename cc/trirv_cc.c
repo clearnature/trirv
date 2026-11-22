@@ -1718,9 +1718,10 @@ static int addr_of(Node*n){
         if(!v){
             Global*g=global_find(lv->s);
             if(g){ int r=tacq(); load_imm(r,g->addr); return r; }
-            {   /* &func 取函数地址豁免；真未声明 → 报错（静默地址 0 = 零页写） */
+            {   /* &func 取函数地址豁免；真未声明 → 报错（静默地址 0 = 零页写）。
+                   地址走符号 LUI（汇编期绑定）——烘焙常量会被 peephole 前移变陈旧 */
                 int faddr=fn_label_addr(lv->s);
-                if(faddr>=0){ int r=tacq(); load_imm(r,faddr); return r; }
+                if(faddr>=0){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),lv->s); return r; }
             }
             fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",lv->s);
             exit(2);
@@ -1810,9 +1811,11 @@ static int eval(Node*n){
                 load_glob(r,g);
                 return r;
             }
-            {   /* 函数名 -> 函数地址（函数指针语义，供 __libc_start_main(main) 等） */
+            {   /* 函数名 -> 函数地址（函数指针语义，供 __libc_start_main(main) 等）。
+                   地址走符号 LUI（汇编期绑定）：烘焙常量在 peephole 删指令后陈旧
+                   （qsort case8 cmp_char 44 vs 40 实证） */
                 int faddr=fn_label_addr(n->s);
-                if(faddr>=0){ int r=tacq(); load_imm(r,faddr); return r; }
+                if(faddr>=0){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),n->s); return r; }
             }
         }
         /* 数组名求值 = 数组首地址（C 的退化规则）；结构体同理 —— 结构体右值的
@@ -2151,7 +2154,15 @@ static int eval(Node*n){
                 Node*a=n->args[i];
                 if(a->k==N_NUM){ load_imm128(10+abase+i,a->numw); continue; }
                 LocVar*v=findloc(a->s);
-                if(!v) emitf("ADDI a%d, zero, 0",abase+i);
+                if(!v && getenv("TRV_ASM_DEBUG"))
+                  fprintf(stderr,"[asm-debug] fast-arg %d: 名字 %s findloc 未中\n",i,a->s);
+                if(!v){
+                    /* 函数名实参 → 符号 LUI（fn-ptr 传参）；真未声明 → 报错 */
+                    if(fn_label_addr(a->s)>=0)
+                        emitf("ADDI a%d, zero, &%s",abase+i,a->s);
+                    else
+                        emitf("ADDI a%d, zero, 0",abase+i);
+                }
                 else if(!v->spilled&&v->reg>0){ if(v->reg!=10+abase+i) emitf("ADDI a%d, %s, 0",abase+i,regname(v->reg)); }
                 else { chk_off(v->off); emitf("LW a%d, %d(s0)",abase+i,v->off); }
             }
@@ -2836,6 +2847,24 @@ static uint32_t asm_line(const char*line,int idx){
     char b1[64],b2[64],b3[64];
     memset(b1,0,sizeof(b1));memset(b2,0,sizeof(b2));memset(b3,0,sizeof(b3));
     int nf=sscanf(line,"%31s",op); if(nf<1) return 0;
+    /* 符号地址预处理（2026-11-22）：&name → 标签地址（idx*4 tryte），任意指令
+       操作数通用。动机：函数指针取址若烘焙 gen 期常量，peephole 删指令后陈旧
+       （qsort case8 cmp_char 44 vs 40 实证）；符号化在汇编期一次绑定。
+       仅支持单 ADDI 装载（地址 < 3^13）；跨单元大地址分段符号化留链接器专项。 */
+    char fixed[512]; fixed[0]=0;
+    {
+        const char*amp=strchr(line,'&');
+        if(amp){
+            char sym[128]; snprintf(sym,sizeof(sym),"%s",amp+1);
+            char*end=sym; while(*end&&!isspace((unsigned char)*end)&&*end!=',')end++; *end=0;
+            int la=find_label(sym);
+            if(la<0){ fprintf(stderr,"[asm] unknown symbol &%s (line: %s)\n",sym,line); return 0; }
+            char repl[64]; snprintf(repl,sizeof(repl),"%d",la*4);
+            size_t off=(size_t)(amp-line);
+            snprintf(fixed,sizeof(fixed),"%.*s%s%s",(int)off,line,repl,amp+1+strlen(sym));
+            line=fixed;                          /* 后续切分用替换后的行 */
+        }
+    }
     /* 用逗号切分操作数（注意 0(sp) 含括号无逗号，安全） */
     snprintf(CURASM,sizeof(CURASM),"%s",line);
     const char*rest=line+strlen(op); while(*rest==' ')rest++;
@@ -2888,6 +2917,8 @@ static uint32_t asm_line(const char*line,int idx){
         int rd=find_reg(ops[0]);
         if(!strcmp(op,"JAL")){
             int lt=find_label(ops[1]); int imm=(lt>=0)?(lt-idx):atoi(ops[1]);
+            if(lt<0 && getenv("TRV_ASM_DEBUG"))
+              fprintf(stderr,"[asm-debug] idx=%d JAL %s 未命中（imm 落 atoi=%d）；LABS=%d 项\n",idx,ops[1],imm,NLAB);
             return encU(O_JAL,imm,rd);
         }
         return encU(d->op,atoi(ops[1]),rd);
