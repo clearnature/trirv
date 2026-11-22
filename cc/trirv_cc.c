@@ -286,6 +286,7 @@ struct Node {
     char *s;            /* 名称/运算符/成员名 */
     int slen;           /* TK_STR 字节长度 */
     int straddr;
+    int strsym;         /* TK_STR 字符串符号序号 = STRSEG 下标（跨单元符号化）*/
     Node *l,*r,*e;      /* 二元左右 / 一元子 */
     Node *cond,*then,*els,*init,*step,*expr;
     Node *stmt;         /* while/for 单语句体 */
@@ -1721,6 +1722,32 @@ static void store_glob(int src,Global*g){
     emitf("ADDI %s, zero, &%s",regname(SCRATCH),g->name);
     store_mem(src,SCRATCH,0,g->ty);
 }
+/* 全串替换：old 字面量所有词边界命中处替换为 new；无命中返回 NULL。
+ * 用于 TRVO 导入体的字符串符号改名（&__str_k → &__strimp_N）；
+ * 标识符字符跟随时不替换，防 xy__str_1 误改（tvo_relabel 同款边界）。 */
+static char*str_replace_all(const char*line,const char*old,const char*new){
+    size_t lo=strlen(old),ln=strlen(new);
+    const char*p=line; int hits=0;
+    while((p=strstr(p,old))){
+        if(p>line&&(isalnum((unsigned char)p[-1])||p[-1]=='_')){p++;continue;}
+        if(isalnum((unsigned char)p[lo])||p[lo]=='_'){p++;continue;}
+        hits++; p+=lo;
+    }
+    if(!hits) return NULL;
+    char*out=malloc(strlen(line)+hits*(ln>lo?ln-lo:lo-ln)+2);
+    char*w=out; const char*q=line;
+    p=line;
+    while((p=strstr(p,old))){
+        if(p>line&&(isalnum((unsigned char)p[-1])||p[-1]=='_')){p++;continue;}
+        if(isalnum((unsigned char)p[lo])||p[lo]=='_'){p++;continue;}
+        size_t skip=p-q;
+        memcpy(w,q,skip); w+=skip;
+        memcpy(w,new,ln); w+=ln;
+        p+=lo; q=p;
+    }
+    strcpy(w,q);
+    return out;
+}
 /* 把"元素的起始地址"算进寄存器并返回 */
 static int addr_of(Node*n){
     Node*lv = (n->k==N_ADDR)? n->e : n;
@@ -1809,7 +1836,7 @@ static int eval(Node*n){
         for(int i=0;i<CC_N;i++) if(CC_V[i]==n->numw) return CC_R[i];  /* 已预装：只读共享 */
         int r=tacq(); load_imm128(r,n->numw); return r;
     }
-    case N_STR: { int r=tacq(); load_imm(r,n->straddr); return r; }
+    case N_STR: { int r=tacq(); emitf("ADDI %s, zero, &__str_%d",regname(r),n->strsym); return r; }
     case N_VAR: {
         LocVar*v=findloc(n->s);
         /* 全局优先级：局部遮蔽全局（C 作用域规则）。
@@ -2945,6 +2972,7 @@ static uint32_t asm_line(const char*line,int idx){
  * 函数登记 FNS（fbody=NULL 标记"体已在 TVO_OUT"，gen_func 跳过），
  * 标签计数续接（LBLBASE），全局/字符串地址由既有分配器统一排布。 */
 static char **TVO_OUT; static int NTVO, CAPTVO;
+static int nstr_imp_records;   /* 导入 STR 计数：改名映射 __str_k → __strimp_N */
 static int TVO_SEQ;                        /* 导入单元序号：标签改写 _L<n> -> _X<seq>_<n> */
 /* 把行内所有 _L<数字> token 改写为 _X<seq>_<数字>（定义与引用同形，全改）。
  * 标签出现在两种位置：行首 "LABEL:" 与跳转目标操作数。数字边界用
@@ -3003,6 +3031,19 @@ static void tvo_import(const char*path){
                 while(*hex==' ')hex++;                  /* 长度后空格 */
                 for(int k=0;k<len;k++){
                     unsigned b; sscanf(hex+2*k,"%2x",&b); buf[k]=(char)b;
+                }
+                /* 字符串符号化（2026-11-22 §5.7）：导入单元的第 k 条 STR 对应
+                   其代码里的 &__str_k 引用；合并后 STRSEG 下标 = NSTR（追加序），
+                   新符号名 __strimp_<NSTR>。STRBASE 同步预留，防与主单元字符串
+                   重叠（主 assign_strings 从推进后的 STRBASE 起分配）。 */
+                {   char from[64],to[64];
+                    snprintf(from,sizeof(from),"&__str_%d",nstr_imp_records);
+                    snprintf(to,sizeof(to),"&__strimp_%d",NSTR);
+                    for(int li=0;li<NTVO;li++){
+                        char*nw=str_replace_all(TVO_OUT[li],from,to);
+                        if(nw){ TVO_OUT[li]=nw; }
+                    }
+                    nstr_imp_records++;
                 }
                 GROW(STRSEG,CAPSTR,NSTR,char*); GROW(STRLEN,CAPSTRLEN,NSTR,int);
                 STRSEG[NSTR]=buf; STRLEN[NSTR]=len; NSTR++;
@@ -3171,6 +3212,18 @@ static int sym_parse(const char*line,char*sym,int symcap,long long*val,int*rd){
     char*e2=sym; while(*e2&&!isspace((unsigned char)*e2)&&*e2!=',')e2++; *e2=0;
     int la=find_label(sym);
     if(la>=0){ *val=(long long)la*4; }
+    else if(!strncmp(sym,"__strimp_",9)||!strncmp(sym,"__str_",6)){
+        /* 字符串符号（2026-11-22 §5.7 字符串符号化）：__str_<k>（主单元）/
+           __strimp_<j>（导入单元，经改名映射）——k/j = STRSEG 下标，
+           地址 = STRSEG_START + 前缀和 STRLEN[0..k-1] */
+        int k=-1;
+        if(!strncmp(sym,"__strimp_",9)) k=atoi(sym+9);
+        else k=atoi(sym+6);
+        if(k<0||k>NSTR) return -1;
+        long long a=STRSEG_START;
+        for(int t=0;t<k&&t<NSTR;t++) a+=STRLEN[t];
+        *val=a;
+    }
     else { Global*gd=global_find(sym); if(!gd) return -1; *val=gd->addr; }
     {   /* 目的寄存器 = 助记符后的第一个操作数 */
         char op[32]; if(sscanf(line,"%31s",op)!=1) return -1;
@@ -3231,35 +3284,24 @@ static uint32_t* assemble_all(int*pn){
 }
 
 /* 分配字符串常量地址 */
-static void assign_strings(Node*n){
-    if(!n) return;
-    if(n->k==N_STR){ n->straddr=STRBASE; STRBASE+=n->slen+1; return; }  /* 段数据含结尾 NUL */
-    Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
-    for(int i=0;i<10;i++) assign_strings(all[i]);   /* N_DOWHILE: cond/stmt 已覆盖 */
-    if(n->body) for(int i=0;i<n->nitems;i++) assign_strings(n->body[i]);
-    if(n->args) for(int i=0;i<n->nargs;i++) assign_strings(n->args[i]);
-    if(n->items) for(int i=0;i<n->nitems;i++) assign_strings(n->items[i]);
-    if(n->dinit) for(int i=0;i<n->ndecls;i++) assign_strings(n->dinit[i]);
-}
-static void register_strings(Node*n){
+static void strings_walk(Node*n){
     if(!n) return;
     if(n->k==N_STR){
+        n->straddr=STRBASE; STRBASE+=n->slen+1;       /* 段数据含结尾 NUL */
+        n->strsym=NSTR;                               /* 符号 = STRSEG 下标（跨单元符号化）*/
         GROW(STRSEG,CAPSTR,NSTR,char*); GROW(STRLEN,CAPSTRLEN,NSTR,int);
-        {   /* C 字符串以 NUL 结尾：段数据补一个 0 */ 
-            char*buf=malloc((size_t)n->slen+1);
+        {   char*buf=malloc((size_t)n->slen+1);
             memcpy(buf,n->s,(size_t)n->slen); buf[n->slen]=0;
-            STRSEG[NSTR]=buf; STRLEN[NSTR]=n->slen+1; NSTR++;
-        }
+            STRSEG[NSTR]=buf; STRLEN[NSTR]=n->slen+1; NSTR++; }
         return;
     }
     Node*all[]={n->l,n->r,n->e,n->cond,n->then,n->els,n->init,n->step,n->stmt,n->expr};
-    for(int i=0;i<10;i++) register_strings(all[i]);
-    if(n->body) for(int i=0;i<n->nitems;i++) register_strings(n->body[i]);
-    if(n->args) for(int i=0;i<n->nargs;i++) register_strings(n->args[i]);
-    if(n->items) for(int i=0;i<n->nitems;i++) register_strings(n->items[i]);
-    if(n->dinit) for(int i=0;i<n->ndecls;i++) register_strings(n->dinit[i]);
+    for(int i=0;i<10;i++) strings_walk(all[i]);   /* N_DOWHILE: cond/stmt 已覆盖 */
+    if(n->body) for(int i=0;i<n->nitems;i++) strings_walk(n->body[i]);
+    if(n->args) for(int i=0;i<n->nargs;i++) strings_walk(n->args[i]);
+    if(n->items) for(int i=0;i<n->nitems;i++) strings_walk(n->items[i]);
+    if(n->dinit) for(int i=0;i<n->ndecls;i++) strings_walk(n->dinit[i]);
 }
-
 /* ===================== 能力闸门 =====================
  * 编译器只承诺它真正实现的语义。对未实现特性（数组寻址、结构体成员、
  * 变参、栈传参...）必须显式拒绝——返回非零退出码，由统一后端回退到
@@ -3335,9 +3377,9 @@ int main(int argc,char**argv){
     /* 字符串地址分配：先扫全局初始化表达式（指针 -> 字符串字面量），
        再扫所有函数体 */
     for(int i=0;i<NGLOB;i++) if(GLOBS[i].init){
-        assign_strings(GLOBS[i].init); register_strings(GLOBS[i].init);
+        strings_walk(GLOBS[i].init);
     }
-    for(int i=0;i<NFN;i++){ assign_strings(FNS[i]->fbody); register_strings(FNS[i]->fbody); }
+    for(int i=0;i<NFN;i++){ strings_walk(FNS[i]->fbody); }
     gen_glob_data();
     NOUT=0; LBL=0;
     /* 是否有用户定义的 __libc_start_main（决定 crt0 走 musl 链还是直连 main） */

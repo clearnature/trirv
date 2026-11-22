@@ -228,5 +228,46 @@ else:
         cv = int(errs[0].split("=")[1]) if errs else -1
         check("全量/CVM 行为位图", cv, 0)
 
+# ================ Y. 跨单元字符串（A1s，2026-11-22） ================
+# 库单元字符串 + 主程序字符串/全局垫片共存：字符串地址符号化前，库的
+# 字符串引用烘焙独立编译期 STRBASE，合并重排后错位（且与主字符串重叠）。
+lib_s = tempfile.mktemp(suffix=".c")
+with open(lib_s, "w") as f:
+    f.write("char *lib_hi(void){ return \"hi\"; }\n")
+trvo_s = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_s, trvo_s], check=True, capture_output=True)
+driver_s = tempfile.mktemp(suffix=".c")
+with open(driver_s, "w") as f:
+    f.write(
+        "char *lib_hi(void);\n"
+        "int pad[40];\n"
+        "int main(void){\n"
+        "    char *m = \"MAIN\";\n"
+        "    char *h = lib_hi();\n"
+        "    int f = 0;\n"
+        "    if (m[0]!='M' || m[1]!='A' || m[2]!='I' || m[3]!='N' || m[4]!=0) f += 1;\n"
+        "    if (h[0]!='h' || h[1]!='i' || h[2]!=0) f += 2;\n"
+        "    if (pad[39] != 0) f += 4;\n"
+        "    return f;\n"
+        "}\n")
+tf_s = tempfile.mktemp(suffix=".trv")
+cmd = [CC, driver_s, tf_s, "-l", trvo_s]
+r = subprocess.run(cmd, capture_output=True, text=True)
+if r.returncode != 0:
+    check("跨单元/字符串链接", "link ok", (r.stderr or "")[:120])
+else:
+    check("跨单元/字符串链接", 0, 0)
+    prog_data = open(tf_s, "rb").read()
+    nn = struct.unpack_from("<I", prog_data, 8)[0]
+    pp = list(struct.unpack_from("<%dI" % nn, prog_data, 16))
+    off2 = 16 + 4 * nn
+    mem2 = {}
+    for _ in range(struct.unpack_from("<I", prog_data, 12)[0]):
+        a3, l3 = struct.unpack_from("<II", prog_data, off2); off2 += 8
+        mem2[a3] = list(prog_data[off2:off2 + l3]); off2 += l3
+    c3 = vm.VM(pp, mem_init=mem2).run(max_steps=2000000)
+    check("跨单元/字符串行为位图", c3.exit_code & 0xFF, 0)
+
 print(f"\nTRVO 目标文件端到端：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)

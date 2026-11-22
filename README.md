@@ -185,7 +185,7 @@ $ ./trirv_vm /tmp/t.trv
 | `trirv_musl_e2e.py`（**musl 风格 libc 层 + mini-busybox**：typedef/const/do-while/三目/复合赋值/cast、string+stdlib API、8 个 applet、stdin 文件/管道/argv 三通道） | **48/48** |
 | `trirv_link_e2e.py`（**多文件链接**：`-l` 拼接、跨文件调用、重复定义检测、busybox 分层、跨单元全局独立（数据符号化 §5.7）、导入函数作值） | **16/16** |
 | `trirv_octet_e2e.py`（**8-bit 视图层**：read8/write8 边界编解码，octet↔双 tryte，全 256 值无损往返，musl 的 CHAR_BIT 依赖在此满足） | **13/13** |
-| `trirv_trvo_e2e.py`（**TRVO 目标文件**：导出/导入、UNDEF 检测、标签改写、**全量去重 61 单元增量链接**（数据地址符号化后跨单元协作，PyVM+CVM 双跑）） | **16/16** |
+| `trirv_trvo_e2e.py`（**TRVO 目标文件**：导出/导入、UNDEF 检测、标签改写、全量去重 61 单元增量链接 + **跨单元字符串符号化**（PyVM+CVM 双跑）） | **18/18** |
 | `trirv_musl_real_e2e.py`（**真 musl 源码编译试点**：musl 1.2.5 官方源码 string/stdlib 6 文件原样编译（仅预处理），15 项行为断言 + strstr 集成场景，双 VM） | **11/11** |
 | `trirv_musl_wide_e2e.py`（**musl string/ 全目录覆盖**：46 文件批量管线——40 编译成功 / 6 语义不适用 SKIP（字节位图打包依赖二进制位运算）/ 0 失败；strsep/strlcpy/memmove/strcasecmp/memccpy 功能断言） | **7/7** |
 | `trirv_switch_e2e.py`（**switch 契约**：匹配+break / fall-through / default / 无匹配 / 负 case 值 / 嵌套 switch / 乱序声明 / CVM 一致） | **9/9** |
