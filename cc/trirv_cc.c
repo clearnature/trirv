@@ -1549,6 +1549,15 @@ static int fn_label_addr(const char*name){
     }
     return -1;
 }
+/* 名字是否已知为函数：本单元有体（fn_label_addr 可数）或导入体（FNS 条目
+ * fbody==NULL，标签在 TVO_OUT 拼入 OUT 末尾）。导入函数的地址引用走符号
+ * &name，汇编期绑定——gen 期 TVO_OUT 尚未拼入 OUT，烘焙计数必然失准（A4），
+ * 且 peephole 删指令会前移标签（cmp_char 44 vs 40 实证）——一律符号发射。 */
+static int is_known_fn(const char*name){
+    if(fn_label_addr(name)>=0) return 1;
+    for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,name)) return 1;
+    return 1==0;
+}
 /* 间接调用目标：把"被调地址"装入 reg。
  * n->s 形如 "f(...)"（直接函数指针调用）或 "(*fp)(...)"（指针解引用）。
  * - 裸名字是已知函数 -> load_imm 其指令下标地址（JAL 的目标值）
@@ -1593,7 +1602,7 @@ static void eval_target_into(int reg,const char*callee){
     if(addr>=0){ load_imm(reg,addr); return; }
     /* 不是本地函数：可能是全局变量里存的函数指针 */
     Global*g=global_find(name);
-    if(g){ load_imm(SCRATCH,g->addr); load_mem(reg,SCRATCH,0,g->ty); return; }
+    if(g){ emitf("ADDI %s, zero, &%s",regname(SCRATCH),g->name); load_mem(reg,SCRATCH,0,g->ty); return; }
     fprintf(stderr,"UNSUPPORTED: 间接调用目标 '%s' 未知\n",name);
     exit(2);
 }
@@ -1703,11 +1712,13 @@ static void store_mem(int src,int base,int off,const char*ty){
     else emitf("SW %s, %d(%s)",regname(src),off,regname(base));
 }
 static void load_glob(int dst,Global*g){
-    load_imm(SCRATCH,g->addr);
+    /* 数据地址符号化（2026-11-22 §5.7）：烘焙常量在跨单元重排后错位（ecvt IN[40]
+       实测踩烂库全局）；&name 在汇编期绑定到合并后的新槽 */
+    emitf("ADDI %s, zero, &%s",regname(SCRATCH),g->name);
     load_mem(dst,SCRATCH,0,g->ty);
 }
 static void store_glob(int src,Global*g){
-    load_imm(SCRATCH,g->addr);
+    emitf("ADDI %s, zero, &%s",regname(SCRATCH),g->name);
     store_mem(src,SCRATCH,0,g->ty);
 }
 /* 把"元素的起始地址"算进寄存器并返回 */
@@ -1717,11 +1728,11 @@ static int addr_of(Node*n){
         LocVar*v=findloc(lv->s);
         if(!v){
             Global*g=global_find(lv->s);
-            if(g){ int r=tacq(); load_imm(r,g->addr); return r; }
+            if(g){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),g->name); return r; }
             {   /* &func 取函数地址豁免；真未声明 → 报错（静默地址 0 = 零页写）。
-                   地址走符号 LUI（汇编期绑定）——烘焙常量会被 peephole 前移变陈旧 */
-                int faddr=fn_label_addr(lv->s);
-                if(faddr>=0){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),lv->s); return r; }
+                   地址走符号 ADDI（汇编期绑定，含导入函数）——烘焙常量会被
+                   peephole 前移变陈旧（cmp_char 44 vs 40 实证） */
+                if(is_known_fn(lv->s)){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),lv->s); return r; }
             }
             fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",lv->s);
             exit(2);
@@ -1812,10 +1823,9 @@ static int eval(Node*n){
                 return r;
             }
             {   /* 函数名 -> 函数地址（函数指针语义，供 __libc_start_main(main) 等）。
-                   地址走符号 LUI（汇编期绑定）：烘焙常量在 peephole 删指令后陈旧
-                   （qsort case8 cmp_char 44 vs 40 实证） */
-                int faddr=fn_label_addr(n->s);
-                if(faddr>=0){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),n->s); return r; }
+                   地址走符号 ADDI（汇编期绑定，含导入函数）——烘焙常量会被
+                   peephole 前移变陈旧（cmp_char 44 vs 40 实证） */
+                if(is_known_fn(n->s)){ int r=tacq(); emitf("ADDI %s, zero, &%s",regname(r),n->s); return r; }
             }
         }
         /* 数组名求值 = 数组首地址（C 的退化规则）；结构体同理 —— 结构体右值的
@@ -2157,11 +2167,14 @@ static int eval(Node*n){
                 if(!v && getenv("TRV_ASM_DEBUG"))
                   fprintf(stderr,"[asm-debug] fast-arg %d: 名字 %s findloc 未中\n",i,a->s);
                 if(!v){
-                    /* 函数名实参 → 符号 LUI（fn-ptr 传参）；真未声明 → 报错 */
-                    if(fn_label_addr(a->s)>=0)
+                    /* 函数名实参 → 符号 &name（fn-ptr 传参，导入函数同支持）；
+                       真未声明 → 诚实报错（原静默 ADDI 0 是零页风险） */
+                    if(is_known_fn(a->s))
                         emitf("ADDI a%d, zero, &%s",abase+i,a->s);
-                    else
-                        emitf("ADDI a%d, zero, 0",abase+i);
+                    else{
+                        fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",a->s);
+                        exit(2);
+                    }
                 }
                 else if(!v->spilled&&v->reg>0){ if(v->reg!=10+abase+i) emitf("ADDI a%d, %s, 0",abase+i,regname(v->reg)); }
                 else { chk_off(v->off); emitf("LW a%d, %d(s0)",abase+i,v->off); }
@@ -3121,17 +3134,78 @@ static void peephole(void){
 }
 
 /* 两遍汇编 */
+/* ---- 符号地址装载展开（2026-11-22 §5.7，链接器首案核心） ----
+ * LINE 里的 `&name` 地址引用（数据全局/函数）由 assemble_all 在汇编期展开为
+ * load_imm128 等价的分段装载序列（1~N 条）。两遍（计数/编码）走同一生成器，
+ * 标签下标保持一致。动机：数据地址（如 qs_tmp_wide@2511）超出 ADDI 的 IMM7
+ * （±1093），且烘焙 gen 期常量会被跨单元重排/peephole 弄错位——符号化 +
+ * 汇编期展开一次解决。 */
+static int sym_emit_seg(uint32_t*prog,int idx,int rd,long long n){
+    if(n<0){ idx=sym_emit_seg(prog,idx,rd,-n);
+             if(prog) prog[idx]=encR(O_OP,1,rd,0,0,rd);   /* SUB rd, zero, rd */
+             return idx+1; }
+    long long h=n/2187, lo=n%2187; const long long HALF7=(2187-1)/2;
+    if(lo>HALF7){ lo-=2187; h++; }
+    if(h==0){ if(prog) prog[idx]=encI(O_OPIMM,(int)lo,0,0,rd); return idx+1; }
+    if(prog) prog[idx]=encU(O_LUI,(int)h,rd); idx++;              /* LUI rd, h */
+    if(lo){ if(prog) prog[idx]=encI(O_OPIMM,(int)lo,rd,0,rd); idx++; }  /* ADDI rd, rd, lo */
+    return idx;
+}
+static int sym_emit(uint32_t*prog,int idx,int rd,long long v){
+    if(v==0){ if(prog) prog[idx]=encI(O_OPIMM,0,0,0,rd); return idx+1; }
+    const long long B=3486784401LL; const long long HALFB=(B-1)/2;
+    long long segs[8]; int ns=0; long long m=v;
+    while(m){ long long seg=m%B; m/=B; if(seg>HALFB){seg-=B;m++;} segs[ns++]=seg; }
+    idx=sym_emit_seg(prog,idx,rd,segs[ns-1]);
+    for(int i=ns-2;i>=0;i--){
+        if(prog) prog[idx]=encI(O_OPIMM,20,rd,4,rd); idx++;       /* SLLI rd, rd, 20 */
+        idx=sym_emit_seg(prog,idx,SCRATCH,segs[i]);
+        if(prog) prog[idx]=encR(O_OP,0,SCRATCH,rd,0,rd); idx++;   /* ADD rd, rd, tp */
+    }
+    return idx;
+}
+/* 从汇编行解析 &sym 的值与目的寄存器（操作数一）；成功返回 0 */
+static int sym_parse(const char*line,char*sym,int symcap,long long*val,int*rd){
+    const char*amp=strchr(line,'&'); if(!amp) return -1;
+    snprintf(sym,symcap,"%s",amp+1);
+    char*e2=sym; while(*e2&&!isspace((unsigned char)*e2)&&*e2!=',')e2++; *e2=0;
+    int la=find_label(sym);
+    if(la>=0){ *val=(long long)la*4; }
+    else { Global*gd=global_find(sym); if(!gd) return -1; *val=gd->addr; }
+    {   /* 目的寄存器 = 助记符后的第一个操作数 */
+        char op[32]; if(sscanf(line,"%31s",op)!=1) return -1;
+        const char*p=line+strlen(op); while(*p==' '||*p=='\t')p++;
+        char rn[32]; int k=0;
+        while(*p&&*p!=','&&*p!=' '&&*p!='\t'&&k<31) rn[k++]=*p++;
+        rn[k]=0;
+        *rd=find_reg(rn);
+    }
+    return *rd>=0?0:-1;
+}
+
 static uint32_t* assemble_all(int*pn){
-    NLAB=0;
-    /* 第一遍：标签 -> 指令索引 */
-    int idx=0;
-    for(int i=0;i<NOUT;i++){
-        char line[512]; strncpy(line,OUT[i],sizeof(line)-1); line[sizeof(line)-1]=0;
-        char*s=line; while(*s==' '||*s=='\t')s++;
-        if(*s&&strchr(s,':')){ char*colon=strchr(s,':'); *colon=0; add_label(s,idx); *colon=':';
-            /* 该行只有标签 */
-            char*t=colon+1; while(*t==' ')t++; if(*t) idx++;
-        } else if(*s) idx++;
+    /* 三阶段（2026-11-22 §5.7）：
+     * 0) 定点迭代：标签收集 + &符号行展开计数。&引用可前向（如主程序引用
+     *    导入单元的函数标签），首轮未命中按保守上界 7 条预占；LABS 每轮
+     *    完整重建，前向引用次轮即可解析，迭代至 idx 稳定（实测 2~3 轮）。
+     * 1) 编码：LABS 已完整，&行精确展开（条数=计数轮的最终值）。 */
+    int idx=0, prev=-1, rounds=0;
+    while(idx!=prev && rounds<10){
+        prev=idx; idx=0; NLAB=0; rounds++;
+        for(int i=0;i<NOUT;i++){
+            char line[512]; strncpy(line,OUT[i],sizeof(line)-1); line[sizeof(line)-1]=0;
+            char*s=line; while(*s==' '||*s=='\t')s++;
+            if(*s&&strchr(s,':')){ char*colon=strchr(s,':'); *colon=0; add_label(s,idx); *colon=':';
+                /* 该行只有标签 */
+                char*t=colon+1; while(*t==' ')t++; if(*t) idx++;
+            } else if(*s&&strchr(s,'&')){
+                char sym[128]; long long v; int rd;
+                if(sym_parse(s,sym,sizeof(sym),&v,&rd))
+                    idx += 7;                     /* 未命中（首轮前向引用）：保守上界 */
+                else
+                    idx = sym_emit(NULL,idx,rd,v); /* 仅计数 */
+            } else if(*s) idx++;
+        }
     }
     *pn=idx;
     uint32_t*prog=calloc(idx?idx:1,sizeof(uint32_t));
@@ -3141,6 +3215,15 @@ static uint32_t* assemble_all(int*pn){
         char*s=line; while(*s==' '||*s=='\t')s++;
         if(*s&&strchr(s,':')){ char*colon=strchr(s,':'); *colon=':';
             char*t=colon+1; while(*t==' ')t++; if(!*t) continue; s=t;
+        }
+        if(*s&&strchr(s,'&')){
+            char sym[128]; long long v; int rd;
+            if(sym_parse(s,sym,sizeof(sym),&v,&rd)){
+                fprintf(stderr,"[asm] unknown symbol &%s\n",sym);
+                return NULL;
+            }
+            idx = sym_emit(prog,idx,rd,v);
+            continue;
         }
         if(*s){ prog[idx]=asm_line(s,idx); idx++; }
     }

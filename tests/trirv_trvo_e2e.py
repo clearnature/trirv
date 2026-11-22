@@ -149,5 +149,84 @@ if os.path.exists(CVM):
     errs = [l for l in r.stderr.decode().split() if l.startswith("exit=")]
     check("trvo/CVM 执行", int(errs[0].split("=")[1]), 10)
 
+# ================ X. 全量去重增量链接（A2，2026-11-22） ================
+# batch_musl_compile 全量编译 string+stdlib（真 musl 源 + musl_tri 重写映射），
+# 去掉同源别名单元（atof/fcvt/gcvt = strtod/ecvt 同源，同名强符号诚实报错），
+# 剩余 60+ 单元一次性全部导入链接 + 跨单元行为验证——README「预编译一次、
+# 多次链接」的增量构建语义从此成为被测事实。
+# 数据地址已符号化（&name，§5.7 修复）：各单元全局在合并镜像里重排后仍正确。
+BATCH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "libc-musl", "batch_musl_compile.py")
+subprocess.run([sys.executable, BATCH], capture_output=True, text=True)
+units = sorted(__import__("glob").glob("/tmp/musl_batch/*.trvo"))
+check("全量/批量产出单元数>=60", len(units) >= 60, True)
+
+# 符号感知去重（真链接器语义）：解析各单元 FUNC 名，贪心接受无碰撞单元，
+# 跳过碰撞单元（如同源别名 atof/fcvt/gcvt↔strtod/ecvt、qsort_nr↔qsort）。
+# 同名强符号 → 链接报错是诚实行为，测试按链接器规则先去重。
+accepted, skipped, seen_fns = [], [], set()
+for u in units:
+    fns = [l.split()[1] for l in open(u).read().split("\n")
+           if l.startswith("FUNC ")]
+    if any(f in seen_fns for f in fns):
+        skipped.append(os.path.basename(u))
+        continue
+    seen_fns.update(fns)
+    accepted.append(u)
+check("全量/去重后可链接单元数>=55", len(accepted) >= 55, True)
+check("全量/碰撞单元被诚实跳过", len(skipped) >= 1, True)
+
+driver = tempfile.mktemp(suffix=".c")
+with open(driver, "w") as f:
+    f.write(
+        "int strlen(const char *s);\n"
+        "void *memcpy(void *d, const void *s, int n);\n"
+        "int memcmp(const void *a, const void *b, int n);\n"
+        "int abs(int a);\n"
+        "int atoi(const char *s);\n"
+        "int qsort(void *b, int n, int w, int (*c)(const void*, const void*));\n"
+        "int cmp_i(const int *a, const int *b){ return *a - *b; }\n"
+        "int main(void){\n"
+        "    char buf[8];\n"
+        "    int i;\n"
+        "    for (i = 0; i < 8; i++) buf[i] = 0;\n"
+        "    memcpy(buf, \"trirv\", 6);\n"
+        "    int n = 0;\n"
+        "    while (buf[n]) n++;\n"
+        "    int a[3]; a[0]=30; a[1]=10; a[2]=20;\n"
+        "    qsort(a, 3, 4, cmp_i);\n"
+        "    int f = 0;\n"
+        "    if (n != 5) f += 1;\n"
+        "    if (a[0]!=10 || a[1]!=20 || a[2]!=30) f += 2;\n"
+        "    if (memcmp(buf, \"trirv\", 6) != 0) f += 4;\n"
+        "    if (atoi(\"42\") != 42) f += 8;\n"
+        "    if (abs(-7) != 7) f += 16;\n"
+        "    return f;\n"
+        "}\n")
+tf = tempfile.mktemp(suffix=".trv")
+cmd = [CC, driver, tf]
+for u in accepted:
+    cmd += ["-l", u]
+r = subprocess.run(cmd, capture_output=True, text=True)
+if r.returncode != 0:
+    check("全量/增量链接 %d 单元" % len(accepted), "link ok", (r.stderr or "")[:120])
+else:
+    check("全量/增量链接 %d 单元" % len(accepted), 0, 0)
+    prog_data = open(tf, "rb").read()
+    nn = struct.unpack_from("<I", prog_data, 8)[0]
+    pp = list(struct.unpack_from("<%dI" % nn, prog_data, 16))
+    off2 = 16 + 4 * nn
+    mem2 = {}
+    for _ in range(struct.unpack_from("<I", prog_data, 12)[0]):
+        a2, l2 = struct.unpack_from("<II", prog_data, off2); off2 += 8
+        mem2[a2] = list(prog_data[off2:off2 + l2]); off2 += l2
+    c2 = vm.VM(pp, mem_init=mem2).run(max_steps=2000000)
+    check("全量/PyVM 行为位图", c2.exit_code & 0xFF, 0)
+    if CVM:
+        rr = subprocess.run([CVM, tf], capture_output=True)
+        errs = [l for l in rr.stderr.decode().split() if l.startswith("exit=")]
+        cv = int(errs[0].split("=")[1]) if errs else -1
+        check("全量/CVM 行为位图", cv, 0)
+
 print(f"\nTRVO 目标文件端到端：{passed} PASS / {failed} FAIL")
 sys.exit(1 if failed else 0)

@@ -178,5 +178,49 @@ if os.path.exists(CVM):
     os.unlink(cf)
     os.unlink(tf)
 
+# ================ 8. 跨单元全局独立（§5.7 数据符号化，2026-11-22） ================
+# 主程序与库各自有全局：数据地址符号化（&name）后互不踩踏。
+# 坑实录：旧实现库 LINE 体烘焙独立编译期绝对地址，主文件全局槽撞库全局
+# （ecvt IN[40] 覆盖 ecvt_tri 57 槽实测）；§5.7 登记为链接器专项核心。
+lib_g = tempfile.mktemp(suffix=".c")
+with open(lib_g, "w") as f:
+    f.write("int lib_counter = 100;\n"
+            "int lib_bump(void){ lib_counter = lib_counter + 5; return lib_counter; }\n")
+trvo_g = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_g, trvo_g], check=True, capture_output=True)
+main_g = tempfile.mktemp(suffix=".c")
+with open(main_g, "w") as f:
+    f.write("int lib_bump(void);\n"
+            "int main_arr[10];\n"
+            "int main(void){\n"
+            "    main_arr[0] = 1; main_arr[9] = 9;\n"
+            "    int x = lib_bump();\n"
+            "    int y = lib_bump();\n"
+            "    return x + y*10 + main_arr[0]*100 + main_arr[9]*1000 + lib_counter*10000;\n"
+            "}\n")
+r = link_and_load(open(main_g).read(), [trvo_g])
+got, _ = run_py(*r)
+check("跨单元/全局独立(主数组+库计数器)", got, (105 + 1100 + 100 + 9000 + 1100000) % 256)
+
+# ================ 9. 导入函数作值（A4，2026-11-22） ================
+# 库单元函数名作实参传 fn-ptr 形参：符号 &name 汇编期绑定到导入体标签。
+# 坑实录：fast 实参路径原对 fn 名静默发 ADDI 0；gen 期烘焙地址对导入体
+# 不可得（TVO_OUT 尚未拼入 OUT）——符号化天然免疫。
+lib_g2 = tempfile.mktemp(suffix=".c")
+with open(lib_g2, "w") as f:
+    f.write("int lib_bump(void){ lib_counter_dummy_none(); return 105; }\n"
+            .replace("lib_counter_dummy_none(); ", ""))   # 纯返回 105
+trvo_g2 = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_g2, trvo_g2], check=True, capture_output=True)
+main_g2 = tempfile.mktemp(suffix=".c")
+with open(main_g2, "w") as f:
+    f.write("int lib_bump(void);\n"
+            "int call0(int (*f)(void)){ return (*f)(); }\n"
+            "int main(void){ return call0(lib_bump) - 105; }\n")
+r = link_and_load(open(main_g2).read(), [trvo_g2])
+got, _ = run_py(*r)
+check("跨单元/导入函数作值(fn-ptr 形参)", got, 0)
+
 print(f"\n多文件链接端到端：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
