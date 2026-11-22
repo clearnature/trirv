@@ -712,7 +712,16 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
   坑实录：gen_cast 的 dbt/sbt 掩码剥修饰位——tint2↔int 必须以完整类型字
   分派并破「同尺寸短路 + 左值重打类型」（重打后按 9-tryte 读 4-tryte 槽
   越界带垃圾，(int)arr[1] 实证）。契约：trirv_tri_tcc_e2e TINT2 组
-  12 正例 + 2 NEG。批次 C2 余项（__tbool）见 docs/TERNARY_COMPAT_PLAN.md。
+  12 正例 + 2 NEG。
+- **__tbool 类型规范（2026-11-23 登记，C2-c）**：VT_BYTE|VT_DEFSIGN|VT_TINT
+  （**VT_DEFSIGN 必带**——plain char 在本目标无符号（char_is_unsigned 盖章
+  → LBU），无 DEFSIGN 会被盖章成无符号、破坏 ~ 负词经 SB/LB 的精确往返）。
+  1 tryte（sizeof=1），值域 0/1/2（假/不定/真，与 __tint 同编码）；复用
+  C1 门语义全表：& | = TAND/TOR（min/max）、~ = TNOT（词级 ≡ −1−a）、
+  == != 位型全等、真值判断 nonzero、`^`/序比较/算术/混 int 门控拒绝；
+  与 __tint 混算合法（combine 归一 VT_INT 词级 Kleene）。is_tint_op 扩展
+  接受 VT_BYTE（__tbool 二元门进 gen_opit）。契约：trirv_tri_tcc_e2e
+  TBOOL 组 12 正例 + 3 NEG。C2 全部余项见 docs/TERNARY_COMPAT_PLAN.md。
 - **MUL**：乘积在 `__int128` 上直接相乘会溢出（45-trit × 45-trit → 90 trit ≫ 128 bit）。
   两版都改走 `mul90()` 取低半 `lo = (a·b) mod 3^45`（与 MULH 共用 90-trit schoolbook 乘
   法，零硬件除法、零溢出）。Python 侧大整数 `u(a*b)` 本就精确，作为参考实现。

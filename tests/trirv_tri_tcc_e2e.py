@@ -284,6 +284,31 @@ CASES = [
     ("tint2混合算术", "int main(void){ __tint2 x = 1000; int y = x + 1; if (y == 1001) return 1; return 2; }", 1),
     ("tint2结构体成员", "struct S { char c; __tint2 v; }; int main(void){ struct S s; s.c = 3; s.v = 5000000000LL; "
      "if (s.v == 1513215599 && s.c == 3 && sizeof(struct S)==8) return 1; return 2; }", 1),
+
+    # ---- __tbool 1-tryte Kleene 布尔（批次 C2-c：VT_BYTE|VT_TINT 复用 C1 门
+    #      语义；VT_DEFSIGN 保证有符号 LB——plain char 无符号盖章会破坏精确往返）----
+    ("tbool与或真值表", "__tbool v[3]; int main(void){ v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; "
+     "int f=0; for(int i=0;i<3;i++){ for(int j=0;j<3;j++){ __tbool a=v[i]; __tbool b=v[j]; "
+     "if ((int)(a&b) != (i<j?i:j)) f|=1; if ((int)(a|b) != (i>j?i:j)) f|=2; }} return f; }", 0),
+    ("tbool非", "__tbool v[3]; int main(void){ v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; "
+     "return (int)(~v[0])*100 + (int)(~v[1])*10 + (int)(~v[2]); }", ((-1)*100 + (-2)*10 + (-3)) & 0xFF),
+    ("tbool德摩根", "__tbool v[3]; int main(void){ v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; "
+     "int f=0; for(int i=0;i<3;i++){ for(int j=0;j<3;j++){ __tbool a=v[i]; __tbool b=v[j]; "
+     "int l=(int)(~(a&b)); int r=(int)((~a)|(~b)); if(l!=r) f|=1; } } return f; }", 0),
+    ("tbool相等", "__tbool v[3]; int main(void){ v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; "
+     "int f=0; for(int i=0;i<3;i++) for(int j=0;j<3;j++) if(((int)(v[i]==v[j])) != (i==j)) f|=4; "
+     "return f + 100*((int)(v[1]!=v[2])); }", 100),
+    ("tbool真值判断", "__tbool v[3]; int main(void){ v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; "
+     "int f=0; if(v[0]) f|=1; if(!v[1]) f|=2; if(!v[2]) f|=4; if(v[2]) f|=8; return f; }", 8),
+    ("tbool存储往返", "__tbool v[3]; int main(void){ v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; "
+     "if (v[0]==(__tbool)0 && v[1]==(__tbool)1 && v[2]==(__tbool)2) return 1; return 2; }", 1),
+    ("tbool负词精确往返", "__tbool n; int main(void){ n = ~(__tbool)0; if ((int)n == -1) return 1; return 2; }", 1),
+    ("tbool尺寸数组", "int main(void){ __tbool a[2]; if (sizeof(__tbool)!=1) return 9; if (sizeof(a)!=2) return 8; return 1; }", 1),
+    ("tbool数组步长", "__tbool a[2]; int main(void){ a[0]=(__tbool)1; a[1]=(__tbool)2; if ((int)a[0]==1 && (int)a[1]==2) return 1; return 2; }", 1),
+    ("tbool传参返回", "__tbool tmax(__tbool a, __tbool b){ return a|b; } int main(void){ __tbool v[3]; "
+     "v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; int f=0; "
+     "for(int i=0;i<3;i++) for(int j=0;j<3;j++) if ((int)tmax(v[i],v[j]) != (i>j?i:j)) f|=1; return f; }", 0),
+    ("tbool与tint混用", "__tint t=(__tint)2; __tbool b=(__tbool)1; int main(void){ return (int)(t & b); }", 1),
 ]
 
 # 多 TU 用例（T-2.1）：(name, [src1, src2, ...], expected) —— 同进程多文件编译，
@@ -313,6 +338,9 @@ NEG_CASES = [
     ("tint隐式混算报错", "int main(void){ int i=1; __tint t=(__tint)2; return (int)(i & t); }", "tint"),
     ("tint2混tint算术报错", "int main(void){ __tint a=(__tint)1; __tint2 b=1; __tint c = a + b; return 0; }", "tint"),
     ("tint2混tint位运算报错", "int main(void){ __tint a=(__tint)1; __tint2 b=1; return (int)(a & b); }", "tint"),
+    ("tbool算术报错", "__tbool a; __tbool b; int main(void){ __tbool c = a + b; return 0; }", "tint"),
+    ("tbool序比较报错", "__tbool a; __tbool b; int main(void){ return a < b; }", "tint"),
+    ("tbool混int报错", "__tbool a=(__tbool)1; int main(void){ int i=1; return (int)(a & i); }", "tint"),
 ]
 
 

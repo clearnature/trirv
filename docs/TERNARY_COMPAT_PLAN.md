@@ -105,13 +105,14 @@ GREEN 实现点：§3.2 表全层。
 JAL**——与 int 位运算的模拟路径区分）；e2e 全量；43 套无回归。
 
 **批次 C2（2026-11-23 拍板 = 方案 A）**：`__tint2` = 4-tryte/20-trit 档
-（值域 3^20 ≈ 2^31.6 "32 位量级档"，sizeof=4）。已落地：C2-a ISA 长档
-LW4/SW4 + 双 VM + mem4 契约（trirv 960c7df / tinycc cdb11a68，见
-ternary-isa-design.md §4.3/§4.4）；C2-b tri-tcc 前端（VT_TINT2 + 窄化
-cast + struct 4-对齐档）→ tri_tcc_e2e 170 用例 329 PASS。**余项**：
-`__tbool`（1-trit Kleene 布尔，1-tryte 容器）、文字运算 literal `x^a`
-ISA 预留登记（opcode 19 区）、trirv_cc 补 __tint/__tint2（可选，差分
-对照用，延后记账）。
+（值域 3^20 ≈ 2^31.6 "32 位量级档"，sizeof=4）。**已全部落地**：
+C2-a ISA 长档 LW4/SW4 + 双 VM + mem4 契约（trirv 960c7df / tinycc
+cdb11a68，见 ternary-isa-design.md §4.3/§4.4）；C2-b tri-tcc `__tint2`
+前端（VT_TINT2 + 窄化 cast + struct 4-对齐档）；C2-c tri-tcc `__tbool`
+（VT_BYTE|VT_DEFSIGN|VT_TINT，复用 C1 门语义，1-tryte）→ tri_tcc_e2e
+184 用例 354 PASS（TINT2 12+2、TBOOL 12+3）。**余项（记账）**：文字运算
+literal `x^a` ISA 预留登记（opcode 19 区）、trirv_cc 补 __tint/__tint2/
+__tbool（可选，差分对照用，延后）。
 
 ## 4. 明确不做（本轮）
 
