@@ -199,6 +199,26 @@ CASES = [
     ("tint全trit2清零", "int main(void){ __tint x; char *p=(char*)&x; "
      "for(int i=0;i<9;i++) p[i]=242; return ((int)x == -1) + ((int)(~x) == 0); }", 2),  # TNOT 清零
 
+    # ---- char* punning 非 TINT 锁模型（a946373 登记「for+指针元素写 body 丢失」专项销案：
+    #      幻影——登记时对照程序同踩 p[i]=2 期望值坑（tryte 值 2 = 00002₃ 仅低 trit 非 0，
+    #      并非全 trit 2），输出「不对」反推 BLT 错位，前提为假故三重假设不收束。
+    #      2026-11-22 复核：该组合在 c1bda721（登记时刻）与 5c6a3ea7（现行）双编译器、
+    #      for 四式/while/do-while/嵌套/break/continue/指针行走 20+ 形状 × 双 VM 零异常。
+    #      本组锁正向口径 + 反向锚（旧错误期望）+ body 计数反证 + exit &0xFF 口径。 ----
+    ("charpun_for全负1", "int main(void){ int x; char *p=(char*)&x; "
+     "for(int i=0;i<9;i++){ p[i]=242; } return ((int)x==-1)*10 + 1; }", 11),
+    ("charpun_while全正大", "int main(void){ int x; char *p=(char*)&x; int i=0; "
+     "while(i<9){ p[i]=121; i=i+1; } return ((int)x>0)*100 + ((int)x==-1); }", 100),  # 全 trit1 = +max 非 -1
+    ("charpun_单写等值", "int main(void){ int x; char *p=(char*)&x; "
+     "p[0]=242;p[1]=242;p[2]=242;p[3]=242;p[4]=242;p[5]=242;p[6]=242;p[7]=242;p[8]=242; "
+     "return ((int)x==-1); }", 1),
+    ("charpun_旧模型反向锁", "int main(void){ int x; char *p=(char*)&x; "
+     "for(int i=0;i<9;i++){ p[i]=2; } return ((int)x==-1); }", 0),  # 旧错误期望的锚：tryte 值 2 非 -1
+    ("charpun_for计数", "int main(void){ int x; char *p=(char*)&x; int s=0; "
+     "for(int i=0;i<9;i++){ p[i]=242; s=s+1; } return ((int)x==-1)*10+s; }", 19),  # body 跑满 9 次——「body 丢失」反证
+    ("charpun_raw负1出口", "int main(void){ int x; char *p=(char*)&x; "
+     "for(int i=0;i<9;i++){ p[i]=242; } return (int)x; }", (-1)&0xFF),  # exit 口径 &0xFF：-1→255 非 %256→82
+
     # ---- 大整数常量通道（T-2.4 诊断实锤：>2^32 的 VT_INT 字面量曾被 gen_cast
     #      0xffffffff 掩码截断——TriRV int=45 trit 全域需 64 位常量通道） ----
     ("int常量2^32边界", "int mod97(int x){ return x - x/97*97; } int main(void){ int x = 5000000000; return mod97(x); }", 5000000000 % 97),
