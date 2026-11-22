@@ -579,6 +579,27 @@ def section_shifts():
     check("移位与位运算混用（3 例）", bad == 0, f"{bad} 例错")
 
 
+# ---------------------------------------------------------------- §11 LUI 高段语义锁
+def section_lui():
+    section("§11 LUI 高段语义锁（rd = imm × 3^7，两 VM 一致——2026-11-22 fp 取址实证锁定）")
+    cases = [
+        # (名, LUI imm, ADDI 尾差, 期望 a0)
+        ("LUI 20（高段）", 20, 0, 20 * 2187),
+        ("LUI 2 + ADDI 324（load_seg 配对形）", 2, 324, 2 * 2187 + 324),
+        ("LUI 0（零段退化为 ADDI 0）", 0, 0, 0),
+    ]
+    for name, k, tail, want in cases:
+        src = f"LUI x1, {k}\nADDI x1, x1, {tail}\nADDI a0, x1, 0\nADDI a7, zero, 93\nECALL"
+        c = run_asm(src)
+        check(f"{name}（PyVM a0）", isa.to_signed_word(c.regs[10]) == want,
+              f"得 {isa.to_signed_word(c.regs[10])}，期望 {want}")
+        prog, _l = asm.assemble(src)
+        cg = run_c_vm_prog(prog)
+        if cg is not None:
+            # C VM exit 报 8 位有符号（run_c_vm_prog 已还原符号）——按无符号字节比
+            check(f"{name}（C VM exit&FF）", (cg & 0xFF) == (want & 0xFF), f"得 {cg}，期望 {want & 0xFF}")
+
+
 # ---------------------------------------------------------------- main
 def main():
     print("TriRV 契约测试（TDD）")
@@ -592,6 +613,7 @@ def main():
     section_struct_abi()
     section_nested_calls()
     section_shifts()
+    section_lui()
 
     print("\n" + "=" * 60)
     print(f"契约测试：{PASS}/{PASS + FAIL} 通过")
