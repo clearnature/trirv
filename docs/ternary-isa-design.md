@@ -701,8 +701,18 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
   （+ − * / % << >>）、与 int 隐式混算（0 中性零豁免 if/! 合成的 ==0/!=0）。
   尺寸 9 tryte（同 int）；punning 经 char* 逐 tryte 写全 trit 模式
   （全 1 = (3^45−1)/2、全 2 = 3^45−1 ≡ −1）。契约：trirv_tri_tcc_e2e TINT 组
-  15 用例（TERNARY_COMPAT_PLAN §3.1 真值表推导）。批次 C2（__tbool/__tint2）
-  见 docs/TERNARY_COMPAT_PLAN.md。
+  15 用例（TERNARY_COMPAT_PLAN §3.1 真值表推导）。
+- **__tint2 类型规范（2026-11-23 登记，C2 方案 A）**：VT_INT|VT_TINT2 修饰位
+  （VT_LONG 模式同构），**4 tryte = 20-trit**（值域 3^20 ≈ 2^31.6"32 位量级
+  档"，对标 char/short/int 阶梯补档），sizeof=4、struct 内 4-对齐（含 tint2
+  成员的结构体 maxalign 圆整，其余成员仍 ABI §6 9-对齐）。存取 **LW4/SW4**
+  （存取即窄化：SW4 mod 3^20 截断、LW4 半阈值 sx20 符号扩展）；寄存器内
+  int 语义（45-trit 运算）+ gen_cast 显式窄化 gen_cvt_tri_narrow20
+  （mod 3^20 + sx20）；无 Kleene 门控（与 __tint 混算仍被 C1 门拒绝）。
+  坑实录：gen_cast 的 dbt/sbt 掩码剥修饰位——tint2↔int 必须以完整类型字
+  分派并破「同尺寸短路 + 左值重打类型」（重打后按 9-tryte 读 4-tryte 槽
+  越界带垃圾，(int)arr[1] 实证）。契约：trirv_tri_tcc_e2e TINT2 组
+  12 正例 + 2 NEG。批次 C2 余项（__tbool）见 docs/TERNARY_COMPAT_PLAN.md。
 - **MUL**：乘积在 `__int128` 上直接相乘会溢出（45-trit × 45-trit → 90 trit ≫ 128 bit）。
   两版都改走 `mul90()` 取低半 `lo = (a·b) mod 3^45`（与 MULH 共用 90-trit schoolbook 乘
   法，零硬件除法、零溢出）。Python 侧大整数 `u(a*b)` 本就精确，作为参考实现。

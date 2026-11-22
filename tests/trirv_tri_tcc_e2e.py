@@ -265,6 +265,25 @@ CASES = [
     ("struct 数组元素步长", "struct S{char c; int *p;}; struct S arr[2]; int main(void){ return (int)((char*)&arr[1] - (char*)&arr[0]); }", 18),
     ("struct char数组成员", "struct S{char buf[4]; int i;}; struct S s; int main(void){ return (int)((char*)&s.i - (char*)&s); }", 9),
     ("struct 嵌套", "struct I{int x;}; struct O{char c; struct I in;}; struct O o; int main(void){ return (int)((char*)&o.in - (char*)&o); }", 9),
+
+    # ---- __tint2 4-tryte/20-trit 档（批次 C2 方案 A：LW4/SW4 存取 + mod 3^20
+    #      窄化，2026-11-23 拍板；sizeof=4，寄存器内 int 语义）----
+    ("tint2声明sizeof", "__tint2 x = 7; int main(void){ if (sizeof(__tint2)!=4) return 9; return (int)x; }", 7),
+    ("tint2全局读", "__tint2 g = 100000; int main(void){ if ((int)g == 100000) return 1; return 2; }", 1),
+    ("tint2负值往返", "int main(void){ __tint2 x = -123456; if (x == -123456) return 1; return 2; }", 1),
+    ("tint2存储截断", "int main(void){ __tint2 x = 5000000000LL; if (x == 1513215599) return 1; return 2; }", 1),
+    ("tint2过半转负", "int main(void){ __tint2 x = 3000000125LL; if (x == -486784276) return 1; return 2; }", 1),
+    ("tint2数组步长", "__tint2 a[3]; int main(void){ for(int i=0;i<3;i++) a[i]=i*100000; "
+     "if (a[1]==100000 && a[2]==200000 && sizeof(a)==12) return 1; return 2; }", 1),
+    ("tint2全局数组负初值", "__tint2 g[2] = {7, -7}; int main(void){ if (g[0]==7 && g[1]==-7) return 1; return 2; }", 1),
+    ("tint2传参返回", "__tint2 id(__tint2 v){ return v; } int main(void){ __tint2 x = 123456; "
+     "if (id(x)==123456) return 1; return 2; }", 1),
+    ("tint2显式右值窄化", "int main(void){ int big = 4000000000; if ((__tint2)big == 513215599) return 1; return 2; }", 1),
+    ("tint2存储路径截断", "int main(void){ int big = 4000000000; __tint2 x = big; "
+     "if (x == 513215599) return 1; return 2; }", 1),
+    ("tint2混合算术", "int main(void){ __tint2 x = 1000; int y = x + 1; if (y == 1001) return 1; return 2; }", 1),
+    ("tint2结构体成员", "struct S { char c; __tint2 v; }; int main(void){ struct S s; s.c = 3; s.v = 5000000000LL; "
+     "if (s.v == 1513215599 && s.c == 3 && sizeof(struct S)==8) return 1; return 2; }", 1),
 ]
 
 # 多 TU 用例（T-2.1）：(name, [src1, src2, ...], expected) —— 同进程多文件编译，
@@ -292,6 +311,8 @@ NEG_CASES = [
     ("tint小于报错", "__tint a; __tint b; int main(void){ return a < b; }", "tint"),
     ("tint算术报错", "__tint a; __tint b; int main(void){ __tint c = a + b; return 0; }", "tint"),
     ("tint隐式混算报错", "int main(void){ int i=1; __tint t=(__tint)2; return (int)(i & t); }", "tint"),
+    ("tint2混tint算术报错", "int main(void){ __tint a=(__tint)1; __tint2 b=1; __tint c = a + b; return 0; }", "tint"),
+    ("tint2混tint位运算报错", "int main(void){ __tint a=(__tint)1; __tint2 b=1; return (int)(a & b); }", "tint"),
 ]
 
 
