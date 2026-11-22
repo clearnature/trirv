@@ -9,9 +9,12 @@
  * 本头文件是 musl 源层（musl_src/*.c）的唯一 syscall 对接面：
  * 上游 `__asm__ ecall` 一律替换为本层包装。
  *
- * tri-tcc 管线缺口（记账）：tri-tcc 尚无 syscall 内建，需 tri-link 前置
- * `__tri_syscall` 代码块（ADDI a7,a0,0; ECALL; JALR zero,ra,0 三槽）后
- * 本头文件才对 tri-tcc 生效。
+ * tri-tcc 路径（2026-11-23 已通）：tri-link 前置链接器内建 `__tri_syscall`
+ * 代码块（输出槽 5 = 绝对地址 20；n→a7(x17)、参数整体下移一档、ECALL、
+ * JALR ret）。tri-tcc 侧直接声明：
+ *   long __tri_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
+ * （契约 trirv_tcc_syscall_e2e 7 项；(long)buf 指针实参依赖 gen_cast 的
+ * ptr→long 同宽无操作守卫——见 tccgen.c TRIRV 分支坑实录。）
  */
 #ifndef _TRIRV_ARCH_SYSCALL_H
 #define _TRIRV_ARCH_SYSCALL_H
