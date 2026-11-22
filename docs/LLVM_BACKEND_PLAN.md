@@ -38,7 +38,8 @@ IR → TriRV 才需要三进制后端。这意味着：
 | 4 | LLVM 后端 | ⬜ 0% | 本计划书 |
 
 阶段 3 已登记缺口（LLVM 路线多数自然消解，见 §4）：
-未声明标识符检查 XFAIL（fn-as-value 语义）、trirv_cc 无 long/short 类型
+未声明标识符检查（2026-11-22 已转 GREEN：变量语境硬报错 + 原型/隐式声明/
+函数名作值豁免）、trirv_cc 无 long/short 类型
 （int=45-trit 单宽）、unsigned 部分语义、errno 完整传递。
 
 ---

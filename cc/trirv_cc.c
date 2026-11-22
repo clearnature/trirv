@@ -871,6 +871,7 @@ static int ty_size(const char*ty,int *isarr){
 }
 
 static Node** FNS; static int NFN, CAPFN;
+static char** PROTOS; static int NPROT, CAPPROT;   /* 原型名登记（2026-11-22）：N_CALL 符号直发的判据 */
 
 
 
@@ -1156,6 +1157,15 @@ static void parse_program(void){
         }
         expect(")");
         if(accept(";")){                       /* 函数原型声明：只有签名，无体 */
+            /* 2026-11-22 登记原型名：N_CALL 解析用它区分「原型/隐式声明 →
+               符号直发 JAL（TRVO 导入期解析 / 链接期 scan_undef 收口）」与
+               「彻底未声明的变量语境误用 → gen 报错」。此前原型被整体丢弃，
+               原型-only 调用（如 qsort_tri 的 memcpy）落进 fn-ptr 形参合成的
+               N_VAR 静默兜底——调用消失或跳错目标（潜伏错码，测试未踩到
+               msort_wide 分支故长期未暴露）。 */
+            int k2; int seen=0;
+            for(k2=0;k2<NPROT;k2++) if(!strcmp(PROTOS[k2],name)){seen=1;break;}
+            if(!seen){ PROTOS=grow(PROTOS,&CAPPROT,NPROT,sizeof(char*)); PROTOS[NPROT++]=strdup(name); }
             continue;                          /* 签名不参与代码生成；供调用的 FNRETS 在统一阶段建表 */
         }
         for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,name)){
@@ -1708,7 +1718,12 @@ static int addr_of(Node*n){
         if(!v){
             Global*g=global_find(lv->s);
             if(g){ int r=tacq(); load_imm(r,g->addr); return r; }
-            { int r=tacq(); emitf("ADDI %s, zero, 0",regname(r)); return r; }
+            {   /* &func 取函数地址豁免；真未声明 → 报错（静默地址 0 = 零页写） */
+                int faddr=fn_label_addr(lv->s);
+                if(faddr>=0){ int r=tacq(); load_imm(r,faddr); return r; }
+            }
+            fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",lv->s);
+            exit(2);
         }
         if(!v->spilled){
             fprintf(stderr,"UNSUPPORTED: address of register-allocated local '%s'\n",lv->s);
@@ -1807,8 +1822,15 @@ static int eval(Node*n){
            结果因此是只读的，上级若要写必须先 dstof()。 */
         if(v&&!v->spilled&&v->reg>0) return v->reg;
         int r=tacq();
-        if(!v) emitf("ADDI %s, zero, 0",regname(r));           /* 未知符号兜底 */
-        else load_mem(r,8,v->off,v->ty);                       /* 按类型选 LB/LBU/LW */
+        if(!v){
+            /* 诚实报错（2026-11-22，未声明标识符专项）：未知符号静默零页
+               比编译失败危险得多（P4 实测 IN[k] 未声明 → 全 ±0 错码）。
+               函数名豁免已在上方 fn_label_addr 分支完成；隐式声明函数的
+               调用走 N_CALL 名字直发 + 链接期 scan_undef，不经此路径。 */
+            fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",n->s);
+            exit(2);
+        }
+        load_mem(r,8,v->off,v->ty);                            /* 按类型选 LB/LBU/LW */
         return r;
     }
     case N_UN: {
@@ -1996,8 +2018,13 @@ static int eval(Node*n){
             LocVar*l=findloc(lv->s);
             Global*gg=!l?global_find(lv->s):NULL;
             if(gg) store_glob(v,gg);
-            else if(l&&l->spilled){ store_mem(v,8,l->off,l->ty); }
-            else if(l&&l->reg!=v) emitf("ADDI %s, %s, 0",regname(l->reg),regname(v));
+            else if(!l){
+                /* 赋值目的未声明：store 静默丢弃比零页更隐蔽，必须报错 */
+                fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",lv->s);
+                exit(2);
+            }
+            else if(l->spilled){ store_mem(v,8,l->off,l->ty); }
+            else if(l->reg!=v) emitf("ADDI %s, %s, 0",regname(l->reg),regname(v));
         } else if(lv->k==N_DEREF){
             char*ty=(char*)pointee(expr_type(lv->e));
             int pa=eval(lv->e);
@@ -2022,7 +2049,11 @@ static int eval(Node*n){
             oldv=tacq();
             if(!l){
                 Global*gg=global_find(lv->s);
-                if(gg){
+                if(!gg){
+                    fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",lv->s);
+                    exit(2);
+                }
+                {
                     load_glob(oldv,gg);
                     int r2=tacq();
                     emitf("ADDI %s, %s, %d",regname(r2),regname(oldv),d);
@@ -2055,9 +2086,13 @@ static int eval(Node*n){
             int r=tacq();
             if(!l){
                 Global*gg=global_find(lv->s);
-                if(gg){ load_glob(r,gg);
-                        emitf("ADDI %s, %s, %d",regname(r),regname(r),d);
-                        store_glob(r,gg); return r; }
+                if(!gg){
+                    fprintf(stderr,"UNSUPPORTED: undeclared identifier '%s'\n",lv->s);
+                    exit(2);
+                }
+                load_glob(r,gg);
+                emitf("ADDI %s, %s, %d",regname(r),regname(r),d);
+                store_glob(r,gg); return r;
             } else if(!l->spilled){
                 emitf("ADDI %s, %s, %d",regname(l->reg),regname(l->reg),d);
                 if(l->reg!=r) emitf("ADDI %s, %s, 0",regname(r),regname(l->reg));
@@ -2146,14 +2181,21 @@ static int eval(Node*n){
                     int tr=eval(n->e);
                     emitf("JALR ra, 0(%s)",regname(tr));
                 } else {
-                    /* 形参函数指针直接调用：名字不是编译期已知函数
-                     * （FNS 查无）→ 它是函数指针形参/局部指针变量，
-                     * 按间接调用处理（读变量槽 → JALR）。
-                     * 此前静默 emit "JAL ra, name"，assemble 期
-                     * find_label miss → imm=0 → 运行期死循环。 */
-                    int known = 0;
+                    /* 被调名三级解析（2026-11-22 未声明标识符专项重构）：
+                     * 1) FNS 有体 → 直发 JAL（本编译单元可见定义）；
+                     * 2) 局部/形参/全局同名 → 函数指针语义，读变量槽 JALR
+                     *    （形参 fn-ptr 调用，如 qsort 的 cmp——不得被原型抢注）；
+                     * 3) 原型登记名 / 隐式声明（C89）→ 符号直发 JAL：
+                     *    .trvo 文本导出在导入期由被调方定义解析；
+                     *    可执行链接由 scan_undef 兜底报 undefined reference。
+                     * 坑实录：旧路径对 FNS 查无的名字合成 N_VAR 走静默兜底——
+                     * 原型-only 调用（qsort_tri 的 memcpy）被编译成消失/跳错
+                     * 目标的垃圾码，测试未踩到该分支故长期潜伏。 */
+                    int known = 0;                 /* 1=FNS 直发 2=符号直发 3=fn-ptr 变量 */
                     { int k; for(k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,n->s)){known=1;break;} }
-                    if(!known){
+                    if(!known && (findloc(n->s)||global_find(n->s))) known=3;
+                    if(!known) known=2;            /* 原型登记名 / 隐式声明 */
+                    if(known==3){
                         Node*v=nnew(N_VAR); v->s=n->s;
                         int tr=eval(v);
                         emitf("JALR ra, 0(%s)",regname(tr));
