@@ -306,7 +306,61 @@ else:
     c3 = vm.VM(pp, mem_init=mem2).run(max_steps=2000000)
     check("闭包/行为位图(11*2=22)", c3.exit_code & 0xFF, 22)
 
+# ================ W. 弱符号：#pragma weak 别名（A6 最小模型，2026-11-22） ================
+# 语义：#pragma weak 别名 = 名称映射（引用绑目标的体，汇编期 find_label 链式
+# 跟随）；若合并符号空间另有同名的强定义，强定义自然覆盖（add_label 先到
+# 先得于本名，别名仅在无强定义时命中）。musl weak_alias 形态的最小落地。
+# TRVO 格式扩展：ALIAS <别名> <本体> 记录（导出/导入对），传递保持。
+lib_w = tempfile.mktemp(suffix=".c")
+with open(lib_w, "w") as f:
+    f.write("int my_cleanup(void){ return 7; }\n"
+            "#pragma weak cleanup = my_cleanup\n")
+trvo_w = tempfile.mktemp(suffix=".trvo")
+subprocess.run([CC, lib_w, trvo_w], check=True, capture_output=True)
+# 纯弱：无强定义，引用绑别名体
+main_w1 = tempfile.mktemp(suffix=".c")
+with open(main_w1, "w") as f:
+    f.write("int main(void){ return cleanup(); }\n")
+tf_w1 = tempfile.mktemp(suffix=".trv")
+r = subprocess.run([CC, main_w1, tf_w1, "-l", trvo_w], capture_output=True, text=True)
+if r.returncode != 0:
+    check("弱符号/纯弱链接", "link ok", (r.stderr or "")[:120])
+else:
+    check("弱符号/纯弱链接", 0, 0)
+    prog_w = open(tf_w1, "rb").read()
+    nn = struct.unpack_from("<I", prog_w, 8)[0]
+    pp = list(struct.unpack_from("<%dI" % nn, prog_w, 16))
+    off3 = 16 + 4 * nn
+    mem3 = {}
+    for _ in range(struct.unpack_from("<I", prog_w, 12)[0]):
+        a4, l4 = struct.unpack_from("<II", prog_w, off3); off3 += 8
+        mem3[a4] = list(prog_w[off3:off3 + l4]); off3 += l4
+    c4 = vm.VM(pp, mem_init=mem3).run(max_steps=2000000)
+    check("弱符号/纯弱行为(7)", c4.exit_code & 0xFF, 7)
+# 强覆盖：下游自带强定义，强体胜出（99）
+main_w2 = tempfile.mktemp(suffix=".c")
+with open(main_w2, "w") as f:
+    f.write("int cleanup(void){ return 99; }\n"
+            "int main(void){ return cleanup(); }\n")
+tf_w2 = tempfile.mktemp(suffix=".trv")
+r = subprocess.run([CC, main_w2, tf_w2, "-l", trvo_w], capture_output=True, text=True)
+if r.returncode != 0:
+    check("弱符号/强覆盖链接", "link ok", (r.stderr or "")[:120])
+else:
+    check("弱符号/强覆盖链接", 0, 0)
+    prog_w2 = open(tf_w2, "rb").read()
+    nn2 = struct.unpack_from("<I", prog_w2, 8)[0]
+    pp2 = list(struct.unpack_from("<%dI" % nn2, prog_w2, 16))
+    off3 = 16 + 4 * nn2
+    mem4 = {}
+    for _ in range(struct.unpack_from("<I", prog_w2, 12)[0]):
+        a5, l5 = struct.unpack_from("<II", prog_w2, off3); off3 += 8
+        mem4[a5] = list(prog_w2[off3:off3 + l5]); off3 += l5
+    c5 = vm.VM(pp2, mem_init=mem4).run(max_steps=2000000)
+    check("弱符号/强覆盖行为(99)", c5.exit_code & 0xFF, 99)
+
 print(f"\nTRVO 目标文件端到端：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)

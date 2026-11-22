@@ -211,12 +211,36 @@ static int is_kw(const char*s){
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
+static void alias_add(const char*a,const char*b);   /* 弱别名注册（定义见 find_label 区）*/
+static const char*alias_follow(const char*n);       /* 弱别名跟随：a → b 的体（find_label 区）*/
 static void lex(const char*src){
     const char*p=src;
     while(*p){
         if(isspace((unsigned char)*p)){p++;continue;}
         if(p[0]=='/'&&p[1]=='/'){ while(*p&&*p!='\n')p++; continue; }
         if(p[0]=='/'&&p[1]=='*'){ p+=2; while(*p&&!(p[0]=='*'&&p[1]=='/'))p++; if(*p)p+=2; continue; }
+        if(*p=='#'){                                        /* 行指令（2026-11-22 A6）：
+               #pragma weak a = b —— 弱别名（a 引用绑 b 的体，强定义可覆盖）；
+               其余 # 行跳过（本编译器无预处理指令集） */
+            p++;
+            while(*p==' ')p++;
+            if(!strncmp(p,"pragma",6)&&!isalnum((unsigned char)p[6])&&p[6]!='_'){ p+=6;
+                while(*p==' ')p++;
+                if(!strncmp(p,"weak",4)&&!isalnum((unsigned char)p[4])&&p[4]!='_'){ p+=4;
+                    while(*p==' ')p++;
+                    char a[128]={0},b[128]={0};
+                    int k=0; while(*p&&!isspace((unsigned char)*p)&&*p!='='&&k<127) a[k++]=*p++;
+                    a[k]=0; while(*p==' ')p++;
+                    if(*p=='='){ p++; while(*p==' ')p++;
+                        k=0; while(*p&&!isspace((unsigned char)*p)&&k<127) b[k++]=*p++;
+                        b[k]=0;
+                        if(b[0]) alias_add(a,b);
+                    }
+                }
+            }
+            while(*p&&*p!='\n')p++;
+            continue;
+        }
         Token t={0};
         if(isdigit((unsigned char)*p)){
             /* 45-trit 字面量超出 long long：用 __int128 累加 */
@@ -1581,6 +1605,8 @@ static int fn_label_addr(const char*name){
 static int is_known_fn(const char*name){
     if(fn_label_addr(name)>=0) return 1;
     for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,name)) return 1;
+    const char*r=alias_follow(name);
+    if(r){ for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,r)) return 1; }
     return 1==0;
 }
 /* 间接调用目标：把"被调地址"装入 reg。
@@ -2899,7 +2925,29 @@ static void add_label(const char*n,int idx){
     GROW(LABS,CAPLAB,NLAB,Label);
     LABS[NLAB].name=strdup(n); LABS[NLAB].idx=idx; NLAB++;
 }
-static int find_label(const char*n){ for(int i=0;i<NLAB;i++) if(!strcmp(LABS[i].name,n)) return LABS[i].idx; return -1; }
+/* 弱别名表（2026-11-22 A6 最小弱符号）：ALIAS a → b（#pragma weak a = b）。
+ * 语义=名称映射：引用 a 在汇编期解析到 b 的地址；若合并符号空间另有 a 的
+ * 强定义（如平台自带 strchr），add_label 先到先得于 a 本名 → 强定义自然
+ * 覆盖别名（后者仅在无强定义时由引用按别名命中）。musl weak_alias 形态。
+ * 全局符号/弱全局变量不支持（记账）。 */
+static char**ALIAS_NAMES; static char**ALIAS_REAL;
+static int NALIAS, CAPALIAS_N, CAPALIAS_R;   /* 双容量独立（共享 cap 的 GROW 对会漏分配——实证） */
+static void alias_add(const char*a,const char*b){
+    GROW(ALIAS_NAMES,CAPALIAS_N,NALIAS,sizeof(char*));
+    GROW(ALIAS_REAL,CAPALIAS_R,NALIAS,sizeof(char*));
+    ALIAS_NAMES[NALIAS]=strdup(a); ALIAS_REAL[NALIAS]=strdup(b); NALIAS++;
+}
+static const char*alias_follow(const char*n){
+    for(int i=0;i<NALIAS;i++) if(!strcmp(ALIAS_NAMES[i],n)) return ALIAS_REAL[i];
+    return NULL;
+}
+static int find_label(const char*n){
+    for(int i=0;i<NLAB;i++) if(!strcmp(LABS[i].name,n)) return LABS[i].idx;
+    const char*r=alias_follow(n);                       /* 弱别名链式跟随 */
+    if(r){ for(int i=0;i<NLAB;i++) if(!strcmp(LABS[i].name,r)) return LABS[i].idx; }
+    return -1;
+}
+static int find_label_exact(const char*n){ for(int i=0;i<NLAB;i++) if(!strcmp(LABS[i].name,n)) return LABS[i].idx; return -1; }
 
 static int need_reg(void){ return 0; }
 
@@ -3052,6 +3100,9 @@ static void tvo_import(const char*path){
                 }
                 (void)g;
             }
+        } else if(!strncmp(line,"ALIAS ",6)){
+            char an[128],rn[128];
+            if(sscanf(line,"ALIAS %127s %127s",an,rn)==2) alias_add(an,rn);
         } else if(!strncmp(line,"STR ",4)){
             int len; if(sscanf(line,"STR %d",&len)==1){
                 char *buf=malloc((size_t)len+1);
@@ -3124,7 +3175,11 @@ static void scan_undef_node(Node*n,int *nundef,char (*names)[64]){
     case N_CALL:
         if(!is_syscall_name(n->s) && strncmp(n->s,"(*target)",9)!=0){
             int known=0;
+            const char*real=alias_follow(n->s);
             for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,n->s)){known=1;break;}
+            if(!known && real){
+                for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,real)){known=1;break;}
+            }
             if(!known){
                 for(int i=0;i<NUNDEF_PARAMS;i++)
                     if(!strcmp(UNDEF_PARAMS[i],n->s)){known=1;break;}
@@ -3557,6 +3612,8 @@ int main(int argc,char**argv){
             for(int k=0;k<STRLEN[i];k++) fprintf(out,"%02x",(unsigned char)STRSEG[i][k]);
             fprintf(out,"\n");
         }
+        for(int i=0;i<NALIAS;i++)
+            fprintf(out,"ALIAS %s %s\n",ALIAS_NAMES[i],ALIAS_REAL[i]);
         for(int i=0;i<NFN;i++){
             /* A5a 闭包转发导出（2026-11-22）：导入函数（fbody==NULL）连同
              * 本单元函数一并导出——.trvo 链可传递，下游一次 -l 拿到完整闭包。
