@@ -653,6 +653,20 @@ static Node* parse_decl(void){
                 dty=strdup(buf);
             }
         }
+        /* fn-ptr 声明符：type (* name) ( params ) —— 局部 fn-ptr（A6 顺延）。
+         * 类型记 "int*"（通用指针，9 tryte）；形参表解析后丢弃（签名不参与布局）。 */
+        if(at("(")){
+            take(); expect("*");
+            char*fname=take()->s; expect(")");
+            if(at("(")){ int dp=0;
+                do{ if(at("("))dp++; else if(at(")"))dp--;
+                    else if(atk(TK_EOF)) break; take(); }while(dp>0);
+            }
+            if(!DECL_KEEP_SEMI) expect(";");
+            n->dnames[n->ndecls]=fname; n->dtypes[n->ndecls]=strdup("int*");
+            n->dinit [n->ndecls]=NULL; n->ndecls++;
+            return n;
+        }
         char*name=take()->s;
         /* 数组维度并入类型: int a[100] -> "int[100]" */
         while(at("[")){
@@ -1093,6 +1107,14 @@ static void parse_program(void){
             for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,fname)){
                 fprintf(stderr,"link error: duplicate function '%s'\n",fname);
                 exit(1);
+            }
+            /* A6 顺延（2026-11-22）：无体形态 = 全局 fn-ptr 声明
+             *   int (*gp)(void);   —— 注册为通用指针型全局（9 tryte），
+             * 赋值/间接调用同 fn-ptr 变量语义（gp = f0; gp();）。 */
+            if(at(";")){
+                take();
+                global_add(fname,strdup("int*"),0,NULL);
+                continue;
             }
             Node*f=nnew(N_FUNC); f->rettype=ret; f->s=fname;
             f->ptypes=malloc(sizeof(char*)*32);
@@ -2281,7 +2303,23 @@ static int eval(Node*n){
                 /* 间接调用：目标表达式装临时寄存器再 JALR */
                 int tr=eval(n->e);
                 emitf("JALR ra, 0(%s)",regname(tr));
-            } else emitf("JAL ra, %s",n->s);
+            } else {
+                /* 被调名三级解析（同慢路径）：
+                 * 1) FNS 有体 → 直发 JAL；
+                 * 2) 局部/形参/全局同名（fn-ptr 变量）→ 读槽 JALR；
+                 * 3) 原型登记名 / 隐式声明（C89，跨单元后链）→ 符号直发 JAL。
+                 * 勿走 eval(N_VAR)——未声明闸门会 exit(2)，切断 C89 隐式
+                 * 声明的跨单元调用（musl_wide 批量 29 失败实证）。 */
+                int known = 0;                 /* 1=FNS 直发 2=符号直发 3=fn-ptr 变量 */
+                { int k; for(k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,n->s)){known=1;break;} }
+                if(!known && (findloc(n->s)||global_find(n->s))) known=3;
+                if(!known) known=2;
+                if(known==3){
+                    Node*v=nnew(N_VAR); v->s=n->s;
+                    int tr=eval(v);
+                    emitf("JALR ra, 0(%s)",regname(tr));
+                } else emitf("JAL ra, %s",n->s);
+            }
         } else {
             /* 2) 实参逐个求值后暂存（嵌套调用会破坏 a0-a7，故不能直接放进 a 寄存器）。
                 struct 实参求值结果就是首地址（C 的按值传参由被调方入口拷贝实现）。 */
@@ -3222,6 +3260,9 @@ static void scan_undef_node(Node*n,int *nundef,char (*names)[64]){
                     if(!strcmp(UNDEF_PARAMS[i],n->s)){known=1;break;}
             }
             if(!known && global_find(n->s)) known=1;   /* 全局变量（函数指针表） */
+            /* 扫描运行于 gen_func 之后：findloc 恰覆盖本函数形参+局部——
+               fn-ptr 局部（如 int (*lp)(int)）作被调目标由此合法化 */
+            if(!known && findloc(n->s)) known=1;
             if(!known && (*nundef)<60){
                 snprintf(names[*nundef],64,"%s",n->s);
                 (*nundef)++;
