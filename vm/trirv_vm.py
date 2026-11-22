@@ -528,6 +528,13 @@ class VM:
             self._store_tryte(addr, self.regs[rs2])
             self._store_tryte(addr + 1, self.regs[rs2] // 243)
             if self.lr_valid and self._overlap(addr, 2, self.lr_addr): self.lr_valid = False
+        elif name == "SW4":
+            # 4-tryte 存储（__tint2 档）：低 20-trit 截断（mod 3^20）
+            addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
+            w = self.regs[rs2]
+            for k in range(4):
+                self._store_tryte(addr + k, w // 243 ** k)
+            if self.lr_valid and self._overlap(addr, 4, self.lr_addr): self.lr_valid = False
         elif name == "LW":
             addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
             self.regs[rd] = self._load_word(addr)
@@ -552,6 +559,13 @@ class VM:
                     self.regs[rd] = u(t)
                 else:
                     self.regs[rd] = u(t - 59049 if t > 29524 else t)
+        elif name == "LW4":
+            # 4-tryte = 20-trit 装载（__tint2 档）：半阈值 (3^20-1)//2 符号扩展
+            addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
+            t = 0
+            for k in range(3, -1, -1):
+                t = t * 243 + self._load_tryte(addr + k)
+            self.regs[rd] = u(t - 3 ** 20 if t > (3 ** 20 - 1) // 2 else t)
         elif name == "TMAX":
             self.regs[rd] = self._tritwise("max", self.regs[rs1], self.regs[rs2])
         elif name == "TMIN":

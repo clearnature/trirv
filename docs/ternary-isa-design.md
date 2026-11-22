@@ -326,7 +326,12 @@ J-type (jal):
 
 ### 4.3 Load（I-type，opcode=2）
 
-`LB, LH, LW, LBU, LHU` —— 按 tryte/2tryte/9tryte 取数。
+`LB, LH, LW, LBU, LHU, LW4` —— 按 tryte/2tryte/9tryte/4tryte 取数。
+
+> **LW4（__tint2 档，2026-11-23 C2 方案 A 拍板）**：4 tryte = 20-trit 装载，
+> 合成值按半阈值 `(3²⁰−1)/2 = 1743392200` 三补码符号扩展进 45-trit 寄存器
+> （funct=5；LOAD funct 头寸 0..4 已用，5..8 空闲）。值域 3^20 ≈ 2^31.6
+> = "32 位量级档"，对标 char/short/int 阶梯补档。
 
 > **符号性约定（与 RISC-V 完全一致）**：`LB`/`LH` **符号扩展**，`LBU`/`LHU` **零扩展**。
 > 5-trit tryte 的符号区间是 −121..121（半阈值 `(3⁵−1)/2 = 121`），
@@ -340,7 +345,8 @@ J-type (jal):
 
 ### 4.4 Store（S-type，opcode=3）
 
-`SB, SH, SW`
+`SB, SH, SW, SW4` —— **SW4（__tint2 档，同上拍板）**：4 tryte 存储，
+低 20-trit 截断（mod 3^20；funct=3；STORE funct 头寸 3..8 空闲）。
 
 ### 4.5 Branch（B-type，opcode=4）
 
@@ -681,7 +687,7 @@ ISA 字符串示例：`TI-TM-TT`（基础整数 + 乘除 + 三值逻辑）。
 设计文档与代码已对齐，`trirv_isa.py`（编码真源）、`trirv_vm.py`（Python VM）、
 `trirv_vm.c`（C VM）、`trirv_asm.py`（汇编器）四者一致。要点：
 
-- **指令编码**：`INST` 共 74 条（TI 40 + TT 9 + M8/A9/Zicsr6/PRIV2），全部
+- **指令编码**：`INST` 共 99 条（TI/TT/M/A/Zicsr/PRIV/F 全扩展，以 trirv_isa.INST 为准；2026-11-23 +LW4/SW4），全部
   encode→decode 往返自洽。`EBREAK` 用 `funct=1`（t7..t8）区分，不占用与 imm 高位
   重叠的 funct2 区；`TSEXT` 落为 `opcode=11,funct=2` 的单操作数 R 型指令。
 - **SRA/SRAI**：定义为有符号值 ÷ 3^sh **向零取整**（与 DIV 及 C VM `divmod_word`

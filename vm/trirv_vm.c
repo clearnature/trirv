@@ -152,8 +152,8 @@ typedef enum {
     OP_ADD, OP_SUB, OP_SLL, OP_SLT, OP_SLTU, OP_XOR, OP_SRL, OP_SRA, OP_OR, OP_AND,
     OP_MUL, OP_DIV, OP_REM, OP_MULH, OP_MULHSU, OP_MULHU, OP_DIVU, OP_REMU,
     OP_ADDI, OP_SLTI, OP_SLTIU, OP_XORI, OP_ORI, OP_ANDI, OP_SLLI, OP_SRLI, OP_SRAI,
-    OP_LB, OP_LH, OP_LW, OP_LBU, OP_LHU,
-    OP_SB, OP_SH, OP_SW,
+    OP_LB, OP_LH, OP_LW, OP_LBU, OP_LHU, OP_LW4,
+    OP_SB, OP_SH, OP_SW, OP_SW4,
     OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_BGEU,
     OP_JAL, OP_JALR, OP_LUI, OP_AUIPC, OP_ECALL, OP_EBREAK, OP_FENCE,
     OP_TMIN, OP_TMAX, OP_TNOT, OP_TAND, OP_TOR, OP_TNEG,
@@ -185,8 +185,8 @@ static const InstDef IDEFS[] = {
     {1,2,0,'I',OP_XORI},{1,3,0,'I',OP_ORI},{1,6,0,'I',OP_ANDI},
     {1,4,0,'I',OP_SLLI},{1,7,0,'I',OP_SRLI},{1,8,0,'I',OP_SRAI},
     {2,0,0,'I',OP_LB},{2,1,0,'I',OP_LH},{2,2,0,'I',OP_LW},
-    {2,3,0,'I',OP_LBU},{2,4,0,'I',OP_LHU},
-    {3,0,0,'S',OP_SB},{3,1,0,'S',OP_SH},{3,2,0,'S',OP_SW},
+    {2,3,0,'I',OP_LBU},{2,4,0,'I',OP_LHU},{2,5,0,'I',OP_LW4},
+    {3,0,0,'S',OP_SB},{3,1,0,'S',OP_SH},{3,2,0,'S',OP_SW},{3,3,0,'S',OP_SW4},
     {4,0,0,'B',OP_BEQ},{4,1,0,'B',OP_BNE},{4,2,0,'B',OP_BLT},
     {4,3,0,'B',OP_BGE},{4,4,0,'B',OP_BLTU},{4,5,0,'B',OP_BGEU},
     {5,0,0,'J',OP_JAL},{6,0,0,'I',OP_JALR},{7,0,0,'U',OP_LUI},
@@ -510,6 +510,11 @@ static inline __uint128_t tsext(__uint128_t word){
  * 半阈值 (3^10-1)//2 = 29524；RISC-V 的 LH 就是符号扩展，本 ISA 与之对齐。 */
 static inline __uint128_t sx10(__uint128_t word){
     return u(sx(word % 59049, 10));                    /* 59049=3^10 */
+}
+/* LW4 的符号扩展：取 word 低 20 trit（4 tryte，__tint2 档）按 3 补码扩展到 45 trit。
+ * 半阈值 (3^20-1)//2 = 1743392200；与 LB/LH 同款半阈值口径。 */
+static inline __uint128_t sx20(__uint128_t word){
+    return u(sx(word % 3486784401ULL, 20));            /* 3486784401=3^20 */
 }
 /* 优化版三值运算：无除法器取 tryte + 查表 + 正向累加。
  * 相比原来 unpack(9×128位除法)+SIMD-min+pack(45×乘加)：tryte 提取由 9 次硬件 div
@@ -842,6 +847,8 @@ static inline void step(VM *v){
         case OP_LBU:v->reg[rd]=u(load_tryte(v,a+imm));break;
         case OP_LH:v->reg[rd]=sx10((__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243);break;
         case OP_LHU:v->reg[rd]=(__uint128_t)load_tryte(v,a+imm)+(__uint128_t)load_tryte(v,a+imm+1)*243;break;
+        case OP_LW4:{__uint128_t t=0;for(int k=3;k>=0;k--)t=t*243+load_tryte(v,a+imm+k);v->reg[rd]=sx20(t);break;}  /* __tint2：4-tryte 合成+符号扩展 */
+        case OP_SW4:{__uint128_t w=v->reg[rs2];for(int k=0;k<4;k++){uint8_t tr;w=divmod243(w,&tr);store_tryte(v,a+imm+k,tr);}snoop_store(v,a+imm,4);break;}  /* __tint2：低 20-trit 截断 */
         case OP_TMAX:v->reg[rd]=tritwise(1,v->reg[rs1],v->reg[rs2]);break;
         case OP_TMIN:v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]);break;
         case OP_TAND:v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]);break;
@@ -892,8 +899,8 @@ static void vm_run_cg(VM *v, long max_steps){
         [OP_ADDI]=&&L_ADDI,[OP_SLTI]=&&L_SLTI,[OP_SLTIU]=&&L_SLTIU,
         [OP_XORI]=&&L_XORI,[OP_ORI]=&&L_ORI,[OP_ANDI]=&&L_ANDI,[OP_SLLI]=&&L_SLLI,
         [OP_SRLI]=&&L_SRLI,[OP_SRAI]=&&L_SRAI,[OP_LB]=&&L_LB,[OP_LH]=&&L_LH,
-        [OP_LW]=&&L_LW,[OP_LBU]=&&L_LBU,[OP_LHU]=&&L_LHU,[OP_SB]=&&L_SB,
-        [OP_SH]=&&L_SH,[OP_SW]=&&L_SW,[OP_BEQ]=&&L_BEQ,[OP_BNE]=&&L_BNE,
+        [OP_LW]=&&L_LW,[OP_LBU]=&&L_LBU,[OP_LHU]=&&L_LHU,[OP_LW4]=&&L_LW4,[OP_SB]=&&L_SB,
+        [OP_SH]=&&L_SH,[OP_SW]=&&L_SW,[OP_SW4]=&&L_SW4,[OP_BEQ]=&&L_BEQ,[OP_BNE]=&&L_BNE,
         [OP_BLT]=&&L_BLT,[OP_BGE]=&&L_BGE,[OP_BLTU]=&&L_BLTU,[OP_BGEU]=&&L_BGEU,
         [OP_JAL]=&&L_JAL,[OP_JALR]=&&L_JALR,[OP_LUI]=&&L_LUI,[OP_AUIPC]=&&L_AUIPC,
         [OP_ECALL]=&&L_ECALL,[OP_EBREAK]=&&L_EBREAK,[OP_FENCE]=&&L_NOP,
@@ -979,6 +986,8 @@ L_LW:    v->reg[rd]=load_word(v,a+imm); NEXT();
 L_SB:    store_tryte(v,a+imm,v->reg[rs2]);snoop_store(v,a+imm,1); NEXT();
 L_SH:    {uint8_t t0;uint64_t hi=divmod243(v->reg[rs2],&t0);store_tryte(v,a+imm,t0);store_tryte(v,a+imm+1,hi);snoop_store(v,a+imm,2);} NEXT();  /* 无除法器 */
 L_SW:    store_word(v,a+imm,v->reg[rs2]);snoop_store(v,a+imm,9); NEXT();
+L_LW4:   {__uint128_t t=0;for(int k=3;k>=0;k--)t=t*243+load_tryte(v,a+imm+k);v->reg[rd]=sx20(t);} NEXT();   /* __tint2：4-tryte 合成+符号扩展 */
+L_SW4:   {__uint128_t w=v->reg[rs2];for(int k=0;k<4;k++){uint8_t tr;w=divmod243(w,&tr);store_tryte(v,a+imm+k,tr);}snoop_store(v,a+imm,4);} NEXT();  /* __tint2：低 20-trit 截断 */
 L_LRW:   amo_exec(v,OP_LRW,rd,rs1,rs2); NEXT();
 L_SCw:   amo_exec(v,OP_SCw,rd,rs1,rs2); NEXT();
 L_AMOADD:amo_exec(v,OP_AMOADD,rd,rs1,rs2); NEXT();

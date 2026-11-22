@@ -104,9 +104,11 @@ GREEN 实现点：§3.2 表全层。
 **验证门**：直发验证（反汇编产物含 TAND/TOR/TNOT、**不含位游标回跳
 JAL**——与 int 位运算的模拟路径区分）；e2e 全量；43 套无回归。
 
-**批次 C2（后续）**：`__tbool`（1-trit 布尔）/ `__tint2`（20-trit）档位、
-文字运算 literal `x^a` ISA 预留登记（opcode 19 区）、trirv_cc 补 __tint
-（可选，差分对照用）。
+**批次 C2（2026-11-23 拍板 = 方案 A）**：`__tint2` = 4-tryte/20-trit 档
+（值域 3^20 ≈ 2^31.6 "32 位量级档"，sizeof=4；ISA 长档 LW4/SW4 已落
+ISA+双 VM+契约，见 ternary-isa-design.md §4.3/§4.4）；`__tbool`（1-trit
+Kleene 布尔，1-tryte 容器）与文字运算 literal `x^a` ISA 预留登记
+（opcode 19 区）、trirv_cc 补 __tint（可选，差分对照用）随前端批次落地。
 
 ## 4. 明确不做（本轮）
 

@@ -105,6 +105,7 @@ SUITES = [
     ("trirv_tri_musl_e2e.py",     "musl→tri-tcc 多TU 3 组 30 断言", False, None),
     ("trirv_difftest_tcc.py",     "双工具链差分 22 组四路一致", False, None),
     ("trirv_tri_isa_guard.py",    "T-1.8 ISA 一致性守卫",      False, None),
+    ("trirv_mem4_e2e.py",         "LW4/SW4 4-tryte 契约 6 项", False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),

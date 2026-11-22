@@ -109,7 +109,7 @@ def assemble(src):
             elif mn in ("CSRRW","CSRRS","CSRRC"):
                 rd = reg(ops[0]); rs1v = reg(ops[1]); csr = parse_int(ops[2])
                 v = isa.encode(mn, rd=rd, rs1=rs1v, imm=csr)
-            elif mn in ("LW","LH","LB","LBU","LHU","JALR","FLW","FLW.S"):
+            elif mn in ("LW","LH","LB","LBU","LHU","LW4","JALR","FLW","FLW.S"):
                 rd = reg(ops[0])                 # load/jalr 的目标寄存器不能漏
                 m = re.match(r"(-?\w+)\((\w+)\)", ops[1])
                 imm = parse_int(m.group(1)); rs1 = reg(m.group(2))
