@@ -4,6 +4,8 @@
 把结果 word 写回内存并 write(1,...) 输出 9 个 tryte，逐字节比对两版 VM。
 """
 import struct, subprocess, os, random, sys
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_isa as isa
 from trirv_vm import VM, s, u, SYS_EXIT, SYS_WRITE
 

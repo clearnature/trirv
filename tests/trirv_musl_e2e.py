@@ -15,13 +15,14 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CRT = open(os.path.join(HERE, "trirv_crt.c")).read()
-MUSL = open(os.path.join(HERE, "trirv_musl.c")).read()
-BB = open(os.path.join(HERE, "trirv_busybox.c")).read()
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CRT = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_crt.c")).read()
+MUSL = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_musl.c")).read()
+BB = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_busybox.c")).read()
 
 passed = 0
 failed = 0
@@ -43,7 +44,7 @@ def compile_prog(src):
     tf = tempfile.mktemp(suffix=".trv")
     with open(cf, "w") as f:
         f.write(src)
-    r = subprocess.run([sys.executable, os.path.join(HERE, "export_trv.py"), cf, tf],
+    r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/tools/export_trv.py"), cf, tf],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"compile fail: {r.stderr.strip()[:200]}")
@@ -151,7 +152,7 @@ if os.path.exists(CVM):
     tf = tempfile.mktemp(suffix=".trv")
     with open(cf, "w") as f:
         f.write(BB_SRC)
-    subprocess.run([sys.executable, os.path.join(HERE, "export_trv.py"), cf, tf],
+    subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/tools/export_trv.py"), cf, tf],
                    check=True, capture_output=True)
 
     def cvm(*args, stdin=b""):

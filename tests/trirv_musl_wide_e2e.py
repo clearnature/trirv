@@ -29,11 +29,12 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CC = os.path.join(HERE, "trirv_cc")
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
 
 passed = 0
 failed = 0
@@ -50,7 +51,7 @@ def check(name, got, want):
 
 
 # ================ 1. 批量编译统计 ================
-r = subprocess.run([sys.executable, os.path.join(HERE, "batch_musl_compile.py")],
+r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/libc-musl/batch_musl_compile.py")],
                    capture_output=True, text=True)
 check("批量/管线退出码", r.returncode, 0)
 m_ok = [l for l in r.stdout.splitlines() if l.startswith("OK:")]

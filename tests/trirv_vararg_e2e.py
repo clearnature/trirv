@@ -8,13 +8,15 @@
 第 N 个参数（N=固定参数个数）后的首个变参；本 ABI 所有参数等宽 9 tryte，
 va_arg 按字读取并递增。变参总数上限 8（含固定参数）。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
-STDIO = open("trirv_stdio.c").read()
-LIBC = open("trirv_libc.c").read()
+STDIO = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_stdio.c").read()
+LIBC = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_libc.c").read()
 
 # (名称, C 源码, 期望 a0, 期望输出字符串 或 None, 是否需要 STDIO/LIBC)
 CASES = [

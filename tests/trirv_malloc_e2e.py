@@ -5,12 +5,14 @@
 calloc 零初始化、realloc 保留数据、动态链表、字符串动态填充、
 分配失败返回 0、以及 VM brk 查询/增长/收缩/越界失败语义。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
-LIB = open("trirv_libc.c").read()
+LIB = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_libc.c").read()
 
 # (名称, main 函数 C 源码, 期望 a0)  —— LIB 会自动前置
 CASES = [

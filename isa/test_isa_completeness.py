@@ -10,6 +10,10 @@
 用法：python3 test_isa_completeness.py
 """
 import os, struct, subprocess, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))           # 仓库根
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "isa"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vm"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cc"))
 import trirv_isa as isa
 from trirv_vm import VM, s
 

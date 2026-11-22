@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """trirv_musl_real_e2e —— 真 musl 源码编译试点（里程碑验证）。
 
-源：musl 1.2.5 官方源码（/Users/zesheng/ai-lab/musl，原文件拷贝至 musl_src/），
+源：musl 1.2.5 官方源码（/Users/zesheng/ai-lab/trirv/third_party/musl，原文件拷贝至 musl_src/），
 经 preprocess_musl.py 预处理（#include 丢弃、#ifdef __GNUC__ 取 #else 纯 C
 回退分支、对象式 #define 展开、size_t/uint*_t → int、restrict/attribute 剥离）。
 
@@ -29,13 +29,14 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CC = os.path.join(HERE, "trirv_cc")
-MUSL_SRC = os.path.join(HERE, "musl_src")
-PP = os.path.join(HERE, "preprocess_musl.py")
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
+MUSL_SRC = os.path.join(HERE, "..", "libc-musl", "musl_src")
+PP = os.path.join(HERE, "..", "libc-musl", "preprocess_musl.py")
 
 passed = 0
 failed = 0

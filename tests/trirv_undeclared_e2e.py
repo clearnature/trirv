@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CC = os.path.join(HERE, "trirv_cc")
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
 
 passed = 0
 failed = 0

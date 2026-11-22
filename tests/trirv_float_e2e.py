@@ -14,6 +14,8 @@
 import math
 import sys
 
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_float as tf
 
 PASS = 0

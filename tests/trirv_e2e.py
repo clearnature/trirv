@@ -1,4 +1,6 @@
 """TriRV 端到端验证：汇编程式 -> 机器码 -> VM 执行。"""
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_asm as asm
 import trirv_vm as vm
 import trirv_isa as isa

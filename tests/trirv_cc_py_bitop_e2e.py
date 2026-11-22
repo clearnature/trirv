@@ -11,6 +11,7 @@ PyVM 执行，退出码对齐方案 A（72-bit 位视图）语义——锁定两
 import os
 import sys
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 import trirv_cc_backend as backend
 

@@ -26,6 +26,7 @@ import sys
 import tempfile
 from fractions import Fraction
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_float as tf
 import trirv_vm as vm
 
@@ -35,8 +36,8 @@ def qcut(seq):
     return seq[:8] if QUICK else seq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CC = os.path.join(HERE, "trirv_cc")
-CVM = os.path.join(HERE, "trirv_vm")
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
+CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
 
 passed = 0
 failed = 0
@@ -425,7 +426,7 @@ def suite_strtod():
         sp = os.path.join(tempfile.mkdtemp(prefix="sd_e2e_"), "sd_main.c")
         with open(sp, 'w') as f:
             f.write(srcg)
-        py_out, c_out, exitc, err = run_guest(sp, [os.path.join(HERE, "musl_tri/strtod_tri.c")])
+        py_out, c_out, exitc, err = run_guest(sp, [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libc-musl", "musl_tri", "strtod_tri.c")])
         if err:
             check("strtod 编译/运行 chunk@%d" % c0, err, None)
             continue
@@ -486,7 +487,7 @@ def suite_ecvt_fcvt_gcvt():
             sp = os.path.join(tempfile.mkdtemp(prefix="ec_e2e_"), fn_name + "_main.c")
             with open(sp, 'w') as f:
                 f.write(srcg)
-            py_out, c_out, exitc, err = run_guest(sp, [os.path.join(HERE, "musl_tri/ecvt_tri.c")])
+            py_out, c_out, exitc, err = run_guest(sp, [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libc-musl", "musl_tri", "ecvt_tri.c")])
             if err:
                 check("%s#%d 编译/运行" % (fn_name, k), err, None)
                 continue

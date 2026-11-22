@@ -3,6 +3,8 @@
 用相同的指令序列构造程序：Python VM 直接跑，C VM 通过 TRV 二进制跑，比对 exit_code。
 """
 import struct, subprocess, sys, os
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_isa as isa
 from trirv_vm import s, u, VM, SYS_EXIT
 

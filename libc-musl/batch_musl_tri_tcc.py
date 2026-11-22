@@ -22,9 +22,9 @@ CVM = os.path.join(HERE, "trirv_vm")
 OUTDIR = "/tmp/musl_tri_tcc"
 os.makedirs(OUTDIR, exist_ok=True)
 
-DIRS = ["/Users/zesheng/ai-lab/musl/src/string",
-        "/Users/zesheng/ai-lab/musl/src/ctype",
-        "/Users/zesheng/ai-lab/musl/src/stdlib"]
+DIRS = ["/Users/zesheng/ai-lab/trirv/third_party/musl/src/string",
+        "/Users/zesheng/ai-lab/trirv/third_party/musl/src/ctype",
+        "/Users/zesheng/ai-lab/trirv/third_party/musl/src/stdlib"]
 
 # 三进制原生重写表（与 batch_musl_compile.py 同一份语义）
 TRI_REWRITE = {

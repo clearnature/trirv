@@ -1,11 +1,13 @@
 import subprocess, os
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc, trirv_vm as vm
 from export_trv import export
 
-_HERE = os.path.dirname(os.path.abspath(__file__))          # 可移植：原硬编码 /workspace
-STDIO=open(os.path.join(_HERE,"trirv_stdio.c")).read()
-LIBC=open(os.path.join(_HERE,"trirv_libc.c")).read()
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(_HERE,"trirv_vm"))  # C VM 二进制路径可覆盖
+R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（重组后上跳一层）  # 可移植：原硬编码 /workspace
+STDIO=open(os.path.join(R,"trirv_stdio.c")).read()
+LIBC=open(os.path.join(R,"trirv_libc.c")).read()
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R,"trirv_vm"))  # C VM 二进制路径可覆盖
 
 cases = [
  ("算术", 'int main(){return 7*3+8/2-4;}', "", False),

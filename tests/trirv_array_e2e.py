@@ -4,12 +4,14 @@
 形参数组退化、数组传址修改、多数组栈帧共存、char 数组当字符串、
 数组与 malloc 混用。全部编译到 TriRV 机器码后在 VM 运行。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
-LIB = open("trirv_libc.c").read()
+LIB = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_libc.c").read()
 
 # (名称, C 源码, 期望 a0)；带 LIB 前缀的用例在 src 内置
 CASES = [

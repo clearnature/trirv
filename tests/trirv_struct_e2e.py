@@ -4,12 +4,14 @@
 含 char 混合成员、结构体数组、结构体指针参数、指向结构的指针算术、
 与 malloc 联用（手写链表节点）、成员值拷贝。编译到机器码后在 VM 运行。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
-LIB = open("trirv_libc.c").read()
+LIB = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_libc.c").read()
 
 # (名称, C 源码, 期望 a0, 是否需要 LIB)
 CASES = [

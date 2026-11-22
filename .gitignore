@@ -9,9 +9,11 @@ trirv_vm_nodiv
 *.so
 *.dSYM/
 
-# 批量脚本误生成的 '-l' 空文件（反复出现，根治）
-/l
-/-l
+# 批量脚本误生成的 '-l' 空文件（反复出现，根治——**/-l 覆盖子目录如 tests/-l）
+**/-l
+
+# macOS 桌面元数据
+.DS_Store
 
 # PGO profile 数据
 *.profraw

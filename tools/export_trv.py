@@ -8,6 +8,11 @@ TRV1 格式（小端）：
            | n_seg × (uint32 addr, uint32 len, bytes data)
 """
 import struct
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cc"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "isa"))
 import trirv_cc_backend as cc
 
 

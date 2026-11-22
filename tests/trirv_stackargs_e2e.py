@@ -5,13 +5,14 @@
 struct 按值传参与多参数混合。全部回归保持全绿。
 """
 import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
-_HERE = os.path.dirname(os.path.abspath(__file__))   # 可移植：相对脚本目录，原硬编码 /workspace
-LIB = open(os.path.join(_HERE, "trirv_stdio.c")).read()
+R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（重组后上跳一层）  # 可移植：相对脚本目录，原硬编码 /workspace
+LIB = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cc", "trirv_stdio.c")).read()
 
 
 def run(src, steps=900000):

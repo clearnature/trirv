@@ -11,6 +11,8 @@
 import math
 import sys
 
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_base12 as b12
 
 PASS = 0

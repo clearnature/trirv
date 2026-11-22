@@ -3,6 +3,8 @@
 覆盖 glibc 启动最小 syscall 集：进程/线程、时钟、随机、内存映射、
 文件 stub、信号 stub；并回归大常量加载（load_imm 借位修复）。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm

@@ -17,11 +17,12 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CC = os.path.join(HERE, "trirv_cc")
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
 
 passed = 0
 failed = 0
@@ -135,9 +136,9 @@ got, _ = run_py(*r)
 check("链接/原型+定义共存", got, 5)
 
 # ================ 5. 正式分层：busybox = musl + crt ================
-MUSL_P = os.path.join(HERE, "trirv_musl.c")
-CRT_P = os.path.join(HERE, "trirv_crt.c")
-BB_P = os.path.join(HERE, "trirv_busybox.c")
+MUSL_P = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_musl.c")
+CRT_P = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_crt.c")
+BB_P = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_busybox.c")
 r = link_and_load(open(BB_P).read(), [MUSL_P, CRT_P])
 check("链接/busybox 分层编译", r is not None and not isinstance(r[0], str), True)
 prog, mem = r

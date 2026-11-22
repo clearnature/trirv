@@ -12,11 +12,12 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CC = os.path.join(HERE, "trirv_cc")
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
 
 passed = 0
 failed = 0
@@ -60,7 +61,7 @@ int main(void) {
 }
 """
 
-tri_c = os.path.join(HERE, "musl_tri", "strtol_tri.c")
+tri_c = os.path.join(HERE, "..", "libc-musl", "musl_tri", "strtol_tri.c")
 trvo = tempfile.mktemp(suffix=".trvo")
 r = subprocess.run([CC, tri_c, trvo], capture_output=True, text=True)
 check("strtol_tri 编译", r.returncode, 0)

@@ -6,12 +6,14 @@
 
 注：类型串维度按 C 顺序 [行][列]，ty_elem 取最左维；下标链逐层退化。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
-LIB = open("trirv_libc.c").read()
+LIB = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_libc.c").read()
 
 CASES = [
     ("二维下标读写",

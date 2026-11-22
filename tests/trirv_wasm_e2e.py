@@ -14,6 +14,7 @@ import sys
 import tempfile
 import os
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_asm
 import trirv_vm
 import trirv_wasm

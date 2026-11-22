@@ -10,13 +10,15 @@
 关键约定：unsigned 与 int 同为 9 tryte 整字，仅除法/取模/关系比较改用无符号指令；
 三补码 word 天然是 mod 3^45 的非负表示，故 %x 等直接按 word 位型展开即可。
 """
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_isa as isa
 import trirv_vm as vm
 
 S = isa.to_signed_word
 MOD = isa.MOD_X
-STDIO = open("trirv_stdio.c").read()
+STDIO = open(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_stdio.c").read()
 
 # (名称, C 源码, 期望返回 或 None, 期望输出 或 None, 需要 stdio)
 CASES = [

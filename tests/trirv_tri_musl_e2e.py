@@ -17,14 +17,15 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TCC = os.path.join(os.path.dirname(HERE), "tinycc", "trirv-tcc")
-CVM = os.path.join(HERE, "trirv_vm")
-PP = os.path.join(HERE, "preprocess_musl.py")
-TRI = os.path.join(HERE, "musl_tri")
-MUSL_STR = os.path.join(os.path.dirname(HERE), "musl", "src", "string")
+TCC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tinycc", "trirv-tcc")
+CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
+PP = os.path.join(HERE, "..", "libc-musl", "preprocess_musl.py")
+TRI = os.path.join(HERE, "..", "libc-musl", "musl_tri")
+MUSL_STR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party", "musl", "src", "string")
 PPDIR = "/tmp/tri_musl_pp"
 
 passed = 0
@@ -198,7 +199,7 @@ def main():
         print("tri-tcc 未构建（%s 不存在）—— 全部 SKIP" % TCC)
         print("\ntri-musl 契约：0 PASS / 0 FAIL / %d 组 SKIP" % len(GROUPS))
         sys.exit(0)
-    if not os.path.isdir(os.path.dirname(HERE) + "/musl/src/string"):
+    if not os.path.isdir(os.path.dirname(os.path.abspath(__file__)) + "/musl/src/string"):
         print("musl 源码缺失（~/ai-lab/musl）—— 全部 SKIP")
         print("\ntri-musl 契约：0 PASS / 0 FAIL / %d 组 SKIP" % len(GROUPS))
         sys.exit(0)

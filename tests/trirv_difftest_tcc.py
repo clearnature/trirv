@@ -20,12 +20,13 @@ import struct
 import subprocess
 import sys
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CC_A = os.path.join(HERE, "trirv_cc")                        # trirv_cc
-CC_B = os.path.join(os.path.dirname(HERE), "tinycc", "trirv-tcc")  # tri-tcc
-CVM = os.path.join(HERE, "trirv_vm")
+CC_A = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")                        # trirv_cc
+CC_B = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tinycc", "trirv-tcc")  # tri-tcc
+CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
 
 passed = 0
 failed = 0

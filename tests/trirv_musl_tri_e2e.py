@@ -19,13 +19,14 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CC = os.path.join(HERE, "trirv_cc")
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
 BATCH = "/tmp/musl_batch"          # 批量管线 TRVO 输出目录
-TRI = os.path.join(HERE, "musl_tri")
+TRI = os.path.join(HERE, "..", "libc-musl", "musl_tri")
 
 passed = 0
 failed = 0

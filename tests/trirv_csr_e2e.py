@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """TriRV Zicsr + 特权态专项 e2e：CSR 读写、trap 陷入、MRET 返回、定时器中断。"""
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_isa as isa
 import trirv_vm as vm
 from trirv_vm import s, u, VM, SYS_EXIT

@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GEN = os.path.join(HERE, "gen_tri_isa_h.py")
+GEN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/isa/gen_tri_isa_h.py")
 HEADER = os.path.normpath(os.path.join(HERE, "..", "tinycc", "tri-isa.h"))
 
 passed = 0
@@ -30,6 +30,7 @@ def check(name, ok, note=""):
 
 
 sys.path.insert(0, HERE)
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_isa as isa  # noqa: E402
 
 # 真相源自检：96 条 encode→decode 往返

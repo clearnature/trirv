@@ -19,12 +19,13 @@ import subprocess
 import sys
 import tempfile
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_cc_backend as cc
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "trirv_vm"))
-CRT = open(os.path.join(HERE, "trirv_crt.c")).read()
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
+CRT = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_crt.c")).read()
 
 passed = 0
 failed = 0
@@ -36,7 +37,7 @@ def compile_trv(src):
     tf = tempfile.mktemp(suffix=".trv")
     with open(cf, "w") as f:
         f.write(src)
-    export_r = subprocess.run([sys.executable, os.path.join(HERE, "export_trv.py"), cf, tf],
+    export_r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/tools/export_trv.py"), cf, tf],
                               capture_output=True, text=True)
     if export_r.returncode != 0:
         raise RuntimeError(f"compile fail: {export_r.stderr.strip()[:200]}")
@@ -73,7 +74,7 @@ def run_cvm_src(src, guest_argv=None, stdin_data=None):
     tf = tempfile.mktemp(suffix=".trv")
     with open(cf, "w") as f:
         f.write(src)
-    subprocess.run([sys.executable, os.path.join(HERE, "export_trv.py"), cf, tf],
+    subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/tools/export_trv.py"), cf, tf],
                    check=True, capture_output=True)
     args = [CVM, tf]
     if guest_argv is not None:
@@ -194,7 +195,7 @@ if _os.path.exists(CVM):
     tf = tempfile.mktemp(suffix=".trv")
     with open(cf, "w") as f:
         f.write(src)
-    subprocess.run([sys.executable, os.path.join(HERE, "export_trv.py"), cf, tf],
+    subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/tools/export_trv.py"), cf, tf],
                    check=True, capture_output=True)
     r = subprocess.run([CVM, "-o", "0", tf, "--", "a", "b", "c"], capture_output=True)
     cvm_argc_bytes = r.stdout

@@ -17,6 +17,8 @@ Python VM 与 C VM 各跑一遍，再与 Python 侧逐 trit 算出的期望值�
 """
 import subprocess
 
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_asm
 import trirv_vm
 import trirv_wasm

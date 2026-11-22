@@ -9,6 +9,8 @@
 import random
 import sys
 
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_tritref as R
 
 L, MOD, BASE = R.L, R.MOD, R.BASE

@@ -12,11 +12,13 @@
 每个 case 向结果区写 CSRRx 返回的旧值 + 随后 CSRRS x0 读回的当前值。
 """
 import os, sys, struct, subprocess, tempfile, random
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_isa as isa
 from trirv_vm import VM, s
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(_HERE, "trirv_vm"))
+R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（重组后上跳一层）
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "trirv_vm"))
 BUF = 1000
 MEMSZ = 1 << 20
 e = isa.encode

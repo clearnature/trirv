@@ -14,11 +14,13 @@ DIV/REM 符号与除零、SLL/SRL/SRA 大移位与负数、SLT/SLTU 边界、
 默认 seed=0, N=1500。C VM 二进制取 ./trirv_vm（可用 TRIRV_VM_BIN 覆盖）。
 """
 import os, sys, struct, subprocess, tempfile, random
+import os
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_isa as isa
 from trirv_vm import VM, s
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(_HERE, "trirv_vm"))
+R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（重组后上跳一层）
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "trirv_vm"))
 BUF = 1000                     # 结果区起始地址（<1093，单 ADDI 可装载）
 MOD3_7 = 3 ** 7                # 2187
 
