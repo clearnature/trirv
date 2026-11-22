@@ -24,11 +24,12 @@ import struct
 import subprocess
 import sys
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TCC = os.path.join(os.path.dirname(HERE), "tinycc", "trirv-tcc")
-CVM = os.path.join(HERE, "trirv_vm")
+TCC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tinycc", "trirv-tcc")
+CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
 
 passed = 0
 failed = 0
@@ -190,11 +191,13 @@ CASES = [
     ("tint传参返回", "__tint tmax(__tint a, __tint b){ return a|b; } int main(void){ "
      "__tint v[3]; v[0]=(__tint)0; v[1]=(__tint)1; v[2]=(__tint)2; "
      "return (int)tmax(v[0],v[2]) + (int)tmax(v[1],v[1])*10; }", (2+1*10)),
-    # 全 tryte1 = 全 trit1 = (3^45-1)/2（正大数）；全 tryte2 = 全 trit2 = 3^45-1（带符号 -1）
+    # 全 trit1 = 每 tryte 121（1+3+9+27+81）= (3^45-1)/2 正大数；全 trit2 = 每 tryte 242 = 3^45-1（带符号 -1）
+    # 坑实录：曾写 p[i]=1/p[i]=2——那是 char 值 1/2（tryte 十进制 1/2，仅低 trit 非 0），
+    # 不是全 trit 1/2；TNOT 语义与 VM 均正确，2026-11-22 用例口径修正。
     ("tint全trit1不变", "int main(void){ __tint x; char *p=(char*)&x; "
-     "for(int i=0;i<9;i++) p[i]=1; return ((int)x > 0) + ((int)(~x) == (int)x); }", 2),  # TNOT 不变
+     "for(int i=0;i<9;i++) p[i]=121; return ((int)x > 0) + ((int)(~x) == (int)x); }", 2),  # TNOT 不变
     ("tint全trit2清零", "int main(void){ __tint x; char *p=(char*)&x; "
-     "for(int i=0;i<9;i++) p[i]=2; return ((int)x == -1) + ((int)(~x) == 0); }", 2),  # TNOT 清零
+     "for(int i=0;i<9;i++) p[i]=242; return ((int)x == -1) + ((int)(~x) == 0); }", 2),  # TNOT 清零
 
     # ---- 大整数常量通道（T-2.4 诊断实锤：>2^32 的 VT_INT 字面量曾被 gen_cast
     #      0xffffffff 掩码截断——TriRV int=45 trit 全域需 64 位常量通道） ----

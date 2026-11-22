@@ -4,6 +4,12 @@
 2) SMP 原子性：多核对共享计数器并发 AMOADD，验证无丢失更新（结果 == 核数×次数）。
 """
 import struct, subprocess, os, sys
+_R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))         # 仓库根
+for _d in (_R, os.path.join(_R, "isa"), os.path.join(_R, "vm"),
+           os.path.join(os.path.dirname(os.path.abspath(__file__))),
+           os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cc")):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
 import trirv_isa as isa
 from trirv_vm import VM, SYS_EXIT, SYS_WRITE
 
