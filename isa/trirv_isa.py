@@ -85,8 +85,8 @@ OPCODE = {
     "M-EXT":13, "DIV-EXT":14, "REM-EXT":15,  # M 扩展（复用空闲 opcode，见 INST）
     "ATOMIC":18,                    # A 扩展：LR/SC + AMO（原子读改写）
     "F-ARITH":19, "F-MEM":20, "F-CMP":21,    # F 扩展：浮点算术/边界转换/比较（P2，见 §5.1）
-    "T-LIT":22,                     # 文字运算预留（Post literal x^a，未实现——
-                                    #   ternary-isa-design.md §6.1；23-26 TC 预留）
+    "T-LIT":22,                     # 文字运算（LIT0/1/2 已实现，§6.1）
+    "TC":23,                        # TC 压缩标识（首 tryte mod 27 == 23 → 15-trit 短格式）
 }
 # 常用 M 态 CSR 地址（沿用 RISC-V 编号，均 < 3^7=2187 可放入 imm7 字段）
 CSR = {
@@ -278,3 +278,53 @@ def decode(inst):
         hi = get_field(inst, 17, 19)
         d["imm"] = hi * (3**4) + lo
     return d
+
+# ---------------------------------------------------------------------------
+# TC 压缩指令（T10b，2026-11-23）：15-trit / 3-tryte 对齐短格式
+# 判别式：首 tryte % 27 == 23 → C 格式；否则 20-trit 全宽
+# 编码：t0-t2=opcode 23（固定），t3-t4=子格式，t5-t14=payload（10 trit）
+# ---------------------------------------------------------------------------
+
+TC_OPCODE = 23
+C_SUBFORMATS = {"C-ADDI": 0, "C-LW": 1, "C-SW": 2, "C-BEQ": 3, "C-BNE": 4}
+
+def is_c_format(first_tryte):
+    """首 tryte 判宽：%27 == 23 → C 格式（3 tryte）；否则全宽（4 tryte）。"""
+    return (first_tryte % 27) == TC_OPCODE
+
+def encode_c(subformat, reg_s, imm7):
+    """编码 15-trit C 格式指令 → 3 tryte 列表（每元素 0..242）。
+    subformat: 0=C-ADDI, 1=C-LW, 2=C-SW, 3=C-BEQ, 4=C-BNE
+    reg_s: 0-7 静态寄存器子集索引
+    imm7: 7-trit 立即数
+    trit 布局：t0-t2=23(固定), t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7
+    """
+    trits = [0] * 15
+    trits[0] = 2; trits[1] = 1; trits[2] = 2       # opcode 23
+    trits[3] = subformat % 3
+    trits[4] = (subformat // 3) % 3
+    trits[5] = reg_s % 3
+    trits[6] = (reg_s // 3) % 3
+    trits[7] = (reg_s // 9) % 3
+    im = imm7 % 2187
+    for i in range(7):
+        trits[8 + i] = im % 3
+        im //= 3
+    # 打包为 5 tryte（每 tryte 3 trit × 5 = 15 trit）
+    return [sum(trits[i*3+j] * (3**j) for j in range(3) if i*3+j < 15)
+            for i in range(5)]
+
+def decode_c(trytes):
+    """解码 3 tryte → C 格式字典。"""
+    trits = []
+    for t in trytes:
+        for _ in range(3):
+            trits.append(t % 3)
+            t //= 3
+    opcode = trits[0] + trits[1]*3 + trits[2]*9
+    subformat = trits[3] + trits[4]*3
+    reg_s = trits[5] + trits[6]*3 + trits[7]*9
+    imm7 = sum(trits[8+i] * (3**i) for i in range(7))
+    return {"opcode": opcode, "subformat": subformat,
+            "reg_s": reg_s, "imm7": imm7}
+
