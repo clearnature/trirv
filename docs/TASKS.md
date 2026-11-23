@@ -7,9 +7,12 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 60 / FAIL 0（连续 37 次全绿）
-- HEAD：trirv f8a40c9（批次 1 收官）/ tinycc 21410af4
+- 回归：python3 tests/run_all_tests.py → PASS 61 / FAIL 0（连续 38 次全绿）
+  门禁：--san 60 套零 sanitizer 报错（ADR-29）；--fuzz-seed 可透传
+- HEAD：trirv d5ca505（批次 2 收官）/ tinycc 21410af4
 - TC v2+sf5：35.2% TC 率 / TRV2 节省 8.5%；ISA 109 条（+FENCE.I+CSR 高区六条）
+- ADR-17 准入进度：①长分支弛豫=批次 3.1–3.4 未做；②调试器流制 PC=未做；
+  ③④全链 TRV2 等价=双引擎/文件差分轴已建（450 例+40 对），61 单元链待批次 3.8
 - TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
@@ -72,7 +75,18 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 2 / 任务 2.16（收官）**
+**进度游标：批次 3 / 任务 3.1（TRV2 默认化，ADR-16/17/28①）**
+
+#### 批次 2 质量门禁——已收官（2026-11-24，61 套全绿连续第 38 次）
+
+- [x] 2.1–2.16 全部完成（提交 d5f267e..d5ca505，五个原子提交）：
+      门禁 --san（首次全量 60 套零 sanitizer 报错）与 --fuzz-seed；
+      双引擎随机差分 450 例一致 + 变异自检（7/30 检出率证明能红）+
+      TRV1/TRV2 文件差分 40 对；fn-ptr 两缺口关闭（ADR-20 清零）；
+      ABI 探针 28 组四路一致；固定微基准 bench/ 三档 + run_perf.py
+      （TRV2 引擎分支密集 2.3× 引擎代价入 PERF_REPORT）；CI 双平台
+      workflow + 本地门禁；ABI/笔记/固件文档校准 + ISA 差异表 §7.1
+      八项 + 全部 docs 状态行（ADR-32）
 
 - [x] 2.2 首次全量 --san：60 套全绿（ASan/UBSan 零报错，422s）✓ 后台完成
 - [x] 2.8 ABI 探针固化：difftest_tcc 22→28 组（常量折叠 45-trit 域/
