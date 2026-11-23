@@ -75,7 +75,21 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 3 / 任务 3.8（61 单元链 TRV2 等价）**
+**进度游标：批次 3b / 任务 3b.1（剩余 19 套统一加载器迁移）**
+
+- [x] 3.8 61 单元链 TRV2 探针实证：bb_probe（busybox 同构）×61 单元
+      全量导入 ×TRV2 输出 ×CVM 执行 exit=16 ✓（等价 harness 102 项 +
+      双引擎差分 450 例 + 文件差分 40 对为准入④证据链；
+      musl/crt 套件 TRV2 变体正式化并入 3b——切默认后全量即覆盖）
+- [x] 3.9 统一加载器 tests/_trvio.py（load_any/load_vm/run_vm）+
+      代表套件迁移（compact/amp）。**批量正则迁移 7/21 半成品回滚**
+      ——模式各异正则不可靠，剩余 19 套逐文件精修（3b.1）
+- [ ] 3b.1 剩余 19 套迁移（每套 2–4 处，grep 定位逐个改）
+- [ ] 3b.2 切默认：trirv_cc 默认输出 TRV2（TRV_FORMAT=1 回退）+
+      全量回归（此时 63 套即全 TRV2 覆盖，ADR-17 准入④完成）
+- [ ] 3b.3 ADR-17 准入记录 + README 构建说明 + 批次 3b 收官
+- [ ] 3b.4 TRV2 流制引擎性能优化：hint 缓存强化（fib 2.3×→≤1.3× 目标，
+      见上方任务条目；PERF_REPORT 更新）
 
 - [x] 3.5 调试器流制 PC ✓ f59d4aa（read_trv 双格式+packed 接线+
       _slot_of bisect+四视图双模式；TRV1 slot5 / TRV2 off5 同语义；
@@ -281,6 +295,14 @@
 - [ ] 2.16 **批次 2 收官**
 
 #### 批次 3 TRV2 默认化（ADR-16/17/28①）
+
+- [ ] 3b.4 **TRV2 流制引擎性能优化：取指 hint 缓存强化**（PERF_REPORT 实测
+      fib 分支密集 2.3× 慢——packed 取指二分回退是热点）。方案：slot_hint
+      双向（顺序前进 + 回跳目标缓存：JAL/分支解析时把 (target_pc→slot)
+      写入小直查表，命中免二分）；验收：bench/fib TRV2 耗时 ≤ TRV1 的
+      1.3×（现 2.3×），sumloop/axpy 不劣化；PERF_REPORT 更新。
+      参照：解释器 thread-code 的间接跳转目标缓存；CVM slot_hint 单向
+      缓存的对称扩展（批次 3.4 引入，trirv_vm.c:1069 附近）
 
 - [ ] 3.1 **弛豫设计定案**：反条件映射、三指令布局、阈值随输出格式（TRV1 为 1093 槽，TRV2 为 273 槽）。
       验收：设计条目入 TC_COMPRESSION_DESIGN，附手算示例

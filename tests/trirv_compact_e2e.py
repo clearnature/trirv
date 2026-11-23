@@ -45,17 +45,9 @@ def check(name, got, want):
 
 
 def load_trv(path):
-    """解析 .trv：指令槽 + 数据段（与 trirv_arch_e2e 同法）。"""
-    data = open(path, "rb").read()
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from("<%dI" % n_inst, data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from("<II", data, off)
-        off += 8
-        mem[addr] = data[off:off + ln]
-        off += ln
+    """解析容器（批次 3.9 统一加载器：TRV1/TRV2 双格式）。"""
+    import _trvio
+    prog, mem, _packed = _trvio.load_any(path)
     return prog, mem
 
 
