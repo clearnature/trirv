@@ -209,7 +209,7 @@ static void tok_push(Token t){
     TOKS[NTOK++]=t;
 }
 static int is_kw(const char*s){
-    static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list",
+    static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list","__tint2",
         "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else","extern",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
@@ -398,6 +398,10 @@ static char* parse_type(void){
         while(accept("const")){ }
         if(accept("char")) snprintf(base,sizeof(base),"schar");
         else { accept("int"); snprintf(base,sizeof(base),"int"); }
+    } else if(accept("__tint2")){
+        /* __tint2（2026-11-23 C2 方案 A）：4-tryte/20-trit 档——存取即窄化
+           （SW4 mod 3^20 截断 / LW4 sx20 符号扩展），寄存器内 int 语义 */
+        snprintf(base,sizeof(base),"__tint2");
     } else if(accept("int")){
         while(accept("const")){ }
         snprintf(base,sizeof(base),"int");
@@ -696,7 +700,9 @@ static int is_decl_start(void){
     Token*t=cur();
     if(t->kind==TK_ID && typedef_find(t->s)) return 1;   /* typedef 别名 */
     if(t->kind==TK_KW){
-        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const","extern",NULL};
+        /* 坑实录：类型清单共三处硬编码（is_kw / parse_type accept 链 /
+           本表）——新类型三处都要补，漏一处即 parse_primary: bad 报错 */
+        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const","extern","__tint2",NULL};
         for(int i=0;dt[i];i++) if(!strcmp(t->s,dt[i])){
             /* struct X; 与 struct X f() 区分：先看后面 */
             return 1;
@@ -858,7 +864,7 @@ static void struct_def(const char*name){ struct_def_semi(name,1); }
 static void struct_def_semi(const char*name,int semi){
     StructDef sd={0}; sd.name=strdup(name);
     expect("{");
-    int pos=0;
+    int pos=0, maxaln=9;                                /* 成员对齐最大值（__tint2=4 档时 4） */
     while(!at("}")){
         char*mty=parse_type();
         char*mn=take()->s;
@@ -866,14 +872,18 @@ static void struct_def_semi(const char*name,int semi){
             char buf[96]; snprintf(buf,sizeof(buf),"%s[%s]",mty,cur()->s);
             mty=strdup(buf); take(); expect("]");
         }
-        int off=((pos+8)/9)*9;                          /* 成员起始 9 对齐 */
+        int aln = !strcmp(mty,"__tint2") ? 4 : 9;       /* __tint2 4-对齐档（C2 方案 A），
+                                                           其余成员仍 9-对齐（ABI §6） */
+        int off=((pos+aln-1)/aln)*aln;
+        if(aln>maxaln) maxaln=aln;
         pos=off+ty_bytes(mty);
         GROW(sd.m,sd.cap,sd.nm,Member);
         sd.m[sd.nm].name=mn; sd.m[sd.nm].ty=mty; sd.m[sd.nm].off=off; sd.nm++;
         expect(";");
     }
     expect("}"); if(semi) expect(";");
-    sd.size=((pos+8)/9)*9;
+    sd.size=((pos+maxaln-1)/maxaln)*maxaln;   /* 尺寸按 maxalign 圆整（含 __tint2
+                                                 成员的结构体 4-圆整，其余 9-圆整） */
     GROW(STRUCTS,CAPSTRUCT,NSTRUCT,StructDef);
     STRUCTS[NSTRUCT++]=sd;
 }
@@ -910,6 +920,7 @@ static int ty_bytes(const char*ty){
     if(is_ptr(ty)) return 9;
     if(is_array(ty)){ char*el=array_elem(ty); int n=array_count(ty); return n*ty_bytes(el); }
     if(is_char_ty(ty)) return 1;
+    if(!strcmp(ty,"__tint2")) return 4;    /* __tint2 = 4 tryte（C2 方案 A） */
     StructDef*sd=struct_find(ty);
     if(sd) return sd->size;
     return 9;
@@ -1006,7 +1017,9 @@ static void global_init_data(const char*ty,Node*init,unsigned char**out_data,
     if(init){
         if(init->k==N_INITLIST){
             int flat_isarr=0; ty_size(ty,&flat_isarr);
-            int esz = flat_isarr? ty_bytes(array_elem((char*)ty)) : 9;
+            int esz = flat_isarr? ty_bytes(array_elem((char*)ty))
+                                : ty_bytes((char*)ty);   /* 标量用自身宽（__tint2=4），
+                                                            原固定 9 会越槽写 */
             int off=0;
             for(int i=0;i<init->nitems&&off<size;i++){
                 Node*it=init->items[i];
@@ -1800,11 +1813,15 @@ static void load_mem(int dst,int base,int off,const char*ty){
      * 与 RISC-V 语义一致——LB/LH 符号扩展、LBU/LHU 零扩展。 */
     if(is_char_ty(ty))
         emitf("%s %s, %d(%s)", char_signed(ty)?"LB":"LBU", regname(dst),off,regname(base));
+    else if(!strcmp(ty,"__tint2"))
+        emitf("LW4 %s, %d(%s)",regname(dst),off,regname(base));   /* sx20 符号扩展 */
     else emitf("LW %s, %d(%s)",regname(dst),off,regname(base));
 }
 static void store_mem(int src,int base,int off,const char*ty){
     chk_off(off);
     if(is_char_ty(ty)) emitf("SB %s, %d(%s)",regname(src),off,regname(base));
+    else if(!strcmp(ty,"__tint2"))
+        emitf("SW4 %s, %d(%s)",regname(src),off,regname(base));   /* mod 3^20 截断 */
     else emitf("SW %s, %d(%s)",regname(src),off,regname(base));
 }
 static void load_glob(int dst,Global*g){
@@ -2872,7 +2889,8 @@ static void gen_func(Node*f){
         /* 形参同理：char 类形参必须在入口按 tryte 归一化，故落栈后用 LB/LBU 读回。
          * struct 形参按值传：入口从 aN（= 源地址）逐字拷进本地副本，之后它就是
          * 一个普通结构体局部变量 —— 修改与调用方完全隔离。 */
-        v->spilled = isarr || is_char_ty(v->ty) || struct_find(v->ty)!=NULL;
+        v->spilled = isarr || is_char_ty(v->ty) || struct_find(v->ty)!=NULL
+                     || !strcmp(v->ty,"__tint2");   /* 存取即窄化：必须落槽（同 char） */
         /* 叶子函数没有调用会踩 a0-a7，形参可以直接留在它到达时的寄存器里，
            省掉 `ADDI sN, aM, 0` 这次搬运。池从 a_nparams 起，不会与它们冲突。 */
         if(!anycall&&!isarr&&!is_char_ty(v->ty)&&!struct_find(v->ty)&&i<8-abase){
@@ -2884,6 +2902,11 @@ static void gen_func(Node*f){
     if(FUNC_SRET){ LocVar*vb=loc_new(); vb->name="__sretptr"; vb->ty="int*"; vb->spilled=1;
                    FUNC_SRET_LOC=NLOC-1; }   /* 必须排在形参之后：下面按 LOC[i] 索引形参 */
     collect_decls(f->fbody);
+    /* __tint2 局部强制落槽（2026-11-23 C2 方案 A）：存取即窄化语义只在
+       SW4/LW4 路径上，寄存器驻留值会绕过截断/符号扩展（x=4000000000
+       寄存器驻留直比 513215599 失败实证）——与 char/struct 同款处理 */
+    for(int i=0;i<NLOC;i++)
+      if(!LOC[i].spilled && !strcmp(LOC[i].ty,"__tint2")) LOC[i].spilled=1;
     for(int i=0;i<NLOC;i++){
         if(LOC[i].spilled){
             if(LOC[i].reg>0){ USEDREG[LOC[i].reg]=0; LOC[i].reg=0; }   /* 取址后已落栈，归还寄存器 */
@@ -2982,8 +3005,10 @@ static void gen_func(Node*f){
         }
         else if(v->spilled){
             /* 形参落栈时也按类型写：char 形参用 SB 把入参截到 1 tryte，
-             * 后续 LB/LBU 读回时符号性才与 C 一致。 */
-            if(is_char_ty(v->ty)){
+             * 后续 LB/LBU 读回时符号性才与 C 一致；__tint2 形参同理——
+             * SW4 把入参截/符号化到 20-trit（实参寄存器传的是全宽词，
+             * 不截则 callee 读到未窄化值）。 */
+            if(is_char_ty(v->ty) || !strcmp(v->ty,"__tint2")){
                 int r=tacq(); emitf("ADDI %s, a%d, 0",regname(r),i+abase);
                 store_mem(r,8,v->off,v->ty); TDN=0;
             } else { chk_off(v->off); emitf("SW a%d, %d(s0)",i+abase,v->off); }
@@ -3087,7 +3112,9 @@ static uint32_t asm_line(const char*line,int idx){
     }
     if(d->fmt==1){ /* I: op rd, rs1, imm  or  LW rd, imm(rs1) */
         int rd=find_reg(ops[0]);
-        if(!strcmp(op,"LW")||!strcmp(op,"LH")||!strcmp(op,"LB")||!strcmp(op,"LBU")||!strcmp(op,"LHU")||!strcmp(op,"JALR")){
+        /* 坑实录：装载助记符硬编码清单——LW4 漏名即 putf(-1) 崩（同 TNOT 缺
+           ITAB 形；新指令要点两处名：ITAB + 本清单） */
+        if(!strcmp(op,"LW")||!strcmp(op,"LH")||!strcmp(op,"LB")||!strcmp(op,"LBU")||!strcmp(op,"LHU")||!strcmp(op,"LW4")||!strcmp(op,"JALR")){
             /* imm(rs1) */
             char*par=strchr(ops[1],'('); long imm=0; int rs1=0;
             if(par){ *par=0; imm=atol(ops[1]); char rr[32]; snprintf(rr,sizeof(rr),"%s",par+1);
@@ -3098,7 +3125,7 @@ static uint32_t asm_line(const char*line,int idx){
         return encI(d->op,(int)imm,find_reg(ops[1]),d->fu,rd);
     }
     if(d->fmt==2){ /* S/B */
-        if(!strcmp(op,"SW")||!strcmp(op,"SH")||!strcmp(op,"SB")){
+        if(!strcmp(op,"SW")||!strcmp(op,"SH")||!strcmp(op,"SB")||!strcmp(op,"SW4")){
             int rs2=find_reg(ops[0]);
             char*par=strchr(ops[1],'('); long imm=0; int rs1=0;
             if(par){ *par=0; imm=atol(ops[1]); char rr[32]; snprintf(rr,sizeof(rr),"%s",par+1);

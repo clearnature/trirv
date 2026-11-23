@@ -67,6 +67,22 @@ CASES = [
      "int r = 0; if (z == w) { r = 1; } return r; }", 1),
     ("tlit嵌套恒等", "int main(){ int x = __builtin_tri_lit(__builtin_tri_lit(729, 1), 2); "
      "int r = 0; if (x == 729) { r = 1; } return r; }", 1),
+
+    # ---- __tint2 4-tryte/20-trit 档（trirv_cc 面；无强转方言——窄化全靠
+    #      存取即窄化：SW4 mod 3^20 截断 / LW4 sx20 符号扩展；无 sizeof）----
+    ("tint2全局读", "__tint2 g = 100000; int main(){ if(g==100000){return 1;} return 2; }", 1),
+    ("tint2负值往返", "int main(){ __tint2 x = -123456; if(x==-123456){return 1;} return 2; }", 1),
+    ("tint2存储截断", "int main(){ __tint2 x = 5000000000; if(x==1513215599){return 1;} return 2; }", 1),
+    ("tint2过半转负", "int main(){ __tint2 x = 3000000125; if(x==-486784276){return 1;} return 2; }", 1),
+    ("tint2数组步长", "__tint2 a[3]; int main(){ int i; for(i=0;i<3;i=i+1){ a[i]=i*100000; } "
+     "if(a[1]==100000 && a[2]==200000){return 1;} return 2; }", 1),
+    ("tint2全局数组负初值", "__tint2 g[2] = {7, -7}; int main(){ if(g[0]==7 && g[1]==-7){return 1;} return 2; }", 1),
+    ("tint2传参返回", "__tint2 id(__tint2 v){ return v; } int main(){ __tint2 x = 123456; "
+     "if(id(x)==123456){return 1;} return 2; }", 1),
+    ("tint2存储路径截断", "int main(){ int big = 4000000000; __tint2 x = big; "
+     "if(x==513215599){return 1;} return 2; }", 1),
+    ("tint2结构体成员", "struct S { char c; __tint2 v; }; int main(){ struct S s; s.c = 3; "
+     "s.v = 5000000000; if(s.v==1513215599 && s.c==3){return 1;} return 2; }", 1),
 ]
 
 def main():
