@@ -13,10 +13,11 @@
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
   __tint / __tint2 / __tbool / __builtin_tri_lit / LW4-SW4 / LIT0-2
 - ISA 总量：102 条（含 LW4/SW4 4-tryte 档 + LIT0/1/2 文字运算）
+- 决策记录：docs/DECISIONS.md（ADR-01..33，2026-11-23 提出整批，待确认）
 
 ## A. 执行队列（2026-11-23 授权连续执行）
 
-执行序：T1→T2→T3→T4→T5→T6→T7→T8→T9→T10→T11（按序连续执行）
+原 T 系列已全部收官；后续执行序见本节末「批次 1–10」（ADR-33，整批确认后生效）
 
 ### 已收官（本会话 T1~T10c-1）
 
@@ -49,7 +50,8 @@
       单步协作轮转调度——CVM `-a N` / PyVM run_amp 双 VM 同构；
       保留符号 `__amp_shared` 编译器绑定窗口地址；契约 10 项四票：
       mailbox 往返/共享窗加倍/窗口地址绑定/错误路径 -3 -2 自环）
-- [ ] T11b AMP 扩展（记账：tri-tcc 侧 AMP 用例、>2 核契约、阻塞式 mrecv）
+- [ ] T11b AMP 扩展 → 并入批次 4（ADR-23：阻塞收走新号 5013、核间中断 5014、
+      4 核契约、tri-tcc 用例）
 - [x] T7b py fn-ptr 收官（声明符 `int (*fp)(int)` + 函数名退化 `fp=f` +
       间接调用 `(*fp)(x)`/`(fp)(x)`；trirv_asm &sym 定点展开（ADDI/LUI+ADDI
       对齐 C 后端 sym_emit_seg）；契约 11 项双后端 STRICT 同构。
@@ -60,14 +62,36 @@
       自旋。修复 = global_add 内 strdup(ty)。契约：直链==拼接轨迹级一致
       （PyVM (1,True,20,19674) / CVM exit=1），trvo_e2e 25→30 项）
 
+### 执行序（ADR-33，待整批确认）
+
+原则：先立门禁，再做影响面最大的动作（切默认格式）；平台化先于前端扩展；
+LLVM 最后并设 GO/NO-GO。
+
+- [ ] 批次 1 ISA 小项：C-J/C-JAL sf5（ADR-03）+ FENCE.I（ADR-05）+ CSR 高区编码与
+      守卫用例（ADR-06）+ 手算黄金用例审计（ADR-28②）；重测 TC 密度
+- [ ] 批次 2 质量门禁：ASan/UBSan 与随机种子门禁（ADR-29）+ CI 文件（ADR-30）+
+      双引擎 fuzz 轴（ADR-28①）+ fn-ptr 两缺口（ADR-20）+ ABI 探针固化（ADR-13）+
+      微基准与 PERF_REPORT 刷新（ADR-31）+ 文档校准（ADR-07/08/09/32）
+- [ ] 批次 3 TRV2 默认化：长分支弛豫（ADR-16）+ 全语料 TRV1≡TRV2（ADR-28①）+
+      调试器流制 PC → 切默认（ADR-17）
+- [ ] 批次 4 AMP：mrecvw 5013 + mipi 5014 + mhartid + 4 核契约 + tri-tcc 用例（ADR-23）
+- [ ] 批次 5 固件：真实定时器 tick 与 ISR 向量表（ADR-24）
+- [ ] 批次 6–8 musl：stdio → multibyte → time（ADR-25）
+- [ ] 批次 9 wasm 补全，官方 spec testsuite 计数（ADR-21）
+- [ ] 批次 10 LLVM P-0 spike，GO/NO-GO（ADR-18）
+- 之后按需：TF45 libm（ADR-26）、RTL（ADR-07）；Post 代数应用层暂不立项（ADR-27）
+
 ### 前置缺口记账（不阻断主线）
 
-- py 参考后端 tint 正向全量（当前以语法错误拒绝——双后端拒绝纪律成立）
-- trirv_cc.py switch / typedef / do-while / goto / 三目 / 强转 / const
-  （py 参考后端教学子集差距——按需补；fn-ptr 已于 T7b 补齐）
-- C 后端 fn-ptr 裸括号形态 (fp)(x) 与声明带初始化 int (*fp)(int)=f;（回退实证）
+- py 参考后端不做 tint 正向（ADR-12：tint 的差分对照走 tri-tcc ↔ trirv_cc）
+- C 后端 fn-ptr 裸括号形态 (fp)(x) 与声明带初始化 → 批次 2 关闭（ADR-20）
+- （已更正）原记「trirv_cc.py 缺 switch/typedef/do-while/goto/三目/强转/const」是
+  陈旧记账：2026-11-23 核对代码，T1–T7 已全部落地（cc/trirv_cc.py 内有 T2–T7 标注）
 
 ## B. 待办——需拍板才启动（附行业/开源参考意见）
+
+> 2026-11-23：本节的拍板项已全部给出决策，见 `docs/DECISIONS.md`。本节保留问题陈述
+> 与对照证据；**状态以 DECISIONS.md 为准**。
 
 ### B0. 架构拍板（2026-11-23 用户定案）
 
@@ -75,7 +99,7 @@
 纯虚拟硬件+软件栈先行；硬件直通后置（行业默认不暴露底层硬件）。
 syscall 表 = 虚拟设备接口（virtio 半虚拟化同构）。
 
-### B1. TC 压缩扩展（TC v2 已收官，增益扩展三选待拍板）
+### B1. TC 压缩扩展（→ ADR-03/04/14/15/16/17）
 
 TC v2（bb19bcc+881b702）：五类子格式 + 窗口 {t0-t2,s0,s1,a0-a2}，
 musl 语料 28.0% TC 率 / TRV2 打包节省 7.0%（实测）。
@@ -96,7 +120,7 @@ stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）�
 （>273 槽）内部回跳需诚实报错或 LUI+JALR 长链（语料 max 219 槽安全）；
 调试器/固件默认 TRV1 不受影响。
 
-**拍板项 ②C-JAL = TC 组 2（opcode 24）——建议次之（+7.5% 槽覆盖）**
+**拍板项 ②C-JAL（→ ADR-03：改走 TC 子格式 sf5，不占 opcode 24）**
 设计：opcode 24 首 subformat = C-JAL delta7（ra 隐含，10-trit payload
 3+7 恰好放下）——**加法扩展，零破坏已提交的 TC v2 编码**；判宽推广为
 `首 tryte %27 >= 23`（全宽 opcode 仅用 0-22，23-26 恒空闲，无歧义）。
@@ -104,14 +128,14 @@ stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）�
 参照：RVC C.JAL（RV32；RV64 因 rtireturn 惯例裁撤——我们 ra 隐含同款
 取舍）/ Thumb BL 长跳两段式（超 delta7 的调用回退全宽 JAL 即可）。
 
-**拍板项 ③3-trit 子格式重编——建议远期（破坏性，负载取舍）**
+**拍板项 ③3-trit 子格式重编（→ ADR-04：关闭）**
 9 子格式槽，imm 降 6 trit；与 sf0 双寄存器布局互斥（payload 预算）——
 「调用密集 vs 指针运算」负载二选一。TC v2 刚提交，重编即全链返工；
 等 TRV2 正式化后的真实负载分布数据再定。
 
 参照：RISC-V RVC / Thumb-2 / MIPS16e；Termite / REBEL-6 / alopx.li wiki
 
-### B2. 二进制兼容白名单——翻译层直通期后置；ABI 冻结政策建议现在定
+### B2. 二进制兼容白名单与 ABI 冻结（→ ADR-09/10/11）
 
 翻译层本体（Rosetta 2 / FEX-Emu / Box64 惯例；REBEL-6 双模式学术参照）
 按 B0 拍板后置，无需现在动工。
@@ -123,7 +147,7 @@ stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）�
 - .trv 容器 magic+version 字段纪律（TRV1 现状 → TRV2 升级通道已留）。
 参照：RISC-V psABI 的 stability process（riscv-abi SIG 冻结流程）。
 
-### B3. SMP——AMP 已先行（T11），真并行路径待拍板
+### B3. SMP——AMP 已先行（T11）（→ ADR-22/23：顺序改为先中断后真并行）
 
 已落地：mailbox + 共享窗 + 单步协作轮转（顺序一致性，契约可复现）。
 **建议路径（三步递进）**：
@@ -154,35 +178,35 @@ stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）�
 - **实证**：witness(n) 的 TriRV C 等价形式（`2 << k`）双 VM 通过，n=0..43 恒等式
   0 错（exit=44 = 0×100 + 22 偶 + 22 奇）。
 - **由对照引出、待拍板**：
-  - [ ] B4a C-JAL 改走 TC 子格式 sf5（opcode 23 内 t5–t14 共 10 trit 放跳转量），
+  - [ ] B4a（→ ADR-03） C-JAL 改走 TC 子格式 sf5（opcode 23 内 t5–t14 共 10 trit 放跳转量），
         不占 opcode 24——27 个 opcode 已用 24，仅余 24/25/26（修正 B1② 原方案）
-  - [ ] B4b FENCE.I 占位（Zifencei；统一内存下为空操作，WASM/JIT 路线前置）
-  - [ ] B4c CSR 地址空间扩展方案（现 imm7 上限 2186：mcycle 0xB00=2816、
+  - [ ] B4b（→ ADR-05） FENCE.I 占位（Zifencei；统一内存下为空操作，WASM/JIT 路线前置）
+  - [ ] B4c（→ ADR-06） CSR 地址空间扩展方案（现 imm7 上限 2186：mcycle 0xB00=2816、
         cycle 0xC00=3072 编不进；当前实现 8 个）——C3 固件前置
-  - [ ] B4d RTL 期备忘（现不动）：指令步长 4 tryte 非 3 的幂，JALR 对齐只能舍入
+  - [ ] B4d（→ ADR-07） RTL 期备忘（现不动）：指令步长 4 tryte 非 3 的幂，JALR 对齐只能舍入
         不能掩码；移位量取 7 trit（0–2186）需比较器而非截断
 
-## C. 大方向立项（计划文档在库，未开工；附开源参照）
+## C. 大方向立项（→ ADR-18/21/24/27/25；执行序见 ADR-33）
 
-- [ ] C1. LLVM 后端（docs/LLVM_BACKEND_PLAN.md）
+- [ ] C1. LLVM 后端（→ ADR-18，批次 10；原计划 D-L2/D-L4 前提已修正）
   参照：llvm/lib/Target/RISC-V（规范标准骨架）、M68k（2022 回归的现代
   简洁后端，非主流架构融入主干的成功先例）、VE/BPF（小后端范例）。
   核心难题：LLVM 整数类型强制 2 幂（MVT）——45-trit≈2^71.3，可行路径
   = i128 容器+掩码（务实，浪费）或自定义 MVT/EVT（重写 legalization）。
   建议：WASM 前端垫稳后再启动，首步 = out-of-tree 目标骨架 + 三条
   冒烟指令（ADDI/JAL/ECALL）。
-- [ ] C2. WASM 路线深化（docs/WASM_ROUTE_A.md；现状 112 例差分已通）
+- [ ] C2. WASM 路线深化（→ ADR-21，批次 9）
   参照：wabt、Binaryen（优化器）、wasm3（wasm→C 元编译先例——
   与「wasm→TriRV native 直译」同构）、wasmtime/Cranelift。
   深化方向：wasm→TriRV 直译器（借 TC 压缩输出）。
-- [ ] C3. 固件架构（docs/trirv-firmware-architecture.md）
+- [ ] C3. 固件架构（→ ADR-24，批次 5；框架已部分实现，非「未开工」）
   参照：OpenSBI（RISC-V M 态固件——我们的 VM 已有 M 态 CSR/trap/
   mret/mtimer 同构基建）；coreboot/U-Boot 分阶段惯例。
   建议：与 B3② 核间中断联动（固件是中断分发者）。
-- [ ] C4. 三值逻辑综合器 / Post 代数应用层
+- [ ] C4. 三值逻辑综合器 / Post 代数应用层（→ ADR-27：暂不立项）
   开源无强参照（学术领域）；建议以 T-LIT 用户态库形态推进，等具体
   消费方（如三值电路仿真/EDA 需求）立项。
-- [ ] C5. musl 覆盖面扩展（65/66 → 开放式）
+- [ ] C5. musl 覆盖面扩展（→ ADR-25，批次 6–8）
   参照：musl 自身 src/* 目录构建序（string/stdlib 已完成，stdio/math/
   multibyte 待扩）；建议作为批次间隙的填充项。
 
