@@ -341,6 +341,18 @@ CASES = [
      "return (z == w) ? 1 : 0; }", 1),  # LIT1^2=LIT2 全在程序内自洽（>uint64
      # 巨常量不可作 C 字面量——坑实录 2）
     ("tlit负词后继", "int main(void){ int x = -1; int y = __builtin_tri_lit(x, 1); return (y == 0) ? 1 : 0; }", 1),
+
+    # ---- typedef fn-ptr 全形态（2026-11-23 锁定：tcc typedef 机制原生覆盖，
+    #      T3 快路径对已类型化符号透明；此前无契约记账）----
+    ("typedef fnptr 基础", "typedef int (*fp_t)(int); int g(int a){ return a + 1; } "
+     "int main(void){ fp_t f = g; return f(41); }", 42),
+    ("typedef fnptr 全局数组+传参", "typedef int (*fp_t)(int); int d(int a){ return a * 2; } "
+     "int t(int a){ return a + 10; } fp_t tab[2]; int call(fp_t f, int v){ return f(v); } "
+     "int main(void){ tab[0] = d; tab[1] = t; return call(tab[0], 5) + call(tab[1], 5); }", 25),
+    ("typedef fnptr 结构体成员", "typedef int (*fp_t)(int); struct S { fp_t f; }; "
+     "int h(int a){ return a - 3; } int main(void){ struct S s; s.f = h; return s.f(10); }", 7),
+    ("typedef fnptr 局部typedef+返回fn-ptr", "typedef int (*fp_t)(int); int h(int a){ return a * 3; } "
+     "fp_t pick(void){ return h; } int main(void){ typedef int (*lp_t)(int); lp_t f = pick(); return f(6); }", 18),
 ]
 
 # 多 TU 用例（T-2.1）：(name, [src1, src2, ...], expected) —— 同进程多文件编译，
