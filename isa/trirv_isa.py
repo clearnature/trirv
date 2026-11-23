@@ -292,7 +292,8 @@ TC_OPCODE = 23
 #   sf2 C-SWs  r_s, off7 —— 帧相对存储（基址隐含 s0）
 #   sf3 C-BEQ  r_s, delta7 —— vs zero 分支，步距槽位 ×4 tryte，±1093
 #   sf4 C-BNE  r_s, delta7
-C_SUBFORMATS = {"C-ADDI": 0, "C-LWs": 1, "C-SWs": 2, "C-BEQ": 3, "C-BNE": 4}
+C_SUBFORMATS = {"C-ADDI": 0, "C-LWs": 1, "C-SWs": 2, "C-BEQ": 3, "C-BNE": 4,
+                "C-J": 5}          # sf5：t5=link(0=J/1=JAL), t6-t14=imm9 跳转量（ADR-03）
 # TC 寄存器窗口（canonical 映射，双 VM 与编译器一致遵照本表）。
 # T10e 实测：本代码生成的热点寄存器是 t 系临时（5,6,7）+ s0 帧指针（8）+
 # s1 持久局部（9）+ a 系（10-12）；原 ABI 窗口 {a0-a3,s0,s1,x14,x15} 对 musl
@@ -323,6 +324,14 @@ def encode_c(subformat, reg_s, imm7):
     return [sum(trits[i*5+j] * (3**j) for j in range(5) if i*5+j < 15)
             for i in range(3)]
 
+def encode_c_jump(link, delta9):
+    """sf5 C-J/C-JAL（ADR-03）：link=0→C-J(rd=zero)/1→C-JAL(rd=ra)；
+    delta9 = 跳转量（9-trit 3 补码 ±9841，单位随执行模式：槽制=槽、流制=tryte）。"""
+    if not (-9841 <= delta9 <= 9841):
+        raise ValueError("encode_c_jump: delta9 超窗 %d（±9841）" % delta9)
+    im = delta9 % 19683
+    return encode_c(5, (link % 3) + (im % 9) * 3, im // 9)
+
 def encode_c_word(subformat, reg_s, imm7):
     """encode_c 的词形态：3 tryte → 20-trit 槽词（高 5 trit 零填充）。
     槽制引擎执行 TC 词与流制 pack_stream 共用此口径。"""
@@ -345,8 +354,13 @@ def decode_c(trytes):
     subformat = trits[3] + trits[4]*3
     reg_s = trits[5] + trits[6]*3 + trits[7]*9
     imm7 = sum(trits[8+i] * (3**i) for i in range(7))
-    return {"opcode": opcode, "subformat": subformat,
-            "reg_s": reg_s, "imm7": imm7}
+    d = {"opcode": opcode, "subformat": subformat,
+         "reg_s": reg_s, "imm7": imm7}
+    # sf5（C-J/C-JAL，ADR-03）：t5=link，t6-t14=imm9。机械域（reg_s/imm7）
+    # 不动，增量视图在此统一给出：imm9 = (reg_s//3) + imm7*9
+    d["link"] = reg_s % 3
+    d["imm9"] = (reg_s // 3) + imm7 * 9
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -407,9 +421,25 @@ def migrate_trv1_stream(words):
     for k in range(n):
         w = out[k]
         first = w % 243
-        if first % 27 >= 23:                       # TC：sf3/sf4 分支重编
+        if first % 27 >= 23:                       # TC：sf3/sf4/sf5 重编
             sf = (w // 27) % 9
-            if sf in (3, 4):
+            if sf == 5:                            # C-J/C-JAL：imm9 槽距→tryte 距
+                reg_s = get_field(w, 5, 7)
+                imm7 = get_field(w, 8, 14)
+                imm9 = (reg_s // 3) + imm7 * 9
+                delta = imm9 if imm9 <= 9841 else imm9 - 19683
+                tgt = k + delta
+                if not (0 <= tgt <= n):
+                    raise ValueError(f"migrate: C-J 越界 slot{k} delta={delta}")
+                nd = new_off[tgt] - new_off[k]
+                if not (-9841 <= nd <= 9841):
+                    raise ValueError(f"migrate: C-J 超 imm9 slot{k} {nd}")
+                nim = nd % 19683
+                link = reg_s % 3
+                w2 = (w - (reg_s // 3) * (3 ** 6) - imm7 * (3 ** 8)
+                        + (nim % 9) * (3 ** 6) + (nim // 9) * (3 ** 8))
+                out[k] = w2
+            elif sf in (3, 4):
                 imm = get_field(w, 8, 14)
                 delta = imm if imm <= 1093 else imm - 2187
                 tgt = k + delta

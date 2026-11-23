@@ -70,7 +70,18 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 1 / 任务 1.2**
+**进度游标：批次 1 / 任务 1.5**
+
+- [x] 1.2 ISA sf5 编解码：C_SUBFORMATS 加 C-J:5；decode_c 增 link/imm9 视图；
+      encode_c_jump(link,delta9) ±9841 越窗报错；migrate_trv1_stream 覆盖 sf5。
+      黄金：link=1、delta=−5 → imm9=19678 ✓
+- [x] 1.3 PyVM sf5 执行 + 契约套件 tests/trirv_tcjump_e2e.py 12/12（编解码黄金/
+      C-JAL 槽制流制/C-J x0 硬连线/负跳循环/流制非对齐目标停机）。
+      过程揪出两个用例侧与一个实现侧问题：执行端 link=0 写 regs[0] 污染 x0
+      （PyVM 无每步清零，与 CVM 不同）→ 改为 link=1 才写 regs[1]
+- [x] 1.4 CVM sf5：decode_one（rd=link，imm9=sx9）+ switch/goto 双路径。
+      黄金程序五形态双 VM 一致（坑：TRV2 文件必须经 migrate_trv1_stream
+      重编 imm 单位，pack_stream 只做宽度打包）
 
 - [x] 1.1 修 PyVM TC 分支负跳距。根因=`_exec_c` 三处漏 `s()`：`sign_extend_imm`
       返回 45-trit 非负模值，负跳距乘 4 后 pc 达 3^45 量级（do-while 压缩档

@@ -280,6 +280,9 @@ static Inst decode_one(uint32_t raw) {
         if (in.funct2 == 0) {                   /* C-ADDI v2：rs1_s 进 rs1 槽，imm4 进 imm */
             in.rs1 = (uint8_t)field(raw, 8, 10);     /* rs1_s（窗口索引） */
             in.imm_s = sx(field(raw, 11, 14), 4);    /* imm4 ±40 */
+        } else if (in.funct2 == 5) {            /* C-J/C-JAL（ADR-03）：rd=link，imm9=tryte/槽距 */
+            in.rd = (uint8_t)field(raw, 5, 5);       /* link 0/1 */
+            in.imm_s = sx(field(raw, 6, 14), 9);     /* imm9 ±9841 */
         } else {
             in.rs1 = 0;
             in.imm_s = sx(field(raw, 8, 14), 7);     /* off7 / delta7 */
@@ -975,6 +978,9 @@ static inline void step(VM *v){
             else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
             else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+(v->packed?1:4)*imm;}
             else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+(v->packed?1:4)*imm;}
+            else if(sf==5){ /* C-J/C-JAL：link 进 rd 槽；链接地址=下一条（流制宽 3） */
+                if(in->rd) v->reg[1]=oldpc+(v->packed?3:4);
+                v->pc_=oldpc+(v->packed?1:4)*in->imm_s; }
             break;}
         case OP_JAL:v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);v->pc_=in->target;break;
         case OP_JALR:{v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);__int128_t t=s(v->reg[rs1])+imm;v->pc_=cvm_align_target(v,t);if(v->pc_<0)v->halted=1;break;}  /* 槽制向下取整；流制严格命中 */
@@ -1197,6 +1203,8 @@ L_TC:    {  /* TC v2：与 switch 路径同语义（窗口/帧相对口径见 sw
              else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
              else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+(v->packed?1:4)*imm;}
              else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+(v->packed?1:4)*imm;}
+             else if(sf==5){ if(in->rd) v->reg[1]=oldpc+(v->packed?3:4);
+                v->pc_=oldpc+(v->packed?1:4)*in->imm_s; }
          } NEXT();
 L_CSRRW: csr_op(v,OP_CSRRW,rd,rs1,immraw); NEXT();
 L_CSRRS: csr_op(v,OP_CSRRS,rd,rs1,immraw); NEXT();

@@ -254,6 +254,15 @@ class VM:
         elif sf == 4:    # C-BNE rs, imm7
             if s(self.regs[rd]) != 0:
                 self.pc = old_pc + (1 if self.packed else 4) * s(isa.sign_extend_imm(imm))
+        elif sf == 5:    # C-J/C-JAL（ADR-03）：t5=link（0=J→zero / 1=JAL→ra），
+                         # t6-t14=imm9 跳转量（s9 ±9841；流制 tryte 距/槽制槽距）
+            imm9 = (rs // 3) + imm * 9
+            delta = imm9 if imm9 <= 9841 else imm9 - 19683
+            pc_adv = 3 if self.packed else 4          # 本指令宽度（TC 流制 3 tryte）
+            if cd["link"]:
+                self.regs[1] = old_pc + pc_adv        # C-JAL：链接地址=下一条；
+                                                      # link=0 不写（x0 硬连线，PyVM 无每步清零）
+            self.pc = old_pc + (1 if self.packed else 4) * delta
 
     def _mret(self):
         """从 M 态 trap 返回：pc<-mepc, priv<-MPP, MIE<-MPIE, MPIE<-1, MPP<-U。"""
