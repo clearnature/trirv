@@ -131,5 +131,7 @@ T10=码长对比 + 双 VM 差分；T11=多实例通信契约。
 | py tint 局部 | trirv 8a7215f | 参考后端局部形态 |
 | py 全局变量 | trirv e110531 | TRV_CC=py 下 cc_e2e 45/45 全绿 |
 
+| T10c-1 PyVM TC 执行 | ff8f50a | ✅ C-ADDI/BNE/SW/LW 四形态 PyVM 全 PASS |
+
 更早里程碑：见 `~/.zcode` 记忆（C 方言本征化、未声明标识符、qsort 转正、
 链接器三刀、弱符号/闭包、调试器 MVP、TF 浮点、TINT C1 等）。
