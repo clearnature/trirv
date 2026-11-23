@@ -167,6 +167,9 @@ CC2_CASES = [
     ("TRV2·fn-ptr（sym 地址重写）",
      "int inc(int x){ return x+1; } "
      "int main(){ int (*fp)(int); fp = inc; return (*fp)(41); }", 42),
+    ("TRV2·调用链 C-JAL",
+     "int inc3(int v){ v=v+3; return v; } "
+     "int main(){ int a=inc3(4); a=a+10; int b=inc3(a); return b; }", 20),
     ("TRV2·递归（JAL 深跳+sym）",
      "int fact(int n){ if(n<=1){ return 1; } return n*fact(n-1); } "
      "int main(){ return fact(5); }", 120),

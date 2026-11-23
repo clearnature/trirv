@@ -146,6 +146,15 @@ static uint32_t enc_tc(int sf,int reg_s,int imm){
     v=putf(v,8,14,imm7ok(imm));  /* 7-trit 立即数（帧窗/分支用全域） */
     return v;
 }
+/* sf5 C-J/C-JAL（ADR-03）：t5=link，t6-t14=imm9 ±9841 tryte（槽距门 ±2460） */
+static uint32_t enc_tc_jump(int link,int delta9){
+    uint32_t v=0;
+    int im=((delta9%19683)+19683)%19683;
+    v=putf(v,0,2,O_TC); v=putf(v,3,4,5);
+    v=putf(v,5,5,link);
+    v=putf(v,6,14,im);
+    return v;
+}
 static uint32_t enc_tc_addi(int rd_s,int rs1_s,int imm4){
     /* sf0 双寄存器布局：t5-t7=rd_s, t8-t10=rs1_s, t11-t14=imm4（±40） */
     uint32_t v=0;
@@ -193,7 +202,7 @@ static InstDef ITAB[] = {
     {"ECALL",O_SYSTEM,0,0,1},
     /* TC 压缩助记符（T10d：fmt=5 标识 TC 格式——15-trit / 3-tryte 对齐） */
     {"C-ADDI",O_TC,0,0,5},{"C-LWs",O_TC,1,0,5},{"C-SWs",O_TC,2,0,5},
-    {"C-BEQ",O_TC,3,0,5},{"C-BNE",O_TC,4,0,5},
+    {"C-BEQ",O_TC,3,0,5},{"C-BNE",O_TC,4,0,5},{"C-J",O_TC,5,0,5},{"C-JAL",O_TC,5,0,5},
     {NULL,0,0,0,0}
 };
 static InstDef* find_inst(const char*n){
@@ -3342,6 +3351,11 @@ static uint32_t asm_line(const char*line,int idx){
             int imm=(lt>=0)?(lt-idx):atoi(ops[1]);
             if(lt<0 && getenv("TRV_ASM_DEBUG"))
               fprintf(stderr,"[asm-debug] idx=%d JAL %s 未命中（imm 落 atoi=%d）；LABS=%d 项\n",idx,ops[1],imm,NLAB);
+            /* T-1.5 C-J/C-JAL（ADR-03）：rd∈{zero,ra}、标签已解析、
+               槽距 ≤±2460（=imm9 ±9841 tryte ÷4）。超窗/数字操作数回退全宽。 */
+            if(tc_compact() && lt>=0 && (rd==ZERO || rd==RA)
+               && imm>=-2460 && imm<=2460)
+              return enc_tc_jump(rd==RA?1:0, imm);
             return encU(O_JAL,imm,rd);
         }
         return encU(d->op,atoi(ops[1]),rd);
@@ -3352,6 +3366,8 @@ static uint32_t asm_line(const char*line,int idx){
         * C-LWs/C-SWs r_s, off7；C-BEQ/C-BNE r_s, delta7（数值步距）。 */
         if(d->fu==0 && no>=3)
           return enc_tc_addi(atoi(ops[0]), atoi(ops[1]), atoi(ops[2]));
+        if(d->fu==5)
+          return enc_tc_jump(atoi(ops[0]), atoi(ops[1]));   /* C-J/C-JAL link, delta9 */
         return enc_tc(d->fu, atoi(ops[0]), atoi(ops[1]));
     }
     return 0;
@@ -3762,7 +3778,18 @@ static int write_trv2(const char*path,uint32_t*prog,int n){
         uint32_t v=prog[i];
         if((v%243)%27>=23){                              /* TC：sf3/4 分支重编 */
             int sf=tc_getf(v,3,4);
-            if(sf==3||sf==4){
+            if(sf==5){                                   /* C-J/C-JAL：imm9 槽距→tryte 距 */
+                int t6=tc_getf(v,6,6),t7=tc_getf(v,7,7),hi=tc_getf(v,8,14);
+                int imm9=t6+3*t7+hi*9;
+                int delta=imm9<=9841?imm9:imm9-19683;
+                int tgt=i+delta;
+                if(tgt<0||tgt>n){fprintf(stderr,"TRV2: C-J 越界 slot%d\n",i);return 1;}
+                long long nd=off[tgt]-off[i];
+                if(nd<-9841||nd>9841){fprintf(stderr,"TRV2: C-J 超 imm9 slot%d %lld\n",i,nd);return 1;}
+                int nim=(int)((nd%19683+19683)%19683);
+                prog[i]=v+(uint32_t)(nim%9-t6-3*t7)*(uint32_t)729u
+                          +(uint32_t)(nim/9-hi)*(uint32_t)6561u;
+            } else if(sf==3||sf==4){
                 int imm=tc_getf(v,8,14);
                 int delta=imm<=1093?imm:imm-2187;
                 int tgt=i+delta;

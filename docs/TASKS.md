@@ -70,7 +70,14 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 1 / 任务 1.5**
+**进度游标：批次 1 / 任务 1.7**
+
+- [x] 1.5 trirv_cc 发射 C-J/C-JAL：JAL 选取点（rd∈{zero,ra}、标签已解析、
+      槽距 ±2460 → enc_tc_jump；超窗/数字操作数回退全宽）+ fmt=5 文本通道
+      + ITAB 助记符。契约：compact_e2e 63→77（调用链 C-JAL 19、continue
+      C-J 12 双档一致；oracle 手算错 9→12 由双档一致定位）；sf5 三路实证
+- [x] 1.6 TRV2 write_trv2 覆盖 sf5（imm9 槽距→tryte 距，域权 3^6/3^8）+
+      trv2_e2e TRV2·调用链 C-JAL 用例（58/58）。实证 .trv2 直发 197B < TRV1 208B
 
 - [x] 1.2 ISA sf5 编解码：C_SUBFORMATS 加 C-J:5；decode_c 增 link/imm9 视图；
       encode_c_jump(link,delta9) ±9841 越窗报错；migrate_trv1_stream 覆盖 sf5。

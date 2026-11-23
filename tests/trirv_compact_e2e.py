@@ -128,6 +128,14 @@ CASES = [
      "int inc3(int v){ v=v+3; return v; } "
      "int main(){ int a=inc3(4); a=a+10; int b=inc3(a); return b; }",
      20, 1, 0),
+    ("调用链 C-JAL 发射",
+     "int inc3(int v){ v=v+3; return v; } "
+     "int main(){ int a=inc3(4); int b=1; int c=0; int r=0; if(b&&c){ r=1; } "
+     "a=a+10; int d=inc3(a); return r+d-b; }",
+     19, 2, 0),
+    ("continue C-J 发射",
+     "int main(){ int s=0; int i=0; while(i<6){ i=i+1; if(i%2){ continue; } s=s+i; } return s; }",
+     12, 2, 0),
     ("帧窗·非叶子函数落槽局部",
      "int g(int a,int b){ int s=a+b; s=s*2; return s; } "
      "int main(){ int acc=0; int i=0; while(i<4){ acc=acc+g(i,i+1); i=i+1; } return acc; }",
