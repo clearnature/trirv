@@ -6,8 +6,9 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 58 / FAIL 0（连续 30+ 次全绿）
-- HEAD：trirv 66a8e6e（TRV2 正式化）/ tinycc 21410af4
+- 回归：python3 tests/run_all_tests.py → PASS 60 / FAIL 0（连续 37 次全绿）
+- HEAD：trirv f8a40c9（批次 1 收官）/ tinycc 21410af4
+- TC v2+sf5：35.2% TC 率 / TRV2 节省 8.5%；ISA 109 条（+FENCE.I+CSR 高区六条）
 - TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
@@ -70,7 +71,21 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 1 / 任务 1.13**
+**进度游标：批次 2 / 任务 2.1（质量门禁，ADR-29/30）**
+
+#### 批次 1 ISA 小项——已收官（2026-11-23，60 套全绿连续第 37 次）
+
+- [x] 1.1–1.15 全部完成（提交 8d88831..f8a40c9，六个原子提交）：
+      1.1 PyVM TC 负跳距修复（sign_extend_imm 模值漏 s()）；1.2–1.4 sf5
+      ISA/PyVM/CVM（契约 12 项；x0 硬连线坑：PyVM TC 路径提前 return
+      跳过尾部清零）；1.5–1.6 trirv_cc 发射 C-J/C-JAL + TRV2 sf5 重编
+      （compact_e2e 63→77、trv2_e2e 56→58）；1.7–1.8 FENCE.I 四层登记
+      （tri-isa.h 102→103）；1.9–1.10 CSR 高区分区（tri-isa.h→109，
+      自动选区黄金四字段全验证，双 VM 未实现读 0 写忽略一致）；
+      1.11–1.12 覆盖矩阵（tools/cov_matrix.py + docs 快照）+ 手算黄金
+      26 项（trirv_golden_e2e，退出模型固化进 docstring）；
+      1.13–1.14 文档同步 + 密度重测（TC 率 28.0%→**35.2%**、节省
+      6.7%→**8.5%**，564 sf5 槽）
 
 - [x] 1.11 覆盖矩阵：tools/cov_matrix.py（可重跑）+ docs/COVERAGE_MATRIX.md
       快照（补缺前静态零覆盖 18/109：AUIPC/BGE/BGEU/BLTU/CSR.H×6/EBREAK/
