@@ -170,7 +170,8 @@ typedef enum {
     OP_FLW, OP_FSW, OP_FCVTW, OP_FCVTW_T, OP_FCVTF,
     OP_FEQ, OP_FLT, OP_FLE,
     OP_NOP,
-    OP_LIT0, OP_LIT1, OP_LIT2      /* T-LIT（opcode 22）：Post 文字运算，§6.1 */
+    OP_LIT0, OP_LIT1, OP_LIT2,     /* T-LIT（opcode 22）：Post 文字运算，§6.1 */
+    OP_TC                          /* TC 压缩（opcode 23）：15-trit 短格式执行 */
 } Op;
 
 typedef struct { uint8_t op, funct, funct2; char fmt; Op code; } InstDef;
@@ -253,6 +254,14 @@ static Inst decode_one(uint32_t raw) {
         if (e->funct!=fc) continue;
         if (e->fmt=='R' && e->funct2!=f2) continue;
         d=e; break;
+    }
+    if (opc == 23) {  /* TC 压缩（T10c）：子格式在 rd 低 2 trit，reg_s 在 rd 高 2+funct，imm7 跨 funct/rs1/rs2 */
+        in.op = OP_TC;
+        in.funct2 = (uint8_t)field(raw, 3, 4);  /* 子格式 */
+        in.rd = field(raw, 5, 7);               /* reg_s */
+        in.imm_s = sx(field(raw, 8, 14), 7);   /* imm7 */
+        in.imm_u = in.imm_s;
+        return in;
     }
     if(!d) return in;
     in.op=d->code;
@@ -865,6 +874,15 @@ static inline void step(VM *v){
         case OP_LIT0:v->reg[rd]=tritwise(2,v->reg[rs1],0);break;  /* x^0 ≡ TNOT 词级 */
         case OP_LIT1:v->reg[rd]=tritwise(4,v->reg[rs1],0);break;  /* x^1 循环后继 */
         case OP_LIT2:v->reg[rd]=tritwise(5,v->reg[rs1],0);break;  /* x^2 循环前驱 */
+        case OP_TC:{  /* T10c：TC 压缩执行（子格式在 funct2，reg_s 在 rd） */
+            static const int cregs[8]={10,11,12,13,8,9,14,15};
+            int r=cregs[rd&7], sf=in->funct2;
+            if(sf==0) v->reg[r]=u(s(v->reg[r])+imm);
+            else if(sf==1) v->reg[r]=load_word(v,s(v->reg[r])+imm);
+            else if(sf==2) store_word(v,s(v->reg[r])+imm,v->reg[r]);
+            else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+4*imm;}
+            else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+4*imm;}
+            break;}
         case OP_JAL:v->reg[rd]=oldpc+4;v->pc_=in->target;break;
         case OP_JALR:{v->reg[rd]=oldpc+4;__int128_t t=s(v->reg[rs1])+imm;v->pc_=(int)align_down4(t);break;}  /* 目标按 tryte 对齐 */
         case OP_LUI:v->reg[rd]=u((__int128_t)immraw*POW3[7]);break;
@@ -915,6 +933,7 @@ static void vm_run_cg(VM *v, long max_steps){
         [OP_TOR]=&&L_TOR,[OP_TNEG]=&&L_TNEG,[OP_TSEXT]=&&L_TSEXT,
         [OP_TPACK]=&&L_TPACK,[OP_TUNPACK]=&&L_TUNPACK,
         [OP_LIT0]=&&L_LIT0,[OP_LIT1]=&&L_LIT1,[OP_LIT2]=&&L_LIT2,
+        [OP_TC]=&&L_TC,
         [OP_CSRRW]=&&L_CSRRW,[OP_CSRRS]=&&L_CSRRS,[OP_CSRRC]=&&L_CSRRC,
         [OP_CSRRWI]=&&L_CSRRWI,[OP_CSRRSI]=&&L_CSRRSI,[OP_CSRRCI]=&&L_CSRRCI,
         [OP_MRET]=&&L_MRET,[OP_WFI]=&&L_WFI,
@@ -1051,6 +1070,15 @@ L_TUNPACK:{__int128_t byte=v->reg[rs1]%256,res=0;for(int i=0;i<5;i++){byte*=3;in
 L_LIT0:  v->reg[rd]=tritwise(2,v->reg[rs1],0); NEXT();   /* x^0 ≡ TNOT 词级 */
 L_LIT1:  v->reg[rd]=tritwise(4,v->reg[rs1],0); NEXT();   /* x^1 循环后继 */
 L_LIT2:  v->reg[rd]=tritwise(5,v->reg[rs1],0); NEXT();   /* x^2 循环前驱 */
+L_TC:    {  /* T10c：TC 压缩执行（computed-goto 路径） */
+             static const int cregs[8]={10,11,12,13,8,9,14,15};
+             int r=cregs[in->rd&7], sf=in->funct2;
+             if(sf==0) v->reg[r]=u(s(v->reg[r])+imm);
+             else if(sf==1) v->reg[r]=load_word(v,s(v->reg[r])+imm);
+             else if(sf==2) store_word(v,s(v->reg[r])+imm,v->reg[r]);
+             else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+4*imm;}
+             else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+4*imm;}
+         } NEXT();
 L_CSRRW: csr_op(v,OP_CSRRW,rd,rs1,immraw); NEXT();
 L_CSRRS: csr_op(v,OP_CSRRS,rd,rs1,immraw); NEXT();
 L_CSRRC: csr_op(v,OP_CSRRC,rd,rs1,immraw); NEXT();
