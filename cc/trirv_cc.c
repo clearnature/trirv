@@ -112,6 +112,34 @@ static uint32_t encS(int op,int imm7,int rs2,int rs1,int funct){
     v=putf(v,3,6,m%81); v=putf(v,17,19,m/81);
     return v;
 }
+/* ---- T10d TC 压缩发射（TRV_COMPACT=1 启用，编码期选取）----
+ * 五类静态子集指令（C-ADDI/C-LW/C-SW/C-BEQ/C-BNE）：asm_line 在全宽编码
+ * 前检查压缩形态，命中即返回 15-trit TC 词（槽内仍占 4-tryte，TRV2 打包
+ * 层按首 tryte 判宽裁剪到 3-tryte）；不命中回落全宽——零正确性风险。
+ * 寄存器窗口与双 VM _C_REGS 一致：a0-a3/s0/s1/x14-x15（RVC ABI 窗口先例）。
+ * 编码期选取（而非文本层改写）的理由：分支步距 imm=lt-idx 只有在此处
+ * 才有精确值（&sym 行展开条数定点迭代后才能定），文本层算 slot 序号
+ * 必须复刻整套计数逻辑——重复实现即双份 bug 温床。 */
+static int COMPACT_MODE=-1;      /* -1=未读 env，缓存避免逐指令 getenv */
+static int tc_compact(void){
+    if(COMPACT_MODE<0) COMPACT_MODE=getenv("TRV_COMPACT")?1:0;
+    return COMPACT_MODE;
+}
+static int tc_reg(int r){        /* 窗口寄存器号 → 子集索引；窗口外 -1 */
+    switch(r){
+    case 10:return 0; case 11:return 1; case 12:return 2; case 13:return 3;
+    case 8:return 4;  case 9:return 5;  case 14:return 6; case 15:return 7;
+    }
+    return -1;
+}
+static uint32_t enc_tc(int sf,int reg_s,int imm){
+    uint32_t v=0;
+    v=putf(v,0,2,O_TC);          /* opcode 23 */
+    v=putf(v,3,4,sf);            /* 子格式 0-4 */
+    v=putf(v,5,7,reg_s);         /* 3-trit 子集索引 */
+    v=putf(v,8,14,imm7ok(imm));  /* 7-trit 立即数 */
+    return v;
+}
 static uint32_t encU(int op,int imm13,int rd){
     uint32_t v=0;
     v=putf(v,0,2,op); v=putf(v,3,6,rd);
@@ -3218,9 +3246,19 @@ static uint32_t asm_line(const char*line,int idx){
             char*par=strchr(ops[1],'('); long imm=0; int rs1=0;
             if(par){ *par=0; imm=atol(ops[1]); char rr[32]; snprintf(rr,sizeof(rr),"%s",par+1);
                      char*rp=strchr(rr,')'); if(rp)*rp=0; rs1=find_reg(rr); *par='('; }
+            /* T10d：LW rd, off(rd)（自形态）→ C-LW。立即数门与全宽 imm7ok
+               接受域一致（[-1093,2186]）：两宽度的 imm 语义同为 7-trit
+               3 补码（VM sign_extend_imm），域内压缩即语义等价。 */
+            if(tc_compact() && !strcmp(op,"LW") && rd==rs1 && tc_reg(rd)>=0
+               && imm>=-IMM7_LIM && imm<=2186)
+              return enc_tc(1, tc_reg(rd), (int)imm);
             return encI(d->op,(int)imm,rs1,d->fu,rd);
         }
         long imm=atol(ops[2]);
+        /* T10d：ADDI rd, rd, imm → C-ADDI（rd==rs1 且 rd 在窗口内） */
+        if(tc_compact() && !strcmp(op,"ADDI") && rd==find_reg(ops[1]) && tc_reg(rd)>=0
+           && imm>=-IMM7_LIM && imm<=2186)
+          return enc_tc(0, tc_reg(rd), (int)imm);
         return encI(d->op,(int)imm,find_reg(ops[1]),d->fu,rd);
     }
     if(d->fmt==2){ /* S/B */
@@ -3229,11 +3267,20 @@ static uint32_t asm_line(const char*line,int idx){
             char*par=strchr(ops[1],'('); long imm=0; int rs1=0;
             if(par){ *par=0; imm=atol(ops[1]); char rr[32]; snprintf(rr,sizeof(rr),"%s",par+1);
                      char*rp=strchr(rr,')'); if(rp)*rp=0; rs1=find_reg(rr); *par='('; }
+            /* T10d：SW rs, off(rs)（自形态：存的就是基址寄存器的值）→ C-SW */
+            if(tc_compact() && !strcmp(op,"SW") && rs2==rs1 && tc_reg(rs1)>=0
+               && imm>=-IMM7_LIM && imm<=2186)
+              return enc_tc(2, tc_reg(rs1), (int)imm);
             return encS(d->op,(int)imm,rs2,rs1,d->fu);
         }
         /* branch: op rs1, rs2, label */
         int rs1=find_reg(ops[0]),rs2=find_reg(ops[1]);
         int lt=find_label(ops[2]); int imm=(lt>=0)?(lt-idx):atoi(ops[2]);
+        /* T10d：BEQ/BNE rs, zero, lbl → C-BEQ/C-BNE（与 zero 比较的形态；
+           步距只在 label 已解析时压缩，数字操作数路径保持全宽） */
+        if(tc_compact() && rs2==0 && lt>=0 && tc_reg(rs1)>=0
+           && imm>=-IMM7_LIM && imm<=IMM7_LIM)
+          return enc_tc(!strcmp(op,"BEQ")?3:4, tc_reg(rs1), imm);
         return encS(d->op,imm,rs2,rs1,d->fu);
     }
     if(d->fmt==3){ /* U/J */
@@ -3251,15 +3298,10 @@ static uint32_t asm_line(const char*line,int idx){
     }
     if(d->fmt==5){ /* TC 压缩（T10d）：C-ADDI reg_s, imm7 等五类
         * reg_s = 静态子集索引 0-7（映射表 _C_REGS），imm7 = 7-trit 立即数
-        * 编码：t0-t2=23, t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7 */
-        int reg_s = atoi(ops[0]);
-        int imm = imm7ok(atoi(ops[1]));
-        uint32_t v = 0;
-        v = putf(v, 0, 2, O_TC);          /* opcode 23 */
-        v = putf(v, 3, 4, d->fu);         /* subformat */
-        v = putf(v, 5, 7, reg_s);
-        v = putf(v, 8, 14, imm);
-        return v;
+        * 编码复用 enc_tc：t0-t2=23, t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7
+        * （d->fu 即子格式号）。自动压缩发射不走本路径——见 fmt==1/2 的
+        * tc_compact() 选取点；此处是汇编文本直写 TC 的通道（测试/排查用）。 */
+        return enc_tc(d->fu, atoi(ops[0]), atoi(ops[1]));
     }
     return 0;
 }
@@ -3829,26 +3871,10 @@ int main(int argc,char**argv){
         }
     }
     drop_jump_to_next();
-    /* ---- T10d TC 压缩 peephole（TRV_COMPACT=1 启用）----
-     * ADDI rd, rd, imm（rd ∈ {x10,x11,x12,x13,x8,x9,x14,x15}，|imm|≤1093）
-     * → C-ADDI <subset_idx>, <imm>——语义等价，码长 4→3 tryte。
-     * 其他四类（LW/SW/BEQ/BNE）后续补齐。 */
-    if(getenv("TRV_COMPACT")){
-        /* TC 子集 ABI 名 ↔ 子集索引 + 寄存器号（与 trirv_vm.c _exec_c 的
-           _C_REGS 映射一致：0→x10/a0, 1→x11/a1, 2→x12/a2, 3→x13/a3,
-           4→x8/s0, 5→x9/s1, 6→x14, 7→x15） */
-        static const char*tc_names[]={"a0","a1","a2","a3","s0","s1","x14","x15"};
-        for(int i=0;i<NOUT;i++){
-            char rdbuf[16],rsbuf[16];int imm;
-            if(sscanf(OUT[i],"ADDI %15[^,], %15[^,], %d",rdbuf,rsbuf,&imm)!=3)continue;
-            int tidx=-1;
-            for(int k=0;k<8;k++) if(!strcmp(rdbuf,tc_names[k])){tidx=k;break;}
-            if(tidx<0||strcmp(rdbuf,rsbuf))continue;   /* C-ADDI 要求 rd==rs1 */
-            if(imm<-1093||imm>1093)continue;
-            char buf[64];snprintf(buf,sizeof(buf),"C-ADDI %d, %d",tidx,imm);
-            OUT[i]=strdup(buf);
-        }
-    }
+    /* T10d TC 压缩发射：编码期选取在 asm_line（fmt==1/2 的 tc_compact()
+     * 检查点），此处不再做文本层改写——OUT 文本保持规范全宽助记符，
+     * asm dump / TRVO 导出 / 差分测试读到的都是同一份全宽口径；
+     * TRV_COMPACT=1 只在编码字节层面生效。 */
     /* TRVO 导入的汇编体：两遍 gen 已定稿，append 到 OUT 末尾
      * （assemble_all 的标签扫描会自动解析它们之间的引用）。
      * 必须在 asm dump / peephole / assemble_all 之前。 */
