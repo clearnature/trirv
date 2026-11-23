@@ -319,6 +319,22 @@ class Parser:
             self.take("break"); self.take(";"); return Node("break")
         if self.at("continue"):
             self.take("continue"); self.take(";"); return Node("continue")
+        if self.at("case"):
+            # T6：case 常量（限 num/-num——与 C 后端 expr_const 口径同）
+            self.take("case")
+            e = self.parse_expr()
+            if not (e.kind == "num" or (e.kind == "un" and getattr(e, "op", "") == "-" and e.e.kind == "num")):
+                raise SyntaxError("case 常量必须是编译期整常量")
+            self.take(":")
+            return Node("case", val=(-e.e.val) if e.kind == "un" else e.val)
+        if self.at("default"):
+            self.take("default"); self.take(":")
+            return Node("default")
+        if self.at("switch"):
+            self.take("switch"); self.take("(")
+            cond = self.parse_expr(); self.take(")")
+            body = self.parse_stmt()
+            return Node("switch", cond=cond, body=body)
         if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed") or self.at("__tint2") or self.at("__tint") or self.at("__tbool") or self.at("const"):
             ty = self.parse_type()
             decls = []
@@ -352,6 +368,13 @@ class Parser:
     def parse_expr(self): return self.parse_assign()
     def parse_assign(self):
         left = self.parse_or()
+        if self.at("?"):
+            # T4：三目 ?:（中段完整表达式，右支右结合——C 文法）
+            self.take("?")
+            a = self.parse_expr()
+            self.take(":")
+            b = self.parse_assign()
+            left = Node("ternary", c=left, a=a, b=b)
         if self.at("="):
             self.take(); right = self.parse_assign()
             if left.kind not in ("var", "deref", "index", "member"):
@@ -459,7 +482,23 @@ class Parser:
                 return Node("call", name=name, args=args)
             return Node("var", name=name)
         if self.accept("("):
-            e = self.parse_expr(); self.take(")"); return e
+            # T5：强转回溯探测——parse_type 成功且紧跟 ')' → (type)expr。
+            # 控制流：cast 成立时【不回溯】（类型与 ')' 已被 try-parse 消费）；
+            # 仅失败路径回溯按括号表达式处理。
+            j = self.i
+            cast = False
+            cty = None
+            try:
+                cty = self.parse_type()
+                cast = self.at(")")
+            except SyntaxError:
+                cast = False
+            if not cast:
+                self.i = j
+                e = self.parse_expr(); self.take(")"); return e
+            self.take(")")
+            e = self.parse_unary()               # 强转绑到 unary 级（右结合）
+            return Node("cast", ty=cty, e=e)
         raise SyntaxError(f"期望表达式，实际 {t!r}")
     def val_in(self, *vs): return self.peek().val in vs and self.peek().kind == "op"
 
@@ -809,6 +848,44 @@ class CodeGen:
                 self.push("t0"); return lty       # 赋值结果 = 目的 struct 地址
             self.store_ty(lty, "t0", 0, "t1")
             self.push("t1"); return lty
+        elif k == "cast":
+            # T5：(type)x——同宽 int 类（int/unsigned/__tint/ptr，9 tryte）
+            # 无操作；__tint2 → mod 3^20 + sx20；字节档（char/schar/uchar/
+            # __tbool）→ mod 243 + sx5（uchar 零扩展）。ptr↔int 同宽口径
+            # 与 trirv_cc.c gen_cast ss==9 守卫一致。
+            ty = self.gen_expr(n.e); self.pop("t0")
+            sz = self.ty_size(n.ty)
+            if sz == 4:
+                self.load_imm("t1", 3 ** 20)
+                self.emit("REMU t0, t0, t1")
+                self.load_imm("t2", (3 ** 20 - 1) // 2 + 1)
+                self.emit("SLTU t2, t0, t2")       # t2 = d<half（正标志）
+                self.emit("SLTIU t2, t2, 1")       # t2 = d>=half（负标志）
+                self.emit("MUL  t2, t2, t1")
+                self.emit("SUB  t0, t0, t2")
+            elif sz == 1:
+                self.load_imm("t1", 243)
+                self.emit("REMU t0, t0, t1")
+                if n.ty != "uchar":
+                    self.load_imm("t2", 122)       # (3^5-1)/2+1
+                    self.emit("SLTU t2, t0, t2")
+                    self.emit("SLTIU t2, t2, 1")
+                    self.emit("MUL  t2, t2, t1")
+                    self.emit("SUB  t0, t0, t2")
+            self.push("t0")
+            return n.ty
+        elif k == "ternary":
+            self.gen_expr(n.c); self.pop("t0")
+            fls = self.new_label("tf"); end = self.new_label("te")
+            self.emit(f"BEQ  t0, zero, {fls}")
+            ty1 = self.gen_expr(n.a); self.pop("t0")
+            self.emit(f"JAL  x0, {end}")
+            self.out.append(fls + ":")
+            ty2 = self.gen_expr(n.b); self.pop("t1")
+            self.emit("ADDI t0, t1, 0")
+            self.out.append(end + ":")
+            self.push("t0")
+            return ty1 if ty1 == ty2 else "int"
         elif k == "un":
             ty = self.gen_expr(n.e); self.pop("t0")
             if n.op == "-":
@@ -1222,6 +1299,40 @@ class CodeGen:
             else:
                 self.gen_expr(n.expr); self.pop("a0")
             self.func_epilogue()
+        elif k == "switch":
+            # T6：扁平收集一层语句序列中的 case/default（与 trirv_cc.c 扁平
+            # 口径一致）；比较链先跑（判别值 t0 只在链上用，体不依赖），
+            # 匹配跳体中 case 标签，贯穿（fallthrough）线性发射天然成立；
+            # default 无则直落 end。break 走 loops 栈 (end, None)。
+            self.gen_expr(n.cond); self.pop("t0")
+            end = self.new_label("swend")
+            items = n.body.stmts if n.body.kind == "block" else [n.body]
+            seq = []                                # (kind, node, label)
+            for it in items:
+                if it.kind == "case":
+                    seq.append(("case", it, self.new_label("cs")))
+                elif it.kind == "default":
+                    seq.append(("default", it, self.new_label("df")))
+                else:
+                    seq.append(("stmt", it, None))
+            dfl = None
+            for kind, it, lbl in seq:
+                if kind == "case":
+                    self.load_imm("t1", it.val)
+                    self.emit("SUB  t1, t0, t1")
+                    self.emit("SLTIU t1, t1, 1")    # 相等 → 1
+                    self.emit(f"BNE  t1, zero, {lbl}")
+                elif kind == "default":
+                    dfl = lbl
+            self.emit(f"JAL  x0, {dfl if dfl else end}")
+            self.loops.append((end, None))
+            for kind, it, lbl in seq:
+                if lbl:
+                    self.out.append(lbl + ":")
+                if kind == "stmt":
+                    self.gen_stmt(it)
+            self.loops.pop()
+            self.out.append(end + ":")
         elif k == "break":
             if not self.loops: raise SyntaxError("break 不在循环内")
             self.emit(f"JAL  x0, {self.loops[-1][0]}")

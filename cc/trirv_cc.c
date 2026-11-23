@@ -1463,6 +1463,13 @@ static void load_imm128(int reg, __int128 n){
     while(m){ __int128 seg=m%B; m/=B;
         if(seg>HALFB){ seg-=B; m++; } segs[ns++]=(long long)seg; }
     if(ns==0){ emitf("ADDI %s, zero, 0",regname(reg)); return; }
+    if(ns>1 && reg==SCRATCH){
+        /* 坑实录：多段装载经 load_seg(SCRATCH,...) 中转，reg==SCRATCH 时
+           每段覆写前段（3^20 装完即被 0 段清零 → REMU 除零 → 窄化恒 0）。
+           调用方改用 tacq 临时寄存器。 */
+        fprintf(stderr,"load_imm: multi-segment into SCRATCH(tp) unsupported\n");
+        exit(1);
+    }
     load_seg(reg, segs[ns-1]);
     for(int i=ns-2;i>=0;i--){
         emitf("SLLI %s, %s, 20",regname(reg),regname(reg));
@@ -2497,14 +2504,42 @@ static int eval(Node*n){
     }
     case N_CAST:
         /* (type)cast：TriRV 标量全部 45-trit 等宽，cast 是类型标注。
-         * 例外是 (char)/(unsigned char) 的截断 —— musl 常用形态是
+         * 例外是窄化目标 —— musl 常用形态是
          * 指针 cast 与 (unsigned) 取模，指针 cast 无操作；
-         * 整数截断 cast 到 1-tryte 时做 mod 243 归一。 */
+         * 1-tryte（char/__tbool）mod 243 归一（signed REM ≡ mod+sx5）；
+         * __tint2（C2 方案 A）mod 3^20 + sx20（与 tri-gen/py 同口径）。 */
         if(n->s && !strncmp(n->s,"char",4) && !strchr(n->s,'*')){
             int v=eval(n->e);
             int d=dstof(v);
             load_imm(SCRATCH,243);          /* R 型：立即数先进寄存器 */
-            emitf("REM %s, %s, %s",regname(d),regname(d),regname(SCRATCH));
+            /* 源必须是 v（操作数所在寄存器）——dstof 可能新配 d，d,d 读空槽
+               （return 语境常量直落 a0=x10、d=tacq=x5，REM x5,x5 读垃圾实证） */
+            emitf("REM %s, %s, %s",regname(d),regname(v),regname(SCRATCH));
+            return d;
+        }
+        if(n->s && !strcmp(n->s,"__tbool") && !strchr(n->s,'*')){
+            int v=eval(n->e);
+            int d=dstof(v);
+            load_imm(SCRATCH,243);          /* signed REM ≡ mod 243 + sx5 */
+            emitf("REM %s, %s, %s",regname(d),regname(v),regname(SCRATCH));
+            return d;
+        }
+        if(n->s && !strcmp(n->s,"__tint2") && !strchr(n->s,'*')){
+            /* 常数装载不得用 SCRATCH（多段自覆写，见 load_imm128 守卫）——
+               双临时 f/g 承载 3^20 与半阈值。 */
+            int v=eval(n->e);
+            int f=tacq();
+            int g=tacq();
+            int d=dstof(v);
+            load_imm(f,3486784401LL);       /* 3^20 */
+            emitf("REMU %s, %s, %s",regname(d),regname(v),regname(f));
+            load_imm(g,1743392201LL);       /* 半阈值+1 */
+            emitf("SLTU %s, %s, %s",regname(f),regname(d),regname(g));
+            emitf("SLTIU %s, %s, 1",regname(f),regname(f));   /* d>=half → 负标志 */
+            load_imm(g,3486784401LL);       /* g 复用：重装 3^20 */
+            emitf("MUL  %s, %s, %s",regname(f),regname(f),regname(g));
+            emitf("SUB  %s, %s, %s",regname(d),regname(d),regname(f));
+            TDN=d0+1;                       /* 回收 f/g 槽，d 保留为结果 */
             return d;
         }
         return eval(n->e);

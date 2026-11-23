@@ -125,6 +125,20 @@ CASES = [
     ("do-while continue", "int main(){ int s=0; int i=0; do { i=i+1; if(i==2){continue;} s=s+i; } while(i<4); return s; }", 8),
     ("goto循环回跳", "int main(){ int i=0; back: i=i+1; if(i<3){ goto back; } return i; }", 3),
     ("goto跳过", "int main(){ goto skip; return 1; skip: return 2; }", 2),
+
+    # ---- T4 三目 / T5 强转 / T6 switch（cc_e2e 用 compile_run 全宽带符号
+    #      口径——want 直接写真实值，不做 &0xFF 掩码）----
+    ("三目真", "int main(){ int x=1; return x ? 5 : 9; }", 5),
+    ("三目假", "int main(){ int x=0; return x ? 5 : 9; }", 9),
+    ("三目括号算术", "int main(){ int a=3; int b=4; return (a<b ? a : b) * 2; }", 6),
+    ("强转窄化char", "int main(){ int x=300; return (char)x; }", 57),
+    ("强转同宽无操作", "int main(){ int x=5; return (int)x; }", 5),
+    ("强转tint2截断", "int main(){ int x=4000000000; return (__tint2)x; }", 513215599),
+    ("强转tint2符号", "int main(){ int x=-7; return (__tint2)x; }", -7),
+    ("switch基本", "int main(){ int x=2; int r=0; switch(x){ case 1: r=10; break; case 2: r=20; break; default: r=30; } return r; }", 20),
+    ("switch default", "int main(){ int x=9; int r=0; switch(x){ case 1: r=10; break; default: r=30; } return r; }", 30),
+    ("switch贯穿", "int main(){ int x=1; int r=0; switch(x){ case 1: r=r+1; case 2: r=r+2; break; case 3: r=r+4; } return r; }", 3),
+    ("switch负case", "int main(){ int x=-1; int r=0; switch(x){ case -1: r=7; break; default: r=9; } return r; }", 7),
 ]
 
 def main():
