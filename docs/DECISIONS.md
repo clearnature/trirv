@@ -319,3 +319,26 @@ LLVM 放最后并设 GO/NO-GO。每个批次仍按 TDD → 全量回归 → 提�
 | 9 | wasm 补全，官方 spec testsuite 计数 | ADR-21 |
 | 10 | LLVM P-0 spike，GO/NO-GO | ADR-18 |
 | 之后 | TF45 libm、RTL（按 ADR-07）按需推进 | ADR-26 |
+
+## F. 评审处置追加（2026-11-24，ARCH_PLAN_REVIEW 25 条）
+
+### ADR-36 仓库远端 ✅
+- tinycc trirv 分支：已推送 github.com/clearnature/tinycc（3fdd47a8..c77e0661，
+  21 提交含三值本征全量）；本地代理 127.0.0.1:10808 已写入两仓 git config。
+- trirv 主仓：**待用户提供远端 URL**（现无 remote；评审建议私有仓）。
+- .gitmodules 已登记 tinycc 子模块（此前为无 .gitmodules 的 gitlink）。
+
+### ADR-17 修订：性能准入 ✅（批准 2）
+TRV2 默认化准入追加：TRV2 流制引擎相对 TRV1 慢 ≤1.15×（bench/fib 分支
+密集口径，run_perf.py 测量）。现值 2.26×——**未达前不切默认**（3b.4
+hint 缓存强化为对应任务）。
+
+### ADR-28 修订：规范模型提前 ✅（批准 4）
+纯 Python 规范函数 + 编码空间全枚举提前至批次 3b.5，与 ADR-35（未定义
+角落定死：非法指令统一陷入、TC reg_s≥8 统一回绕或陷入——择一后双 VM
+对齐 + 守卫用例）合并执行。
+
+### ADR-37 内存模型声明 ✅（批准 3）
+「统一内存」规范化为统一**地址空间**（代码/数据物理分离是 VM 实现细节，
+须入 trirv-unified-memory-abi.md——链接布局全局 200 起/栈 4096 依赖
+分离前提，批次 3b 落文档）。
