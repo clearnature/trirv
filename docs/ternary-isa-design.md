@@ -362,7 +362,7 @@ J-type (jal):
 
 ### 4.8 系统（opcode=9）
 
-`ECALL, EBREAK, FENCE`
+`ECALL, EBREAK, FENCE, FENCE.I`
 
 ---
 
@@ -621,6 +621,15 @@ Post 文字运算 literal `x^a`（a∈{0,1,2}，逐 trit 循环）——Kleene �
   C1 拍板「Kleene 体系先闭环」（本计划 §4 明确不做项）延后至此补档
 
 ---
+
+### 6.1b CSR 地址分区（ADR-06，2026-11-23 批次 1 落地）
+
+- 低区 0–2186：opcode 16（ZICSR，imm7 直编）。
+- 高区 2187–4373：opcode 9（SYSTEM）funct 2–7 承载同六条 Zicsr 语义，
+  imm7 = 地址 − 2187。汇编器按地址自动选区；≥4374 诚实报错。
+- 动机：mcycle（0xB00=2816）、cycle（0xC00=3072）、mhartid（0xF14=3860）
+  超出低区上限——RISC-V 编号保持不重编（ADR-06）。
+- FENCE.I（ADR-05）：opcode 10 funct=1（Zifencei 占位，统一内存 VM 为空操作）。
 
 ## 7. 与 RISC-V 的逐项对应
 
