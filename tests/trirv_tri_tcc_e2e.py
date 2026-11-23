@@ -48,6 +48,25 @@ def check(name, got, want):
 
 
 # (name, c_source, expected_exit&0xFF)
+
+def _tlit(v, a):
+    """python oracle：逐 trit Post literal（ISA §6.1 同口径；返回 45-trit 词）"""
+    r = 0
+    p = 1
+    for _ in range(45):
+        v, t = divmod(v, 3)
+        r += ((2 - t) if a == 0 else (t + a) % 3) * p
+        p *= 3
+    return r
+
+
+def _tlit_exit(v, a):
+    """exit 口径：带符号值 &0xFF（坑实录 3b：词 > 半阈值即为负）"""
+    w = _tlit(v, a)
+    if w > (3 ** 45 - 1) // 2:
+        w -= 3 ** 45
+    return w & 0xFF
+
 CASES = [
     ("常量返回", "int main(void){ return 42; }", 42),
 
@@ -309,6 +328,19 @@ CASES = [
      "v[0]=(__tbool)0; v[1]=(__tbool)1; v[2]=(__tbool)2; int f=0; "
      "for(int i=0;i<3;i++) for(int j=0;j<3;j++) if ((int)tmax(v[i],v[j]) != (i>j?i:j)) f|=1; return f; }", 0),
     ("tbool与tint混用", "__tint t=(__tint)2; __tbool b=(__tbool)1; int main(void){ return (int)(t & b); }", 1),
+
+    # ---- T-LIT 文字运算内建（2026-11-23 内建拍板：__builtin_tri_lit(x,a)，
+    #      a 编译期常量 0..2 直发 LIT0/1/2；ternary-isa-design.md §6.1）----
+    ("tlit内建后继", "int main(void){ return (int)__builtin_tri_lit(729, 1); }", _tlit_exit(729, 1)),
+    ("tlit内建前驱", "int main(void){ return (int)__builtin_tri_lit(729, 2); }", _tlit_exit(729, 2)),
+    ("tlit内建补", "int main(void){ return (int)__builtin_tri_lit(729, 0); }", _tlit_exit(729, 0)),
+    ("tlit嵌套恒等", "int main(void){ int x = __builtin_tri_lit(__builtin_tri_lit(729, 1), 2); "
+     "return (x == 729) ? 1 : 0; }", 1),
+    ("tlit变量操作数", "int main(void){ int x = 729; int y = __builtin_tri_lit(x, 1); "
+     "int z = __builtin_tri_lit(y, 1); int w = __builtin_tri_lit(x, 2); "
+     "return (z == w) ? 1 : 0; }", 1),  # LIT1^2=LIT2 全在程序内自洽（>uint64
+     # 巨常量不可作 C 字面量——坑实录 2）
+    ("tlit负词后继", "int main(void){ int x = -1; int y = __builtin_tri_lit(x, 1); return (y == 0) ? 1 : 0; }", 1),
 ]
 
 # 多 TU 用例（T-2.1）：(name, [src1, src2, ...], expected) —— 同进程多文件编译，
@@ -341,6 +373,8 @@ NEG_CASES = [
     ("tbool算术报错", "__tbool a; __tbool b; int main(void){ __tbool c = a + b; return 0; }", "tint"),
     ("tbool序比较报错", "__tbool a; __tbool b; int main(void){ return a < b; }", "tint"),
     ("tbool混int报错", "__tbool a=(__tbool)1; int main(void){ int i=1; return (int)(a & i); }", "tint"),
+    ("tlit超界a报错", "int main(void){ return __builtin_tri_lit(1, 3); }", "tri_lit"),
+    ("tlit非常量a报错", "int main(void){ int a=1; return __builtin_tri_lit(1, a); }", "constant expression"),
 ]
 
 

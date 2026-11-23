@@ -111,9 +111,9 @@ cdb11a68，见 ternary-isa-design.md §4.3/§4.4）；C2-b tri-tcc `__tint2`
 前端（VT_TINT2 + 窄化 cast + struct 4-对齐档）；C2-c tri-tcc `__tbool`
 （VT_BYTE|VT_DEFSIGN|VT_TINT，复用 C1 门语义，1-tryte）→ tri_tcc_e2e
 184 用例 354 PASS（TINT2 12+2、TBOOL 12+3）。**余项（记账）**：文字运算 literal `x^a` **ISA+双 VM 已实现**（2026-11-23，
-LIT0/LIT1/LIT2 opcode 22——ternary-isa-design.md §6.1；C 前端映射待拍板：
-内建形态或 __tint 扩展）；trirv_cc 补 __tint/__tint2/__tbool（可选，差分
-对照用，延后）。
+LIT0/LIT1/LIT2 opcode 22——ternary-isa-design.md §6.1）+ C 前端内建
+`__builtin_tri_lit(x,a)`（tri-tcc 已落）；trirv_cc 补 __tint/__tint2/
+__tbool/__builtin_tri_lit（可选，差分对照用，延后）。
 
 ## 4. 明确不做（本轮）
 

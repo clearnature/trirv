@@ -612,9 +612,11 @@ Post 文字运算 literal `x^a`（a∈{0,1,2}，逐 trit 循环）——Kleene �
   代数恒等式（LIT1²=LIT2、LIT2∘LIT1=id、LIT0=TNOT）6 项
 - ^0 落地拍板：**独立编码保三变体同构**（LIT0 词级结果 ≡ TNOT，共用
   CVM mode 2 / PyVM "not" 实现，但编码独立入表——文字记法完备）
-- **C 前端映射未定（另行拍板）**：C 方言无暴露 literal 的运算符/内建，
-  trirv_cc/tri-tcc 尚不会发射 LIT 系；待拍板内建形态（如
-  `__builtin_tri_lit(x,a)`）或 __tint 扩展后接前端
+- **C 前端（2026-11-23 内建拍板，已落地 tri-tcc）**：
+  `__builtin_tri_lit(x, a)`——a 编译期常量 0..2 直发 LIT0/1/2（非常量/
+  超界诚实报错），结果类型同 x；unary() TOK 分派 + tri-gen
+  gen_builtin_tri_lit（坑实录：gexpr 含逗号层级会吞 `, a`——单参用
+  expr_eq）。trirv_cc 补内建延后记账
 - 用途：Post 代数（循环加/乘 `^` 循环加）与三值逻辑综合器的基础算子——
   C1 拍板「Kleene 体系先闭环」（本计划 §4 明确不做项）延后至此补档
 
