@@ -33,9 +33,8 @@
 
 ### 待办——按序连续执行
 
-- [ ] T10c-2 CVM TC 执行调试 + .trv v2 正式化（9e177d6 代码已落，
-      PyVM 同程序 OK → CVM 取指/分发层 bug——下会话深水排查；
-      .trv v2 TRV2 magic + tryte 流原型已验证 OK）
+- [x] T10c-2 CVM TC 执行验证 PASS（9e177d6 + 正确 exit 序列；早期"失败"
+      系测试 syscall 号设错——ADDI x17,x11,93 设 a7=100 非 93=exit）
 - [ ] T10d trirv_cc -mcompact 发射（TC 编码选取：高频五类静态子集，
       超界回退全宽——零正确性风险）
 - [ ] T10e 码长对比（musl_tri 热点函数 C 占比 >= 50% → 码长省 ~15%）
