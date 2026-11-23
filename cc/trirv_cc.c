@@ -199,7 +199,7 @@ static InstDef ITAB[] = {
     {"TNOT",O_TLOGIC,0,2,0},
     /* T-LIT 文字运算（opcode 22，§6.1）：R 型单操作数，funct=a */
     {"LIT0",O_TLIT,0,0,0},{"LIT1",O_TLIT,1,0,0},{"LIT2",O_TLIT,2,0,0},
-    {"ECALL",O_SYSTEM,0,0,1},
+    {"ECALL",O_SYSTEM,0,0,1},{"FENCE.I",O_FENCE,1,0,1},
     /* TC 压缩助记符（T10d：fmt=5 标识 TC 格式——15-trit / 3-tryte 对齐） */
     {"C-ADDI",O_TC,0,0,5},{"C-LWs",O_TC,1,0,5},{"C-SWs",O_TC,2,0,5},
     {"C-BEQ",O_TC,3,0,5},{"C-BNE",O_TC,4,0,5},{"C-J",O_TC,5,0,5},{"C-JAL",O_TC,5,0,5},
@@ -3282,6 +3282,8 @@ static uint32_t asm_line(const char*line,int idx){
     if(!d){ fprintf(stderr,"[asm] unknown mnemonic: %s (line: %s)\n",op,line); return 0; }
     /* 无操作数系统指令 */
     if(!strcmp(op,"ECALL")) return encI(O_SYSTEM,0,0,0,0);
+    if(!strcmp(op,"FENCE.I")) return encI(O_FENCE,1,0,0,0);   /* ADR-05 */
+    if(!strcmp(op,"FENCE")) return encI(O_FENCE,0,0,0,0);
     if(!strcmp(op,"EBREAK")) return encI(O_SYSTEM,0,0,1,0);
 
     if(d->fmt==0){ /* R: op rd, rs1, rs2 */

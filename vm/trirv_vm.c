@@ -209,7 +209,7 @@ static const InstDef IDEFS[] = {
     {4,3,0,'B',OP_BGE},{4,4,0,'B',OP_BLTU},{4,5,0,'B',OP_BGEU},
     {5,0,0,'J',OP_JAL},{6,0,0,'I',OP_JALR},{7,0,0,'U',OP_LUI},
     {8,0,0,'U',OP_AUIPC},{9,0,0,'I',OP_ECALL},{9,1,0,'I',OP_EBREAK},
-    {10,0,0,'I',OP_FENCE},
+    {10,0,0,'I',OP_FENCE},{10,1,0,'I',OP_FENCE},   /* FENCE.I（ADR-05）：空操作 */
     {11,0,0,'R',OP_TMIN},{11,0,1,'R',OP_TMAX},{11,0,2,'R',OP_TNOT},
     {11,1,0,'R',OP_TAND},{11,1,1,'R',OP_TOR},{11,1,2,'R',OP_TNEG},
     {11,2,0,'R',OP_TSEXT},

@@ -132,7 +132,7 @@ INST = {
     # SYSTEM: ECALL/EBREAK 用 funct 区分（funct2 区 t17..t19 与 I-type imm 高位重叠，
     # 不能用来区分 I-type 指令，否则 EBREAK 永远解成 ECALL）。funct 字段 t7..t8 空闲可用。
     "AUIPC":(8,0,0,"U"), "ECALL":(9,0,0,"I"), "EBREAK":(9,1,0,"I"),
-    "FENCE":(10,0,0,"I"),
+    "FENCE":(10,0,0,"I"), "FENCE.I":(10,1,0,"I"),   # ADR-05：Zifencei 占位（统一内存 VM 为空操作）
     # T-LOGIC (R-type)
     "TMIN":(11,0,0,"R"), "TMAX":(11,0,1,"R"), "TNOT":(11,0,2,"R"),
     "TAND":(11,1,0,"R"), "TOR":(11,1,1,"R"), "TNEG":(11,1,2,"R"),

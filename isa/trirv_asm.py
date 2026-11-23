@@ -137,7 +137,7 @@ def assemble(src):
                 rd, rs1, rs2 = map(reg, ops)
             v = isa.encode(mn, rd=rd, rs1=rs1, rs2=rs2)
         elif fmt == "I":
-            if mn in ("ECALL","EBREAK","FENCE","MRET","WFI"):
+            if mn in ("ECALL","EBREAK","FENCE","FENCE.I","MRET","WFI"):
                 v = isa.encode(mn)
             elif mn in ("CSRRWI","CSRRSI","CSRRCI"):
                 # CSRRWI rd, uimm, csr  ->  uimm 放 rs1 字段, csr 放 imm 字段

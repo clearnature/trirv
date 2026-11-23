@@ -70,7 +70,15 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 1 / 任务 1.7**
+**进度游标：批次 1 / 任务 1.9**
+
+- [x] 1.7 FENCE.I 登记：INST(10,1,0,I) + trirv_asm 无操作数清单 + trirv_cc ITAB/
+      asm_line 特判 + tri-isa.h 重生成（102→103，守卫逐字一致）
+- [x] 1.8 FENCE.I 双 VM 空操作：PyVM 分支扩展（槽制/流制黄金：exit=5、
+      x0/x5 不变）、CVM IDEFS {10,1,0}→OP_FENCE→L_NOP（switch default 同义）、
+      独立汇编器文本通道黄金 exit=3。
+      工程坑：多步骤批量脚本在步骤 3 SystemExit 后步骤 4/5 静默未执行——
+      「脚本输出 built」不等于「全部改动落盘」，每步后必须 grep 核实
 
 - [x] 1.5 trirv_cc 发射 C-J/C-JAL：JAL 选取点（rd∈{zero,ra}、标签已解析、
       槽距 ±2460 → enc_tc_jump；超窗/数字操作数回退全宽）+ fmt=5 文本通道

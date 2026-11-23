@@ -817,8 +817,8 @@ class VM:
             self._mret()
         elif name == "WFI":
             pass                               # 等待中断：VM 中为提示，中断在步末检查
-        elif name == "FENCE":
-            pass                               # 内存屏障：单线程 VM 无乱序，视为 NOP
+        elif name in ("FENCE", "FENCE.I"):
+            pass                               # 内存屏障（ADR-05：FENCE.I 同为 NOP）
         elif name in ("FLW", "FSW", "FLW.S", "FSW.S"):
             # F 边界转换：内存 45-trit raw ↔ freg。offset 是 tryte 地址偏移。
             # FLW/FSW 只原样搬运 raw（不解释格式），两档共用；档位由后续算术指令的
