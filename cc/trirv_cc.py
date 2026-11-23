@@ -121,6 +121,7 @@ class Parser:
         self.str_ptr = self.STR_BASE
         self.structs = {}                # name -> {"size":N, "members":[(mname,mtype,offset)]}
         self.gvars = []                  # 批G：全局声明 [(name, ty, dims, init)]
+        self.typedefs = {}               # T7：别名 -> 已解析类型串
     def peek(self): return self.toks[self.i]
     def at(self, v):
         t = self.peek(); return t.val == v and t.kind in ("op","kw")
@@ -137,7 +138,10 @@ class Parser:
         fns = []
         gvars = []
         while self.peek().kind != "eof":
-            if self.at("struct") and self._struct_is_def():
+            if self.at("typedef"):
+                self.take("typedef")
+                self.parse_typedef()
+            elif self.at("struct") and self._struct_is_def():
                 self.parse_struct_def()
             elif self._glob_is_decl():
                 gvars.extend(self.parse_glob_decl())
@@ -158,6 +162,21 @@ class Parser:
               and self.toks[self.i + 1].val in ("=", ";", ",", "["))
         self.i = j
         return ok
+
+    def parse_typedef(self):
+        """T7：typedef 类型 别名, 别名2, ...;——别名即已解析类型串
+        （int/char/指针/数组/具名 struct；fn-ptr 声明符见 T7b 记账）。"""
+        ty = self.parse_type()
+        while True:
+            name = self.take().val
+            full = ty
+            while self.accept("["):
+                full += f"[{self.take().val}]"
+                self.take("]")
+            self.typedefs[name] = full
+            if not self.accept(","):
+                break
+        self.take(";")
 
     def parse_glob_decl(self):
         """批G：全局声明——init 走 parse_expr，常量性由 data-gen 校验
@@ -227,6 +246,8 @@ class Parser:
             self.take("__tint"); base = "__tint"     # Kleene 逻辑词（批B'）
         elif self.at("__tbool"):
             self.take("__tbool"); base = "__tbool"   # 1-tryte Kleene 布尔（批B'）
+        elif (self.peek().kind == "id" and self.peek().val in self.typedefs):
+            base = self.typedefs[self.take().val]   # T7：别名即解析（含 * 追加走原链路）
         elif self.at("int") or self.at("char") or self.at("void"):
             base = self.take().val
         elif self.at("va_list"):
@@ -335,7 +356,8 @@ class Parser:
             cond = self.parse_expr(); self.take(")")
             body = self.parse_stmt()
             return Node("switch", cond=cond, body=body)
-        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed") or self.at("__tint2") or self.at("__tint") or self.at("__tbool") or self.at("const"):
+        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed") or self.at("__tint2") or self.at("__tint") or self.at("__tbool") or self.at("const") \
+           or (self.peek().kind == "id" and self.peek().val in self.typedefs):
             ty = self.parse_type()
             decls = []
             while True:

@@ -139,6 +139,13 @@ CASES = [
     ("switch default", "int main(){ int x=9; int r=0; switch(x){ case 1: r=10; break; default: r=30; } return r; }", 30),
     ("switch贯穿", "int main(){ int x=1; int r=0; switch(x){ case 1: r=r+1; case 2: r=r+2; break; case 3: r=r+4; } return r; }", 3),
     ("switch负case", "int main(){ int x=-1; int r=0; switch(x){ case -1: r=7; break; default: r=9; } return r; }", 7),
+
+    # ---- T7 typedef 基础别名（fn-ptr 声明符=T7b 记账）----
+    ("typedef基础", "typedef int myint; int main(){ myint x = 5; return x; }", 5),
+    ("typedef指针", "typedef int* ip_t; int main(){ int x = 9; ip_t p = &x; return *p; }", 9),
+    ("typedef数组", "typedef int arr3[3]; int main(){ arr3 a; a[0]=2; a[1]=a[0]*3; return a[1]; }", 6),
+    ("typedef具名struct", "struct P { int a; }; typedef struct P PT; int main(){ PT p; p.a = 8; return p.a; }", 8),
+    ("typedef全局", "typedef unsigned uint32; uint32 g = 100000; int main(){ if(g==100000){return 1;} return 2; }", 1),
 ]
 
 def main():

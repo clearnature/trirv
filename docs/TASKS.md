@@ -18,13 +18,13 @@
 定长]由执行侧自决=变长流[RVC 式]，依据：流式解码无前瞻+映射表一一
 对应两条行业教训）。
 
-- [ ] **T1** A1.7 `const` 修饰（解析+存储等价口径；全局/局部/组合序）
-- [ ] **T2** A1.3 `do-while`
-- [ ] **T3** A1.4 `goto`/标签语句
-- [ ] **T4** A1.5 三目 `?:`
-- [ ] **T5** A1.6 `(type)` 强转（ptr↔int 同宽无操作；窄化目标 in-register
+- [x] **T1** A1.7 `const` 修饰（解析+存储等价口径；全局/局部/组合序）
+- [x] **T2** A1.3 `do-while`
+- [x] **T3** A1.4 `goto`/标签语句
+- [x] **T4** A1.5 三目 `?:`
+- [x] **T5** A1.6 `(type)` 强转（ptr↔int 同宽无操作；窄化目标 in-register
       mod-3^k+符号扩展；tint 系强转门控同 tri-tcc 口径）
-- [ ] **T6** A1.1 `switch/case/default/break`
+- [x] **T6** A1.1 `switch/case/default/break`
 - [ ] **T7** A1.2 `typedef`（基础别名先落；fn-ptr 别名视 py 声明符
       基础而定，缺则记账）
 - [ ] **T8** A3 文档陈旧修正（README 完善度节 + 指令计数 102）
