@@ -146,6 +146,9 @@ static InstDef ITAB[] = {
     /* T-LIT 文字运算（opcode 22，§6.1）：R 型单操作数，funct=a */
     {"LIT0",O_TLIT,0,0,0},{"LIT1",O_TLIT,1,0,0},{"LIT2",O_TLIT,2,0,0},
     {"ECALL",O_SYSTEM,0,0,1},
+    /* TC 压缩助记符（T10d：fmt=5 标识 TC 格式——15-trit / 3-tryte 对齐） */
+    {"C-ADDI",O_TLIT,0,0,5},{"C-LW",O_TLIT,1,0,5},{"C-SW",O_TLIT,2,0,5},
+    {"C-BEQ",O_TLIT,3,0,5},{"C-BNE",O_TLIT,4,0,5},
     {NULL,0,0,0,0}
 };
 static InstDef* find_inst(const char*n){
@@ -3244,6 +3247,18 @@ static uint32_t asm_line(const char*line,int idx){
             return encU(O_JAL,imm,rd);
         }
         return encU(d->op,atoi(ops[1]),rd);
+    }
+    if(d->fmt==5){ /* TC 压缩（T10d）：C-ADDI reg_s, imm7 等五类
+        * reg_s = 静态子集索引 0-7（映射表 _C_REGS），imm7 = 7-trit 立即数
+        * 编码：t0-t2=23, t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7 */
+        int reg_s = atoi(ops[0]);
+        int imm = imm7ok(atoi(ops[1]));
+        uint32_t v = 0;
+        v = putf(v, 0, 2, O_TLIT);        /* opcode 23 */
+        v = putf(v, 3, 4, d->fu);         /* subformat */
+        v = putf(v, 5, 7, reg_s);
+        v = putf(v, 8, 14, imm);
+        return v;
     }
     return 0;
 }
