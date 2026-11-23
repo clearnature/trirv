@@ -104,6 +104,8 @@ def _expand_sym_lines(lines, labels):
     return out
 
 
+_INVERT = {"BEQ":"BNE","BNE":"BEQ","BLT":"BGE","BGE":"BLT","BLTU":"BGEU","BGEU":"BLTU"}
+
 def assemble(src):
     lines = src.splitlines()
     labels, insts = first_pass(lines)
@@ -114,8 +116,29 @@ def assemble(src):
             break
         lines = new_lines
         labels, insts = first_pass(lines)
+    # 长分支弛豫定点迭代（ADR-16）：弛豫 +1 槽移动后续标签——
+    # labels 必须应用弛豫映射后再重编（坑：labels 基于 lines 永远看不到
+    # 编码产物层的 +1 槽，不应用映射则 JAL delta 恒少 1，实测 exit=99）。
+    base_labels = dict(labels)          # 不弛豫基线（坑：在累积 labels 上反复 +1
+    relax_map = {}                      #  会让 far 每轮 +1，8 轮 +8——JAL 跳过头）
+    for _round in range(8):
+        labels = {k: v + sum(e for sidx, e in relax_map.items() if v >= sidx + 1)
+                  for k, v in base_labels.items()}
+        out, relaxed, rmap = _encode_all(labels, insts, relax_map)
+        if not relaxed:
+            break
+        relax_map.update(rmap)
+    return out, labels
+
+def _encode_all(labels, insts, relax_map=None):
     out = []
-    for idx, s in enumerate(insts):
+    relaxed = False
+    idx = 0
+    if relax_map is None: relax_map = {}
+    for sidx, s in enumerate(insts):
+        # 布局补偿：弛豫行自身 idx+=2 已含 extra（+1），此处不重复加
+        # （坑：循环开头补偿+B 路径 idx+=2 重复计数，第二轮 d2 少 1，
+        #  JAL 落到 far 前一条 ADDI 99——exit=99 假象）
         parts = re.split(r"\s+", s, maxsplit=1)
         mn = parts[0].upper()
         ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
@@ -175,11 +198,21 @@ def assemble(src):
                 tgt = ops[2].strip()
                 if tgt in labels:
                     d = labels[tgt] - idx
-                    # 7 trit 的 B 型偏移只有 ±1093 条指令。超范围必须报错：
-                    # 静默 % 2187 会跳到一个"看起来合法"的错误位置，比崩溃危险得多。
                     if not -1093 <= d <= 1093:
-                        raise ValueError(
-                            f"{idx}: 条件跳转 {mn} -> {tgt} 超出 B 型范围 {d}（限 ±1093 条指令）")
+                        # 长分支弛豫（ADR-16）：反条件分支 +2 跳过 JAL，
+                        # JAL zero 承担长跳（imm13 ±797161 条实际不可超）。
+                        inv = _INVERT[mn]
+                        rs1b = reg(ops[0]); rs2b = reg(ops[1])
+                        v1 = isa.encode(inv, rs1=rs1b, rs2=rs2b, imm=2)
+                        d2 = labels[tgt] - (idx + 1)
+                        if not -797161 <= d2 <= 797161:
+                            raise ValueError(
+                                f"{idx}: JAL -> {tgt} 超出 imm13 范围 {d2}")
+                        v2 = isa.encode("JAL", rd=0, imm=d2 % (3**13))
+                        out.append(v1); out.append(v2); idx += 2
+                        relaxed = True
+                        relax_map[sidx] = 1
+                        continue
                     imm = d % (3**7)
                 else:
                     imm = parse_int(tgt)
@@ -198,4 +231,5 @@ def assemble(src):
                 imm = parse_int(tgt, 13)
             v = isa.encode(mn, rd=rd, imm=imm)
         out.append(v)
-    return out, labels
+        idx += 1
+    return out, relaxed, relax_map

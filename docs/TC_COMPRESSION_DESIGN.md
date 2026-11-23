@@ -89,6 +89,28 @@ TriRV 指令流按 **tryte（5-trit）编址**，每条 20-trit 指令占 4 tryt
 - 解包器：tryte 流 → word[] imem（C→低 15 trit payload + 高 5 零填充）
   word 级一致 ✓；PyVM 可执行 ✓
 
+## 7.1 长分支弛豫（ADR-16，批次 3 设计定案）
+
+超窗条件分支（流制窗 ±1093 tryte≈±273 槽；槽制 ±1093 槽）改写为两指令：
+
+```
+原：BEQ rs1, rs2, far        （超窗）
+弛豫：BNE rs1, rs2, +2        （反条件，imm=2 固定槽距，跳过下一条）
+      JAL zero, far           （全宽 imm13 ±797161 条，不可超）
+```
+
+- **反条件映射**：BEQ↔BNE（fu 0↔1）、BLT↔BGE（2↔3）、BLTU↔BGEU（4↔5）。
+- **单位口径**：弛豫发生在槽制 prog 层（布局 2 槽固定），TRV2 直发与
+  migrate/write_trv2 的重编都吃槽制 prog → 反分支 imm=2 统一按槽距重编
+  为 tryte 距（=反词 4+JAL 4=8 tryte），三层一致。
+- **定点迭代**：弛豫 +1 槽会移动后续标签位置（可能产生新超窗或解除），
+  assemble_all 的计数轮/编码轮外套 do-while(relaxed)，RELAX 表只增不减
+  （解除后保留 2 槽布局仍正确，只是多一跳）。
+- **层内取舍**：TC 编码期门（窗内→TC）先于弛豫——TC 超窗回退全宽，
+  全宽超窗才弛豫；弛豫都不放下的（JAL 目标越 imm13，实际不可能）报错。
+- **触发面**：trirv_asm.py（独立汇编器）、trirv_cc.c（主链）两处同实现；
+  TRVO 导入文本不弛豫（导入单元在 assemble_all 层弛豫覆盖）。
+
 ## 8. T10e 码长对比结论（2026-11-23，musl string+stdlib 28 文件 7844 槽）
 
 | 方案 | TC 率 | TRV2 打包节省 |
