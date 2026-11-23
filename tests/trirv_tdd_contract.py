@@ -239,13 +239,17 @@ def section_asm_edges():
         check("CSR 名 -> 地址", isa.decode(out[0])["imm"] == isa.CSR["mstatus"],
               f"实际 {isa.decode(out[0])['imm']}")
 
-    # B 型偏移 ±1093 条指令；越界必须报错（静默 % 2187 会跳到貌似合法的错位置）
+    # B 型偏移 ±1093：超窗经 ADR-16 长分支弛豫（反条件+2 + JAL zero）正确执行——
+    # （2026-11-24 语义更新：原"越界报错"守卫被弛豫取代；JAL imm13 极端越界仍报错）
     src = "BNE x1, x2, far\n" + "ADDI x3, x3, 0\n" * 1200 + "far:\nECALL\n"
-    try:
-        asm.assemble(src)
-        check("B 型偏移越界报错", False, "却静默通过")
-    except (ValueError, SystemExit):
-        check("B 型偏移越界报错", True)
+    out_r, _l = asm.assemble(src)
+    d_r = isa.decode(out_r[0])
+    check("B 型超窗弛豫·反条件词", d_r["inst"], "BEQ")          # BNE 的反=BEQ imm=2
+    check("B 型超窗弛豫·imm=2", d_r["imm"], 2)
+    d_j = isa.decode(out_r[1])
+    check("B 型超窗弛豫·JAL 承担长跳", d_j["inst"], "JAL")
+    d_ji = d_j["imm"]; d_jd = d_ji if d_ji <= 797161 else d_ji - 1594323
+    check("B 型超窗弛豫·JAL 落 far(=ECALL)", out_r[1 + d_jd] == out_r[-1], True)
 
     # J 型 ±797161；用 8 万条指令构造越界（构造量大，单独计时）
     src = "JAL x1, far\n" + "ADDI x3, x3, 0\n" * 800000 + "far:\nECALL\n"

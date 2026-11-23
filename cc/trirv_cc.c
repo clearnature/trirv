@@ -94,6 +94,11 @@ static uint32_t encR(int op,int f2,int rs2,int rs1,int funct,int rd){
  * （弛豫 +1 槽移动后续标签，LABS 重建自动反映——trirv_cc 每轮重扫
  * OUT 无基线累积问题）。数组容量跟随 CAPOUT（gen 定格后分配）。 */
 static int *RELAX, *RELAX_LBLV; static int RELAX_CUR=0, RELAX_MODE=0, RELAX_HIT=0;
+/* TRV2 输出模式（.trv2/TRV_FORMAT=2）：流制窗=tryte 口径——B/TC 分支门
+ * 收窄为 ±273 槽（=±1093 tryte ÷ 3~4 tryte/指令的保守界），超窗走弛豫。
+ * TRV1 槽制保持 ±1093 槽（ADR-16/17 双格式口径）。 */
+static int OUT_FMT_TRV2=0;
+static int br_window_slots(void){ return OUT_FMT_TRV2 ? 273 : IMM7_LIM; }
 #define IMM13_LIM  797161
 static int imm7ok(int v){
     if(v< -IMM7_LIM || v> 2186){ fprintf(stderr,"IMM7 overflow %d | line: %s\n",v,CURASM); exit(1); }
@@ -3369,12 +3374,13 @@ static uint32_t asm_line(const char*line,int idx){
         int lt=find_label(ops[2]); int imm=(lt>=0)?(lt-idx):atoi(ops[2]);
         /* T10d：BEQ/BNE rs, zero, lbl → C-BEQ/C-BNE（vs zero 形态；
            步距只在 label 已解析时压缩，数字操作数路径保持全宽） */
+        int lim = br_window_slots();
         if(tc_compact() && rs2==0 && lt>=0 && tc_reg(rs1)>=0
-           && imm>=-IMM7_LIM && imm<=IMM7_LIM)
+           && imm>=-lim && imm<=lim)
           return enc_tc(!strcmp(op,"BEQ")?3:4, tc_reg(rs1), imm);
         /* ADR-16 长分支弛豫：全宽超窗 → 反条件(funct^1 成对反转) imm=2，
            assemble_all 在 idx+1 插 JAL zero 承担长跳（fu 0-5 相异或 1 恰好成对） */
-        if(lt>=0 && (imm>IMM7_LIM || imm<-IMM7_LIM)){
+        if(lt>=0 && (imm>lim || imm<-lim)){
             if(!RELAX[RELAX_CUR]){ RELAX[RELAX_CUR]=1; RELAX_LBLV[RELAX_CUR]=lt; RELAX_HIT=1; }
             return encS(d->op,RELAX_MODE?2:imm,rs2,rs1,d->fu^1);
         }
@@ -3391,6 +3397,8 @@ static uint32_t asm_line(const char*line,int idx){
               fprintf(stderr,"[asm-debug] idx=%d JAL %s 未命中（imm 落 atoi=%d）；LABS=%d 项\n",idx,ops[1],imm,NLAB);
             /* T-1.5 C-J/C-JAL（ADR-03）：rd∈{zero,ra}、标签已解析、
                槽距 ≤±2460（=imm9 ±9841 tryte ÷4）。超窗/数字操作数回退全宽。 */
+            int cjlim = OUT_FMT_TRV2 ? 2460 : 2460;   /* imm9 tryte/槽同界 */
+            (void)cjlim;
             if(tc_compact() && lt>=0 && (rd==ZERO || rd==RA)
                && imm>=-2460 && imm<=2460)
               return enc_tc_jump(rd==RA?1:0, imm);
@@ -3734,7 +3742,11 @@ static uint32_t* assemble_all(int*pn){
      * 0) 定点迭代：标签收集 + &符号行展开计数。&引用可前向（如主程序引用
      *    导入单元的函数标签），首轮未命中按保守上界 7 条预占；LABS 每轮
      *    完整重建，前向引用次轮即可解析，迭代至 idx 稳定（实测 2~3 轮）。
-     * 1) 编码：LABS 已完整，&行精确展开（条数=计数轮的最终值）。 */
+     * 1) 编码：LABS 已完整，&行精确展开（条数=计数轮的最终值）。
+     * 外层（ADR-16，批次 3.4）：弛豫标记改变布局 → RELAX_HIT 驱动
+     * 再迭代（弛豫标记幂等，新增才算——实测 2 轮收敛）。 */
+    uint32_t*prog=NULL;
+    for(int outer=0; outer<6; outer++){
     int idx=0, prev=-1, rounds=0;
     while(idx!=prev && rounds<10){
         prev=idx; idx=0; NLAB=0; rounds++;
@@ -3759,7 +3771,7 @@ static uint32_t* assemble_all(int*pn){
         for(int i=0;i<NLAB;i++) fprintf(lf,"%s %d\n",LABS[i].name,LABS[i].idx);
         fclose(lf);
     }
-    uint32_t*prog=calloc(idx?idx:1,sizeof(uint32_t));
+    prog=calloc(idx?idx:1,sizeof(uint32_t));
     idx=0;
     for(int i=0;i<NOUT;i++){
         RELAX_CUR=i;
@@ -3792,6 +3804,9 @@ static uint32_t* assemble_all(int*pn){
             }
         }
     }
+    if(!RELAX_HIT) break;
+    RELAX_HIT=0;
+    } /* outer：弛豫布局再迭代 */
     return prog;
 }
 
@@ -4215,6 +4230,7 @@ int main(int argc,char**argv){
         int is_trv2=(L>=5&&!strcmp(argv[2]+L-5,".trv2"));
         const char*fmt=getenv("TRV_FORMAT");
         if(!is_trv2&&fmt&&!strcmp(fmt,"2")) is_trv2=1;
+        OUT_FMT_TRV2=is_trv2;                  /* 3.4：分支门收窄须在 assemble_all 前 */
         if(is_trv2){
             uint32_t*p2=assemble_all(&n);
             if(!p2){return 1;}

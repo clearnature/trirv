@@ -75,7 +75,17 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 3 / 任务 3.4（TC 选取点 tryte 保守界）**
+**进度游标：批次 3 / 任务 3.5（调试器流制 PC）**
+
+- [x] 3.4 TC 选取点 tryte 保守界：OUT_FMT_TRV2 全局标志（main 判定前置）+
+      br_window_slots()（TRV2=±273 槽 / TRV1=±1093 槽）统一 TC/B 弛豫门；
+      C-J 门 imm9 ±2460（流制 tryte=槽距同值）。
+      **工程坑**：弛豫外层迭代首版遗漏（RELAX_HIT 置位后无再迭代）+
+      prog 声明作用域（return 在外层循环外）——TRV2 直发 400 槽分支
+      实证暴露（报"分支超 delta7 slot8"）后补齐；TDD 契约「B 型越界
+      报错」守卫语义被 ADR-16 取代，更新为弛豫三断言（反词/imm=2/
+      JAL 落 far——far 标签指向 ECALL，比对词 out[-1]）。
+      双格式 mid.c 400 槽分支 exit=42 一致；62 套全绿
 
 - [x] 3.3 trirv_cc 弛豫：RELAX/RELAX_LBLV 行级数组（容量 CAPOUT，
       声明前移至 asm_line 之前——放 assemble_all 前不可见）+ 计数轮
