@@ -137,7 +137,7 @@ TriRV 是三进制 ISA，硬件位宽本就不是 2 的幂，宿主 LP64 惯例�
 | --- | --- |
 | char | 1 byte |
 | short | 2 byte |
-| int | 4 byte |
+| int | 9 byte |
 | long/pointer | 9 byte |
 
 ---

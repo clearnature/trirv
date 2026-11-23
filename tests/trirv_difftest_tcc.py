@@ -78,9 +78,8 @@ def load_trv(path):
 
 
 def run_vm(trv):
-    rr = subprocess.run([CVM, trv], capture_output=True, text=True, timeout=60)
-    if "exit=" in rr.stderr:
-        return int(rr.stderr.split("exit=")[-1].split()[0]) & 0xFF
+    """批次 2 复核修正（评审 25 条之 4）：原实现先跑 CVM 仅失败才回退——
+    PyVM 两列实为 CVM 复制品，"四路一致"名实不符。改为真 PyVM 独立执行。"""
     prog, mem = load_trv(trv)
     return vm.VM(prog, mem_init=mem).run(max_steps=20000000).exit_code & 0xFF
 

@@ -179,6 +179,9 @@
   构建它【亲核】。本机该文件日期 11-18 21:24、51,696 字节；当前的 `vm/bin/trirv_vm` 是
   118,456 字节，`vm/trirv_vm.c` 自 11-19 起有 10 个提交【亲核】。也就是说这一段的
   「C VM 一致」是对着六天前的 VM 验的，换机器则整段不跑。
+  **已处置（2026-11-24）**：三处路径解析合并为 `vm/bin/trirv_vm`，缺失或比源码旧时按需构建，
+  构建失败判 FAIL 而不是跳过。隔离副本实测：无二进制 → 自建后 86/86；无编译器 → `[FAIL]`、
+  退出码 1。连同其余系统 `/tmp` 依赖一并迁入项目目录，见 §8「已处置」。
 - `tests/trirv_crt_e2e.py:174` 的「双 VM 一致」段以 CVM 文件存在为前提；
   同文件 `:65-69` 的 `run_cvm` 是恒返回 `(0, b"")` 的死桩【亲核】。
 - 运行器只看退出码与 `FAIL_PAT`（`tests/run_all_tests.py:176-178, 236-239`），`SKIP` 不在
@@ -673,6 +676,26 @@ STRICT，运行器默认设置（`tests/run_all_tests.py:220`）；`tools/export
 
 ## 8. 建议的落地顺序
 
+**已处置（2026-11-24）——系统 `/tmp` 依赖迁入项目目录**
+
+`/tmp` 重启即清，项目依赖的文件不能放在那里。落地规则与范围：
+
+- **落点**（`tests/_bootstrap.py`）：单次运行的草稿走 `scratch()`，落仓库根
+  `tmp/scratch/run-<pid>/`——按进程隔离，两个会话并行跑回归不会互相覆盖；正常退出即删，
+  被杀掉的运行按 PID 存活性清扫。需要跨运行保留的产物与日志走 `project_tmp()`。
+  仓库根 `tmp/` 本就在 `.gitignore` 里。
+- **真依赖两处**：ISA 守卫的 CVM（见 A3）；`/tmp/musl_batch`——原先三个套件读、一个套件写，
+  现在四个套件各自经 `run_musl_batch()` 把批量管线跑进本进程草稿目录，不再依赖别处残留，
+  也不受套件先后顺序影响。
+- **一次性草稿**：14 个测试与工具文件、两个批量管线脚本（产物目录进 `tmp/`，路径改为相对
+  仓库根）、`tools/build.sh` 的 PGO 中间件。
+- **D3 的测量脚本**并入 `tools/musl_baseline.py`（`-v` 看明细，`--self-check` 是负向控制）。
+- **验证**：全量回归 63 套 PASS 63；隔离副本实验两项（见 A3）；同一套件三进程并发 11/11 ×3；
+  六次 musl 相关运行期间 `/tmp/musl_batch` 未被触碰。
+- **未动**：`cc/trirv_cc.c:3770` 的调试试转储（仅 `TRV_LABEL_DEBUG` 下写出；一行可改，该文件
+  正被并行会话改写）；`bench/trirv_perf_*_bench.sh` 等历史实验脚本与文档里的示例命令——
+  它们引用的 `/tmp` 输入文件早已不存在，属于当时的实验记录。
+
 **下一个提交（纯修复，不需要拍板）**
 - A3-1：`trirv_tri_musl_e2e.py` 三处路径。
 - A4-1：`trirv_difftest_tcc.py` 的 PyVM 列真走 PyVM。
@@ -715,8 +738,11 @@ STRICT，运行器默认设置（`tests/run_all_tests.py:220`）；`tools/export
 
 ## 附录 A：D3 基线表的测量方法
 
-只读，不写仓库。对 `third_party/musl/src/<目录>` 下每个 `.c`（排除 `wc*`、`wcs*`、`wmem*` 前缀，
-与 `batch_musl_compile.py:42-43` 的过滤一致）调用 `libc-musl/preprocess_musl.py` 的 `preprocess()`：
+工具：`python3 tools/musl_baseline.py`（仓库内；`-v` 列 SKIP 原因与静默删行明细，
+`--self-check` 跑第 4 步的负向控制）。要点如下。
+
+对 `third_party/musl/src/<目录>` 下每个 `.c`（排除 `wc*`、`wcs*`、`wmem*` 前缀，
+与 `batch_musl_compile.py` 的过滤一致）调用 `libc-musl/preprocess_musl.py` 的 `preprocess()`：
 
 1. **SKIP**：输出首行以 `#error TRIRV_SKIP` 开头。
 2. **静默删行**：给模块的 `re.search` 加垫片，记录命中 `&\s*-?\s*[0-9]` 且同一行不含
@@ -725,8 +751,8 @@ STRICT，运行器默认设置（`tests/run_all_tests.py:220`）；`tools/export
    跳过以 `#`、`/*`、`*`、`//#` 起头的行。
 4. **负向控制**：对 `string/strspn.c`、`stdlib/qsort.c` 跑同一正则，分别报出 1 行与 9 行命中。
 
-复现任何一行数字只需按上面四步重跑；`isalpha('A')` 的 0 是手算，上机命令是把这个文件过
-预处理后用 `trirv_cc` 编译并返回 `isalpha('A')`。
+重跑 `tools/musl_baseline.py` 即可复现表里的数字。`isalpha('A')` 的 0 是手算，上机命令是把这个
+文件过预处理后用 `trirv_cc` 编译并返回 `isalpha('A')`。
 
 ## 附录 B：复核命令
 

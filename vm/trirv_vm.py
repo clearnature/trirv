@@ -321,8 +321,15 @@ class VM:
             else:
                 ret = EBADF
         elif num == SYS_READ:
-            # read(fd, buf, count)：从 stdin 取（仅 fd=0）
-            if a0 == 0 and 0 <= a1 < len(self.mem):
+            # read(fd, buf, count)：从 stdin 取（仅 fd=0）。
+            # 坑实录（评审 ARCH_PLAN_REVIEW A5，2026-11-24）：count<0 曾走
+            # 负切片赋值——Python 切片赋值允许长度不等，chunk=stdin[:-|n|]
+            # 非空，mem[a1:a1+n]=chunk 会把 guest 内存插长、地址整体后移。
+            # CVM 同路径 (size_t) 负转巨大全量读入——两 VM 错法不同。
+            # 统一口径：count<0 → -EINVAL（与 SYS_WRITE 一致）。
+            if a2 < 0:
+                ret = EINVAL
+            elif a0 == 0 and 0 <= a1 < len(self.mem):
                 n = min(a2, len(self.stdin), len(self.mem) - a1)
                 chunk = bytes(self.stdin[:n]); del self.stdin[:n]
                 self.mem[a1:a1 + n] = chunk

@@ -17,7 +17,6 @@
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
   __tint / __tint2 / __tbool / __builtin_tri_lit / LW4-SW4 / LIT0-2
-- ISA 总量：102 条（含 LW4/SW4 4-tryte 档 + LIT0/1/2 文字运算）
 - 决策记录：docs/DECISIONS.md（ADR-01..33，2026-11-23 提出并同日整批确认）
 
 ## A. 执行队列（2026-11-23 授权连续执行）
