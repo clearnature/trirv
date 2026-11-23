@@ -7,6 +7,7 @@
 import trirv_isa as isa
 import trirv_float as tf
 from collections import deque
+from bisect import bisect_right
 
 XLEN = isa.XLEN
 MOD = isa.MOD_X
@@ -80,6 +81,10 @@ class VM:
         # --- T11 AMP：核号 + 邮箱/共享窗枢纽（单实例 core_id=0, amp=None）---
         self.core_id = core_id
         self.amp = amp
+        # --- TRV2 流制引擎（B1① 正式化）：packed=True 时 imem 为流序指令词
+        #     数组，imem_offs 为各指令的 tryte 偏移表（PC→槽 bisect 解析）---
+        self.packed = False
+        self.imem_offs = None
         # F 扩展浮点寄存器堆：f0..f31，存 TF45 的 45-trit raw（= (sign,mant,exp3)
         # 分离表示的无损打包）。裸 double 会把指数卡在 3^646，违背全阶码模型；
         # raw 打包天然无损，算术时才 decompose → mant 进 FPU、exp3 走整数 → compose。
@@ -208,7 +213,11 @@ class VM:
         self._csr_write(isa.CSR["mtval"], tval)
         self.priv = 3                           # 陷入总是进入 M 态
         target = s(self.csr[isa.CSR["mtvec"]])
-        if target % 4 == 0 and 0 <= target // 4 < len(self.imem):
+        if self.packed:
+            self.pc = target if self._stream_slot(target) >= 0 else -1
+            if self.pc < 0:
+                self.halted = True              # mtvec 未命中指令起点：停机
+        elif target % 4 == 0 and 0 <= target // 4 < len(self.imem):
             self.pc = target                    # mtvec 是 tryte 地址，//4 得指令槽
         else:
             self.halted = True                  # 未设置有效 trap 向量 -> 停机
@@ -233,12 +242,13 @@ class VM:
         elif sf == 2:    # C-SWs r_s, off7（基址隐含 s0，帧相对存储）
             addr = s(self.regs[8]) + isa.sign_extend_imm(imm)
             self._store_word(addr, self.regs[rd])
-        elif sf == 3:    # C-BEQ rs, imm7 → BEQ rs, zero, imm7（old_pc 相对）
+        elif sf == 3:    # C-BEQ rs, imm7 → BEQ rs, zero, imm7（old_pc 相对；
+                         #  流制 imm 已是 tryte delta，槽制为 slot delta ×4）
             if s(self.regs[rd]) == 0:
-                self.pc = old_pc + 4 * isa.sign_extend_imm(imm)
+                self.pc = old_pc + (1 if self.packed else 4) * isa.sign_extend_imm(imm)
         elif sf == 4:    # C-BNE rs, imm7
             if s(self.regs[rd]) != 0:
-                self.pc = old_pc + 4 * isa.sign_extend_imm(imm)
+                self.pc = old_pc + (1 if self.packed else 4) * isa.sign_extend_imm(imm)
 
     def _mret(self):
         """从 M 态 trap 返回：pc<-mepc, priv<-MPP, MIE<-MPIE, MPIE<-1, MPP<-U。"""
@@ -252,7 +262,11 @@ class VM:
         new |= isa.MSTATUS_MPIE                          # MPIE <- 1
         self.csr[isa.CSR["mstatus"]] = new % MOD
         target = s(self.csr[isa.CSR["mepc"]])
-        if target % 4 == 0 and 0 <= target // 4 < len(self.imem):
+        if self.packed:
+            self.pc = target if self._stream_slot(target) >= 0 else -1
+            if self.pc < 0:
+                self.halted = True              # mepc 未命中指令起点：停机
+        elif target % 4 == 0 and 0 <= target // 4 < len(self.imem):
             self.pc = target                    # mepc 是 tryte 地址，//4 得指令槽
         else:
             self.halted = True
@@ -456,17 +470,47 @@ class VM:
         self.syscalls.append((num, a0, a1, a2))
         self.regs[10] = u(ret)        # 返回值写回 a0
 
+    @classmethod
+    def from_stream(cls, trytes, **kw):
+        """TRV2 流制构造（B1①）：tryte 流 → 流序指令词 + 偏移表。
+        跳转立即数为 tryte delta（slot 制的 4*imm 迁移）；非法/未对齐
+        目标 = 停机（诚实口径）。"""
+        cpu = cls(isa.stream_to_words(trytes), **kw)
+        cpu.packed = True
+        cpu.imem_offs = isa.stream_offsets(trytes)
+        return cpu
+
+    def _stream_slot(self, pc):
+        """PC → 流内指令序号（必须精确命中指令起点；未命中 -1）。"""
+        i = bisect_right(self.imem_offs, pc) - 1
+        if i < 0 or i >= len(self.imem_offs) or self.imem_offs[i] != pc:
+            return -1
+        return i
+
     def step(self):
         # PC 是 tryte 地址：指令 i 位于地址 4*i（20 trit = 4 tryte）。
         # 非法 PC（负、非 4 对齐、越界）统一停机，避免负索引回绕或错位取指。
-        if self.halted or self.pc < 0 or self.pc % 4 != 0 or self.pc >= 4 * len(self.imem):
-            self.halted = True
-            return
-        inst = self.imem[self.pc // 4]
-        old_pc = self.pc
-        self.pc += 4                            # PC 前进（TC/全宽统一——TC 分支内跳转用 old_pc）
+        if self.packed:
+            i = self._stream_slot(self.pc)
+            if self.halted or self.pc < 0 or i < 0:
+                self.halted = True
+                return
+            inst = self.imem[i]
+            old_pc = self.pc
+            pc_adv = 3 if (inst % 243) % 27 >= 23 else 4
+            self.pc = old_pc + pc_adv
+            sc = 1                                # 流制：跳转 imm 已是 tryte delta
+        else:
+            if self.halted or self.pc < 0 or self.pc % 4 != 0 or self.pc >= 4 * len(self.imem):
+                self.halted = True
+                return
+            inst = self.imem[self.pc // 4]
+            old_pc = self.pc
+            pc_adv = 4
+            self.pc += 4                          # PC 前进（TC/全宽统一——TC 分支内跳转用 old_pc）
+            sc = 4                                # 槽制：imm 为 slot delta，×4 成 tryte
         # ---- TC 压缩格式识别（T10c-1）：opcode 23 保留 → slot 内嵌 C 语义 ----
-        if (inst % 27) == isa.TC_OPCODE:
+        if ((inst % 243) % 27) >= 23 if self.packed else (inst % 27) == isa.TC_OPCODE:
             ctry = [(inst // (243 ** i)) % 243 for i in range(3)]
             cd = isa.decode_c(ctry)
             self._exec_c(cd, old_pc)
@@ -586,22 +630,22 @@ class VM:
                 self.regs[rd] = u(q if av >= 0 else -q)
         elif name == "BEQ":
             if s(self.regs[rs1]) == s(self.regs[rs2]):
-                self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm))
+                self.pc = old_pc + sc * s(isa.sign_extend_imm(imm))
         elif name == "BNE":
             if s(self.regs[rs1]) != s(self.regs[rs2]):
-                self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm))
+                self.pc = old_pc + sc * s(isa.sign_extend_imm(imm))
         elif name == "BLT":
             if a < b:
-                self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm))
+                self.pc = old_pc + sc * s(isa.sign_extend_imm(imm))
         elif name == "BGE":
             if a >= b:
-                self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm))
+                self.pc = old_pc + sc * s(isa.sign_extend_imm(imm))
         elif name == "BLTU":
             if self.regs[rs1] < self.regs[rs2]:
-                self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm))
+                self.pc = old_pc + sc * s(isa.sign_extend_imm(imm))
         elif name == "BGEU":
             if self.regs[rs1] >= self.regs[rs2]:
-                self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm))
+                self.pc = old_pc + sc * s(isa.sign_extend_imm(imm))
         elif name == "SW":
             # 字存储：9 tryte（局部变量/栈/指针目标）
             addr = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
@@ -725,18 +769,26 @@ class VM:
                 self.regs[rd] = old                # 返回旧值
                 self.lr_valid = False              # AMO 成功破坏其他核的保留(单核自清)
         elif name == "JALR":
-            self.regs[rd] = old_pc + 4            # 返回地址 = 下一条 tryte 地址
+            self.regs[rd] = old_pc + pc_adv       # 返回地址 = 下一条指令起点（流制 3/4、槽制 4）
             # 目标 = rs1(tryte 地址) + imm(tryte 偏移)，向下对齐到 4（对标 RISC-V 清低位）
             tgt = s(self.regs[rs1]) + s(isa.sign_extend_imm(imm))
-            self.pc = (tgt // 4) * 4
+            if self.packed:
+                # 流制严格口径：目标必须精确命中指令起点（未命中=停机——
+                # 槽制的 //4*4 向下取整会把垃圾目标静默跳到错误指令，
+                # 流制密度下错位更隐蔽，诚实停机优于错码）
+                self.pc = tgt if self._stream_slot(tgt) >= 0 else -1
+                if self.pc < 0:
+                    self.halted = True
+            else:
+                self.pc = (tgt // 4) * 4
         elif name == "LUI":
             self.regs[rd] = u(imm * (3 ** 7))   # imm13 左移 7 trit
         elif name == "AUIPC":
             # 高位立即数 + 当前 PC（PC 为 tryte 地址，加数同为 tryte 偏移）
             self.regs[rd] = u(old_pc + imm * (3 ** 7))
         elif name == "JAL":
-            self.regs[rd] = old_pc + 4            # 返回地址 = 下一条 tryte 地址
-            self.pc = old_pc + 4 * s(isa.sign_extend_imm(imm, 13))
+            self.regs[rd] = old_pc + pc_adv       # 返回地址 = 下一条指令起点（流制 3/4、槽制 4）
+            self.pc = old_pc + sc * s(isa.sign_extend_imm(imm, 13))
         elif name == "ECALL":
             # M 态 ECALL 直连 syscall（向后兼容）；U 态 ECALL 陷入 trap
             if self.priv == 3:
@@ -836,7 +888,8 @@ class VM:
         while not self.halted and self.steps < max_steps:
             if trace:
                 pc = self.pc
-                idx = pc // 4 if pc % 4 == 0 else -1
+                idx = (self._stream_slot(pc)
+                       if self.packed else (pc // 4 if pc % 4 == 0 else -1))
                 d = isa.decode(self.imem[idx]) if 0 <= idx < len(self.imem) else {}
                 print(f"  pc={pc:3d}/{idx:2d} {d.get('inst','?'):8s} " +
                       " ".join(f"x{i}={s(self.regs[i])}" for i in range(1, 8)))

@@ -348,7 +348,14 @@ typedef struct {
     /* ---- T11 AMP：核号 + 邮箱枢纽（单实例 core_id=0, amp=NULL）---- */
     int core_id;
     AmpHub *amp;
+    /* ---- TRV2 流制引擎（B1①）：offs = 流序指令 tryte 偏移表（哨兵尾项）---- */
+    int packed;
+    int *offs;
+    int slot_hint;          /* 顺序执行快路径：上一条取指序号 */
 } VM;
+
+static int cvm_fetch_slot(VM *v);
+static int cvm_align_target(VM *v,__int128_t t);
 
 static inline void vm_out(VM *v, uint8_t c) {
     if(v->out_len>=v->out_cap){v->out_cap=v->out_cap?v->out_cap*2:256;v->output=realloc(v->output,v->out_cap);}
@@ -385,7 +392,8 @@ static void take_trap(VM *v,__uint128_t cause,__uint128_t tval,int from_pc){
     csr_write(v,CSR_MTVAL,tval);
     v->priv=3;
     long tgt=(long)s(v->csr[CSR_MTVEC]);
-    if(tgt>=0&&tgt%4==0&&tgt/4<v->nprog)v->pc_=(int)tgt; else v->halted=1;  /* tryte 地址 */
+    if(v->packed){ v->pc_=cvm_align_target(v,tgt); if(v->pc_<0)v->halted=1; }
+    else if(tgt>=0&&tgt%4==0&&tgt/4<v->nprog)v->pc_=(int)tgt; else v->halted=1;  /* tryte 地址 */
 }
 static void mret(VM *v){
     __uint128_t ms=v->csr[CSR_MSTATUS];
@@ -395,7 +403,8 @@ static void mret(VM *v){
     nw|=MSTATUS_MPIE;
     v->csr[CSR_MSTATUS]=umod_M(nw);
     long tgt=(long)s(v->csr[CSR_MEPC]);
-    if(tgt>=0&&tgt%4==0&&tgt/4<v->nprog)v->pc_=(int)tgt; else v->halted=1;  /* tryte 地址 */
+    if(v->packed){ v->pc_=cvm_align_target(v,tgt); if(v->pc_<0)v->halted=1; }
+    else if(tgt>=0&&tgt%4==0&&tgt/4<v->nprog)v->pc_=(int)tgt; else v->halted=1;  /* tryte 地址 */
 }
 static inline void csr_op(VM *v,Op op,int rd,int rs1,__uint128_t csr_addr){
     /* csr_addr 来自 7-trit 字段(0..2186)，可能超出 csr[NCSR=900] 范围：
@@ -807,14 +816,19 @@ static void syscall_vm(VM *v){
 
 /* ---------------- 执行引擎 ---------------- */
 static inline void step(VM *v){
-    /* PC 是 tryte 地址：指令 i 位于 4*i。负/非 4 对齐/越界统一停机。 */
-    if(v->halted||v->pc_<0||v->pc_%4||v->pc_>=4*v->nprog){v->halted=1;return;}
-    Inst *in=&v->prog[v->pc_/4];
+    /* PC 是 tryte 地址：槽制按 4*i，流制按偏移表解析。非法目标统一停机。
+     * （坑实录：取指块内先推进 pc_ 再取 in 会拿到下一条指令 + 二次推进
+     *   ——AMP 调度器走本函数实证自旋，主路径 cg 引擎不受影响。） */
+    int si=cvm_fetch_slot(v);
+    if(v->halted||si<0){v->halted=1;return;}
+    v->slot_hint=si;
+    Inst *in=&v->prog[si];
     int rd=in->rd,rs1=in->rs1<32?in->rs1:0,rs2=in->rs2<32?in->rs2:0;
     __int128_t imm=in->imm_s;              /* 带符号：加法/跳转/地址 */
     __uint128_t immu=in->imm_u;            /* 无符号位模式：按位运算 */
     __uint128_t immraw=in->imm_raw;        /* 原始字段：LUI */
-    int oldpc=v->pc_; v->pc_+=4;           /* 下一条 = 下一个 tryte 字（+4） */
+    int oldpc=v->pc_;                      /* oldpc 先于推进取值（TC/分支用） */
+    v->pc_ += v->packed? (v->offs[si+1]-v->offs[si]) : 4;
     __int128_t a=s(v->reg[rs1]),b=s(v->reg[rs2]);
     switch(in->op){
         case OP_ADD:v->reg[rd]=u(a+b);break;
@@ -959,11 +973,11 @@ static inline void step(VM *v){
             if(sf==0){int r2=cregs[in->rs1&7]; v->reg[r]=u(s(v->reg[r2])+imm);}
             else if(sf==1) v->reg[r]=load_word(v,s(v->reg[8])+imm);
             else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
-            else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+4*imm;}
-            else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+4*imm;}
+            else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+(v->packed?1:4)*imm;}
+            else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+(v->packed?1:4)*imm;}
             break;}
-        case OP_JAL:v->reg[rd]=oldpc+4;v->pc_=in->target;break;
-        case OP_JALR:{v->reg[rd]=oldpc+4;__int128_t t=s(v->reg[rs1])+imm;v->pc_=(int)align_down4(t);break;}  /* 目标按 tryte 对齐 */
+        case OP_JAL:v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);v->pc_=in->target;break;
+        case OP_JALR:{v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);__int128_t t=s(v->reg[rs1])+imm;v->pc_=cvm_align_target(v,t);if(v->pc_<0)v->halted=1;break;}  /* 槽制向下取整；流制严格命中 */
         case OP_LUI:v->reg[rd]=u((__int128_t)immraw*POW3[7]);break;
         case OP_AUIPC:v->reg[rd]=u((__int128_t)oldpc+(__int128_t)immraw*POW3[7]);break;
         case OP_ECALL:
@@ -986,6 +1000,26 @@ static inline void step(VM *v){
         v->irq_timer=0;
         take_trap(v,((__uint128_t)1<<63)|CAUSE_MTIMER_LO,0,v->pc_);
     }
+}
+/* TRV2 流制（B1①）：PC→流内指令序号解析（顺序 hint 快路径 + 二分回退）。
+ * 未命中指令起点返回 -1（诚实停机口径——槽制向下取整会把垃圾目标
+ * 静默跳到错误指令，流制密度下错位更隐蔽）。 */
+static int cvm_fetch_slot(VM *v){
+    if(v->packed){
+        int si=v->slot_hint;
+        if(si>=0&&si<v->nprog&&v->offs[si]==v->pc_) return si;
+        int lo=0,hi=v->nprog-1;
+        while(lo<=hi){int m=(lo+hi)/2; if(v->offs[m]<v->pc_)lo=m+1; else hi=m-1;}
+        return (lo<v->nprog&&v->offs[lo]==v->pc_)?lo:-1;
+    }
+    if(v->pc_<0||v->pc_%4||v->pc_>=(int)4*v->nprog) return -1;
+    return v->pc_/4;
+}
+static int cvm_align_target(VM *v,__int128_t t){
+    if(!v->packed) return (int)align_down4(t);
+    int lo=0,hi=v->nprog-1;
+    while(lo<=hi){int m=(lo+hi)/2; if(v->offs[m]<(int)t)lo=m+1; else hi=m-1;}
+    return (lo<v->nprog&&v->offs[lo]==(int)t)?(int)t:-1;
 }
 static void vm_run(VM *v,long max_steps){while(!v->halted&&v->steps<max_steps)step(v);}
 
@@ -1028,8 +1062,11 @@ static void vm_run_cg(VM *v, long max_steps){
     Inst *in; int rd,rs1,rs2,oldpc;
     __int128_t imm,a,b; __uint128_t immu,immraw;
 
-    if(v->halted||v->pc_<0||v->pc_%4||v->pc_>=4*v->nprog){v->halted=1;return;}  /* PC=tryte 地址 */
-    in=&v->prog[v->pc_/4]; oldpc=v->pc_; v->pc_+=4;
+    { int si=cvm_fetch_slot(v);
+      if(v->halted||si<0){v->halted=1;return;}          /* PC=tryte 地址（流制按偏移表解析） */
+      v->slot_hint=si;
+      in=&v->prog[si]; oldpc=v->pc_;
+      v->pc_+= v->packed? (v->offs[si+1]-v->offs[si]) : 4; }
     rd=in->rd; rs1=in->rs1<32?in->rs1:0; rs2=in->rs2<32?in->rs2:0;
     imm=in->imm_s; immu=in->imm_u; immraw=in->imm_raw;
     a=s(v->reg[rs1]); b=s(v->reg[rs2]);
@@ -1039,8 +1076,11 @@ static void vm_run_cg(VM *v, long max_steps){
     if(__builtin_expect(v->irq_timer&&(v->csr[CSR_MSTATUS]&MSTATUS_MIE),0)){ \
         v->irq_timer=0; take_trap(v,((__uint128_t)1<<63)|CAUSE_MTIMER_LO,0,v->pc_); \
     } \
-    if(v->halted||v->pc_<0||v->pc_%4||v->pc_>=4*v->nprog||v->steps>=max_steps) goto L_DONE; /* PC=tryte 地址 */ \
-    in=&v->prog[v->pc_/4]; oldpc=v->pc_; v->pc_+=4; \
+    { int si=cvm_fetch_slot(v); \
+      if(v->halted||si<0||v->steps>=max_steps) goto L_DONE;   /* PC=tryte 地址（流制按偏移表解析） */ \
+      v->slot_hint=si; \
+      in=&v->prog[si]; oldpc=v->pc_; \
+      v->pc_+= v->packed? (v->offs[si+1]-v->offs[si]) : 4; } \
     rd=in->rd; rs1=in->rs1<32?in->rs1:0; rs2=in->rs2<32?in->rs2:0; \
     imm=in->imm_s; immu=in->imm_u; immraw=in->imm_raw; \
     a=s(v->reg[rs1]); b=s(v->reg[rs2]); \
@@ -1131,8 +1171,8 @@ L_BLT:   BRANCH(a<b);
 L_BGE:   BRANCH(a>=b);
 L_BLTU:  BRANCH(v->reg[rs1]<v->reg[rs2]);
 L_BGEU:  BRANCH(v->reg[rs1]>=v->reg[rs2]);
-L_JAL:   v->reg[rd]=oldpc+4;v->pc_=in->target; NEXT();
-L_JALR:  {v->reg[rd]=oldpc+4;__int128_t t=s(v->reg[rs1])+imm;v->pc_=(int)align_down4(t);} NEXT();  /* 目标按 tryte 对齐 */
+L_JAL:   v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);v->pc_=in->target; NEXT();
+L_JALR:  {v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);__int128_t t=s(v->reg[rs1])+imm;v->pc_=cvm_align_target(v,t);if(v->pc_<0)v->halted=1;} NEXT();  /* 目标按 tryte 对齐 */
 L_LUI:   v->reg[rd]=u((__int128_t)immraw*POW3[7]); NEXT();
 L_AUIPC: v->reg[rd]=u((__int128_t)oldpc+(__int128_t)immraw*POW3[7]); NEXT();
 L_ECALL: if(v->priv==3)syscall_vm(v); else take_trap(v,CAUSE_ECALL_U,0,oldpc); NEXT();
@@ -1155,8 +1195,8 @@ L_TC:    {  /* TC v2：与 switch 路径同语义（窗口/帧相对口径见 sw
              if(sf==0){int r2=cregs[in->rs1&7]; v->reg[r]=u(s(v->reg[r2])+imm);}
              else if(sf==1) v->reg[r]=load_word(v,s(v->reg[8])+imm);
              else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
-             else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+4*imm;}
-             else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+4*imm;}
+             else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+(v->packed?1:4)*imm;}
+             else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+(v->packed?1:4)*imm;}
          } NEXT();
 L_CSRRW: csr_op(v,OP_CSRRW,rd,rs1,immraw); NEXT();
 L_CSRRS: csr_op(v,OP_CSRRS,rd,rs1,immraw); NEXT();
@@ -1173,9 +1213,44 @@ L_DONE:  ;
 }
 
 /* ---------------- 加载 / 初始化 ---------------- */
-static int load_trv(const char *path,Inst **out_prog,int *out_n,uint8_t segmem[MEMSZ]){
+static int load_trv(const char *path,Inst **out_prog,int *out_n,uint8_t segmem[MEMSZ],int **out_offs){
     FILE *f=fopen(path,"rb");if(!f){fprintf(stderr,"无法打开 %s\n",path);return -1;}
-    char magic[4];if(fread(magic,1,4,f)!=4||memcmp(magic,"TRV1",4)){fprintf(stderr,"非 TRV1 格式\n");fclose(f);return -1;}
+    char magic[4];if(fread(magic,1,4,f)!=4){fclose(f);return -1;}
+    *out_offs=NULL;
+    if(!memcmp(magic,"TRV2",4)){
+        /* ---- TRV2 tryte 流（B1① 正式化）：变长指令 + tryte delta 跳转 ---- */
+        uint32_t ver,n_trytes,n_seg;
+        if(fread(&ver,4,1,f)!=1||fread(&n_trytes,4,1,f)!=1||fread(&n_seg,4,1,f)!=1){fclose(f);return -1;}
+        uint8_t *st=malloc(n_trytes?n_trytes:1);
+        if(fread(st,1,n_trytes,f)!=n_trytes){fprintf(stderr,"TRV2 流截断\n");fclose(f);return -1;}
+        /* 预扫宽度表 */
+        int cap=64,ni=0;int *offs=malloc(sizeof(int)*(cap+1));
+        uint32_t p=0;
+        while(p<n_trytes){
+            int w=(st[p]%27)>=23?3:4;
+            if(ni>=cap){cap*=2;offs=realloc(offs,sizeof(int)*(cap+1));}
+            offs[ni++]=(int)p; p+=(uint32_t)w;
+        }
+        offs[ni]=(int)n_trytes;
+        Inst *prog=malloc(sizeof(Inst)*(size_t)(ni?ni:1));
+        for(int i=0;i<ni;i++){
+            int w=(st[offs[i]]%27)>=23?3:4;
+            uint32_t raw=0,pw=1;                    /* 词 = Σ tryte*243^j（每 tryte 5 trit） */
+            for(int j=0;j<w;j++){raw+=(uint32_t)st[offs[i]+j]*pw;pw*=243;}
+            prog[i]=decode_one(raw);
+            /* TRV2 跳转 imm 已是 tryte delta：pcrel 目标 = 自身偏移 + imm */
+            if(is_pcrel(prog[i].op)) prog[i].target=offs[i]+(int)prog[i].imm_s;
+        }
+        free(st);
+        for(uint32_t s=0;s<n_seg;s++){
+            uint32_t addr,len;fread(&addr,4,1,f);fread(&len,4,1,f);
+            if(addr+len<=MEMSZ)fread(segmem+addr,1,len,f);else fseek(f,len,SEEK_CUR);
+        }
+        fclose(f);
+        *out_prog=prog;*out_n=ni;*out_offs=offs;
+        return 0;
+    }
+    if(memcmp(magic,"TRV1",4)){fprintf(stderr,"非 TRV1/TRV2 格式\n");fclose(f);return -1;}
     uint32_t ver,n_inst,n_seg;fread(&ver,4,1,f);fread(&n_inst,4,1,f);fread(&n_seg,4,1,f);
     Inst *prog=malloc(sizeof(Inst)*n_inst);
     for(uint32_t i=0;i<n_inst;i++){uint32_t raw;fread(&raw,4,1,f);prog[i]=decode_one(raw);
@@ -1259,7 +1334,8 @@ int main(int argc,char**argv){
     if(argi>=argc){usage(argv[0]);return 1;}
     uint8_t *segmem=calloc(1,MEMSZ);
     Inst *prog=NULL;int nprog=0;
-    if(load_trv(argv[argi],&prog,&nprog,segmem))return 1;
+    int *offs=NULL;
+    if(load_trv(argv[argi],&prog,&nprog,segmem,&offs))return 1;
     argi++;
     /* guest 命令行参数：
      *   prog [stdin文件] -- guest参数...   （-- 前的下一个参数若不是 --，
@@ -1307,6 +1383,7 @@ int main(int argc,char**argv){
         for(int r=0;r<repeat;r++){
             vm_init_ex(&vms[r],prog,nprog,segmem,stdin_data,stdin_len,NULL,&sync,gargc,gargv);
             vms[r].core_id=r; vms[r].amp=&hub;
+            vms[r].packed=(offs!=NULL); vms[r].offs=offs; vms[r].slot_hint=0;
         }
         long amp_steps=0;
         while(1){
@@ -1333,6 +1410,7 @@ int main(int argc,char**argv){
     #pragma omp parallel for num_threads(nthreads?nthreads:1) if(repeat>1)
     for(int r=0;r<repeat;r++){
         vm_init_ex(&vms[r],prog,nprog,shared_mem?shared_mem:segmem,stdin_data,stdin_len,shared_mem,&sync,gargc,gargv);
+        vms[r].packed=(offs!=NULL); vms[r].offs=offs; vms[r].slot_hint=0;
 #ifdef TRIRV_SWITCH
         vm_run(&vms[r],50000000);
 #else

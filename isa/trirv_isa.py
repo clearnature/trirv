@@ -323,6 +323,12 @@ def encode_c(subformat, reg_s, imm7):
     return [sum(trits[i*5+j] * (3**j) for j in range(5) if i*5+j < 15)
             for i in range(3)]
 
+def encode_c_word(subformat, reg_s, imm7):
+    """encode_c 的词形态：3 tryte → 20-trit 槽词（高 5 trit 零填充）。
+    槽制引擎执行 TC 词与流制 pack_stream 共用此口径。"""
+    t = encode_c(subformat, reg_s, imm7)
+    return sum(v * (243 ** i) for i, v in enumerate(t))
+
 def encode_c_addi(rd_s, rs1_s, imm4):
     """C-ADDI v2（sf0）专用：双窗口寄存器 + 4-trit 立即数。
     t5-t7=rd_s, t8-t10=rs1_s, t11-t14=imm4（3 补码 ±40）。"""
@@ -341,4 +347,117 @@ def decode_c(trytes):
     imm7 = sum(trits[8+i] * (3**i) for i in range(7))
     return {"opcode": opcode, "subformat": subformat,
             "reg_s": reg_s, "imm7": imm7}
+
+
+# ---------------------------------------------------------------------------
+# TRV2 打包格式（B1① 正式化，2026-11-23 拍板 74cbad1）：
+#   文件 = magic "TRV2" + version + n_trytes + n_seg + tryte 流 + 段表
+#   流内指令变长：首 tryte %27 >= 23 → TC 3 tryte；否则全宽 4 tryte
+#   （全宽 opcode 仅用 0-22，23-26 恒空闲 → 判宽无歧义）
+#   跳转立即数 = tryte delta（TRV1 槽制的 slot delta 迁移到流制）
+# 双引擎兼容：TRV1 文件走槽制引擎（历史生态不动），TRV2 走流制引擎；
+# 编译器按输出后缀 .trv2 / TRV_FORMAT=2 发射 TRV2（RISC-V「C 是可选
+# 编码」同款策略——TRV1 二进制含烘焙槽制地址常量，无符号表不可自动迁移）。
+# ---------------------------------------------------------------------------
+
+def c_word_width(w):
+    """指令词 → 流内宽度（TC=3 tryte，全宽=4）。判别式含预留组 23..26。"""
+    return 3 if (w % 243) % 27 >= 23 else 4
+
+def pack_stream(words):
+    """slot words → tryte 流（TC 取低 3 tryte，全宽取 4）。"""
+    out = []
+    for w in words:
+        n = c_word_width(w)
+        for i in range(n):
+            out.append((w // (3 ** (5 * i))) % 243)
+    return out
+
+def stream_to_words(trytes):
+    """tryte 流 → words（TC 高段零填充）。往返校验/调试用。"""
+    words = []
+    i = 0
+    while i < len(trytes):
+        n = 3 if trytes[i] % 27 >= 23 else 4
+        v = 0
+        for j in range(n):
+            v += trytes[i + j] * (3 ** (5 * j))
+        words.append(v)
+        i += n
+    return words
+
+def migrate_trv1_stream(words):
+    """槽制 words → TRV2 tryte 流：跳转 imm 从 slot delta 重写为 tryte delta。
+
+    覆盖：全宽 BR 六向（imm7 分散域重编）、JAL（imm13 重编）、TC 分支
+    C-BEQ/C-BNE（imm7 重编）。
+    约束（B1① 兼容策略）：程序不得含烘焙地址常量（函数地址 LUI/ADDI
+    序列——TRV1 文件无符号表，无法识别重写）；超 delta7（±1093 tryte）
+    的分支 ValueError 诚实报错。"""
+    n = len(words)
+    widths = [c_word_width(w) for w in words]
+    new_off = [0] * (n + 1)
+    for k in range(n):
+        new_off[k + 1] = new_off[k] + widths[k]
+
+    def imm_field(w, lo, hi):
+        return get_field(w, lo, hi)
+
+    out = list(words)
+    for k in range(n):
+        w = out[k]
+        first = w % 243
+        if first % 27 >= 23:                       # TC：sf3/sf4 分支重编
+            sf = (w // 27) % 9
+            if sf in (3, 4):
+                imm = get_field(w, 8, 14)
+                delta = imm if imm <= 1093 else imm - 2187
+                tgt = k + delta
+                if not (0 <= tgt <= n):
+                    raise ValueError(f"migrate: TC 分支越界 slot{k} delta={delta}")
+                nd = new_off[tgt] - new_off[k]
+                if not (-1093 <= nd <= 1093):
+                    raise ValueError(f"migrate: TC 分支超 delta7 slot{k} {nd}")
+                nim = nd % 2187
+                w2 = w - imm * (3 ** 8) + nim * (3 ** 8)
+                out[k] = w2
+            continue
+        d = decode(w)
+        nm = d["inst"]
+        if nm in ("BEQ", "BNE", "BLT", "BGE", "BLTU", "BGEU"):
+            lo = get_field(w, 3, 6)
+            hi = get_field(w, 17, 19)
+            imm = hi * 81 + lo
+            delta = imm if imm <= 1093 else imm - 2187
+            tgt = k + delta
+            if not (0 <= tgt <= n):
+                raise ValueError(f"migrate: 分支越界 slot{k} delta={delta}")
+            nd = new_off[tgt] - new_off[k]
+            if not (-1093 <= nd <= 1093):
+                raise ValueError(f"migrate: 分支超 delta7 slot{k} {nd}（TRV2 流制 B 型窗）")
+            nim = nd % 2187
+            w2 = w - hi * (3 ** 17) - lo * (3 ** 3) + (nim // 81) * (3 ** 17) + (nim % 81) * (3 ** 3)
+            out[k] = w2
+        elif nm == "JAL":
+            imm = get_field(w, 7, 19)
+            delta = imm if imm <= 797161 else imm - 1594323
+            tgt = k + delta
+            if not (0 <= tgt <= n):
+                raise ValueError(f"migrate: JAL 越界 slot{k} delta={delta}")
+            nd = new_off[tgt] - new_off[k]
+            if not (-797161 <= nd <= 797161):
+                raise ValueError(f"migrate: JAL 超 imm13 slot{k} {nd}")
+            w2 = w - imm * (3 ** 7) + (nd % 1594323) * (3 ** 7)
+            out[k] = w2
+    return pack_stream(out)
+
+
+def stream_offsets(trytes):
+    """流 → 每条指令的 tryte 偏移表（PC→槽 bisect 用）。"""
+    offs = []
+    i = 0
+    while i < len(trytes):
+        offs.append(i)
+        i += 3 if trytes[i] % 27 >= 23 else 4
+    return offs
 
