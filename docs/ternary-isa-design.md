@@ -579,11 +579,11 @@ PyVM × C VM）；`trirv_fuzz.py` 的 1500 例随机指令池含 `AND/OR/XOR` �
 | 19 | F-ARITH（FADD/FSUB/FMUL/FDIV/FSQRT/FCVTW…） | R/I |
 | 20 | F-MEM（FLW/FSW） | I/S |
 | 21 | F-CMP（FEQ/FLT/FLE） | R |
-| 22 | **T-LIT（文字运算 x^a，2026-11-23 预留登记，未实现）** | R |
+| 22 | T-LIT（文字运算 x^a，LIT0/1/2，2026-11-23 实现） | R |
 | 23–26 | 保留（TC 压缩扩展预留） | — |
 
 > **分配现状（以代码为唯一真相源，2026-11-23 核对）**：3-trit opcode 共 27 个槽位
-> （0..26），已用 22 个（0–21 + 22 预留），余 4 个（23–26）留给 TC。
+> （0..26），已用 23 个（0–22，22 = T-LIT 文字运算），余 4 个（23–26）留给 TC。
 > 明细见 `trirv_isa.py` 的 `OPCODE` / `INST` 表，当前共 **99 条指令**。
 > 校验：`python3 -c "import trirv_isa as i; print(len(i.INST))"` → `99`。
 >
@@ -603,13 +603,18 @@ Post 文字运算 literal `x^a`（a∈{0,1,2}，逐 trit 循环）——Kleene �
 | 1 | x^1 | (t+1) mod 3 | 循环后继（0→1→2→0） |
 | 2 | x^2 | (t+2) mod 3 | 循环前驱（0→2→1→0） |
 
-- **编码（计划）**：opcode=22（T-LIT），R 型，funct=a（0/1/2），funct2=0，
-  rd=目的，rs1=源（rs2 忽略）
-- **现状：预留未实现**——ISA 元数据已登记（`trirv_isa.py` OPCODE 名 +
-  本节），INST 表、双 VM 执行面、trirv_cc/tri-tcc 前端均未落地；落地时
-  按 TDD 流程补 RED 契约 → 双 VM → 前端
-- ^0 与既有 TNOT 逐 trit 语义相同（TNOT ≡ 2−t 逐 trit）；登记 ^0 仅为
-  文字记法完备性，落地时可别名为 TNOT 或独立编码保三变体同构（落地时拍板）
+- **编码**：opcode=22（T-LIT），R 型，funct=a（0/1/2），funct2=0，
+  rd=目的，rs1=源（rs2 忽略）；助记符 **LIT0/LIT1/LIT2**
+- **现状（2026-11-23 已实现 ISA+双 VM）**：INST 三条（102 条总量）、
+  trirv_asm 助记符、PyVM `_tritwise` lit1/lit2、CVM LUT_LIT1/2（tryte 表，
+  tritwise mode 4/5，switch+goto 双路径）、trirv_cc ITAB、tri-isa.h 再生。
+  契约 `trirv_tlit_e2e`：35 值扫描 ×双 VM 字节一致 + 汇编文本路径 +
+  代数恒等式（LIT1²=LIT2、LIT2∘LIT1=id、LIT0=TNOT）6 项
+- ^0 落地拍板：**独立编码保三变体同构**（LIT0 词级结果 ≡ TNOT，共用
+  CVM mode 2 / PyVM "not" 实现，但编码独立入表——文字记法完备）
+- **C 前端映射未定（另行拍板）**：C 方言无暴露 literal 的运算符/内建，
+  trirv_cc/tri-tcc 尚不会发射 LIT 系；待拍板内建形态（如
+  `__builtin_tri_lit(x,a)`）或 __tint 扩展后接前端
 - 用途：Post 代数（循环加/乘 `^` 循环加）与三值逻辑综合器的基础算子——
   C1 拍板「Kleene 体系先闭环」（本计划 §4 明确不做项）延后至此补档
 

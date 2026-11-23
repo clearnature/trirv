@@ -169,7 +169,8 @@ typedef enum {
     OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV, OP_FSQRT,
     OP_FLW, OP_FSW, OP_FCVTW, OP_FCVTW_T, OP_FCVTF,
     OP_FEQ, OP_FLT, OP_FLE,
-    OP_NOP
+    OP_NOP,
+    OP_LIT0, OP_LIT1, OP_LIT2      /* T-LIT（opcode 22）：Post 文字运算，§6.1 */
 } Op;
 
 typedef struct { uint8_t op, funct, funct2; char fmt; Op code; } InstDef;
@@ -196,6 +197,7 @@ static const InstDef IDEFS[] = {
     {11,1,0,'R',OP_TAND},{11,1,1,'R',OP_TOR},{11,1,2,'R',OP_TNEG},
     {11,2,0,'R',OP_TSEXT},
     {12,0,0,'R',OP_TPACK},{12,0,1,'R',OP_TUNPACK},
+    {22,0,0,'R',OP_LIT0},{22,1,0,'R',OP_LIT1},{22,2,0,'R',OP_LIT2},
     /* ZICSR opcode16: csr 号在 I-type imm7 字段 */
     {16,0,0,'I',OP_CSRRW},{16,1,0,'I',OP_CSRRS},{16,2,0,'I',OP_CSRRC},
     {16,3,0,'I',OP_CSRRWI},{16,4,0,'I',OP_CSRRSI},{16,5,0,'I',OP_CSRRCI},
@@ -440,12 +442,13 @@ static inline uint8_t load_tryte(VM *v, __int128_t addr){return (addr>=0&&addr<M
 /* 三进制 trit 表 + tryte 级 min/max/not/xor 查表（逐元素优化核心） */
 static uint8_t TRIT_TAB[243][5];
 static uint8_t LUT_MIN[243][243], LUT_MAX[243][243], LUT_XOR[243][243], LUT_NOT[243];
+static uint8_t LUT_LIT1[243], LUT_LIT2[243];   /* Post literal x^1/x^2（§6.1） */
 static void init_trit_tab(void){
     for(int v=0;v<243;v++){int x=v;for(int i=0;i<5;i++){TRIT_TAB[v][i]=x%3;x/=3;}}
     for(int a=0;a<243;a++){
-        int x=a;uint8_t nt=0,p=1;
-        for(int i=0;i<5;i++){nt+=(2-x%3)*p;x/=3;p*=3;}
-        LUT_NOT[a]=nt;
+        int x=a;uint8_t nt=0,l1=0,l2=0,p=1;
+        for(int i=0;i<5;i++){int t=x%3;nt+=(2-t)*p;l1+=((t+1)%3)*p;l2+=((t+2)%3)*p;x/=3;p*=3;}
+        LUT_NOT[a]=nt;LUT_LIT1[a]=l1;LUT_LIT2[a]=l2;
         for(int b=0;b<243;b++){
             x=a;int y=b;uint8_t mn=0,mx=0,xr=0;p=1;
             for(int i=0;i<5;i++){int ta=x%3,tb=y%3;x/=3;y/=3;
@@ -519,14 +522,15 @@ static inline __uint128_t sx20(__uint128_t word){
 /* 优化版三值运算：无除法器取 tryte + 查表 + 正向累加。
  * 相比原来 unpack(9×128位除法)+SIMD-min+pack(45×乘加)：tryte 提取由 9 次硬件 div
  * 改为 9 次 magic mul+shift（零除指令），运算由 45 次逐 trit 降为 9 次查表。
- * mode 0=min 1=max 2=not 3=(a+b) mod 3 */
+ * mode 0=min 1=max 2=not 3=(a+b) mod 3 4=lit1 5=lit2（Post literal，§6.1） */
 static __uint128_t tritwise(int mode,__uint128_t a,__uint128_t b){
     __uint128_t res=0,p=1;
     for(int i=0;i<9;i++){
         uint8_t ta,tb;
         a=divmod243(a,&ta); b=divmod243(b,&tb);
         uint8_t r=(mode==0)?LUT_MIN[ta][tb]:(mode==1)?LUT_MAX[ta][tb]:
-                    (mode==2)?LUT_NOT[ta]:LUT_XOR[ta][tb];
+                    (mode==2)?LUT_NOT[ta]:(mode==3)?LUT_XOR[ta][tb]:
+                    (mode==4)?LUT_LIT1[ta]:LUT_LIT2[ta];
         res+=(__uint128_t)r*p;p*=243;
     }
     return res;
@@ -858,6 +862,9 @@ static inline void step(VM *v){
         case OP_TSEXT:v->reg[rd]=tsext(v->reg[rs1]);break;
         case OP_TPACK:{__uint128_t x=v->reg[rs1];uint64_t bn=0,p=1;for(int i=0;i<5;i++){bn+=(uint64_t)(x%3)*p;x/=3;p*=3;}v->reg[rd]=u(div243(bn*256+242)%256);break;}  /* 无除法器 */
         case OP_TUNPACK:{__int128_t byte=v->reg[rs1]%256,res=0;for(int i=0;i<5;i++){byte*=3;int d=(int)((byte>>8)&0xFF);byte&=0xFF;res+=d*POW3[4-i];}v->reg[rd]=u(res);break;}
+        case OP_LIT0:v->reg[rd]=tritwise(2,v->reg[rs1],0);break;  /* x^0 ≡ TNOT 词级 */
+        case OP_LIT1:v->reg[rd]=tritwise(4,v->reg[rs1],0);break;  /* x^1 循环后继 */
+        case OP_LIT2:v->reg[rd]=tritwise(5,v->reg[rs1],0);break;  /* x^2 循环前驱 */
         case OP_JAL:v->reg[rd]=oldpc+4;v->pc_=in->target;break;
         case OP_JALR:{v->reg[rd]=oldpc+4;__int128_t t=s(v->reg[rs1])+imm;v->pc_=(int)align_down4(t);break;}  /* 目标按 tryte 对齐 */
         case OP_LUI:v->reg[rd]=u((__int128_t)immraw*POW3[7]);break;
@@ -907,6 +914,7 @@ static void vm_run_cg(VM *v, long max_steps){
         [OP_TMIN]=&&L_TMIN,[OP_TMAX]=&&L_TMAX,[OP_TNOT]=&&L_TNOT,[OP_TAND]=&&L_TAND,
         [OP_TOR]=&&L_TOR,[OP_TNEG]=&&L_TNEG,[OP_TSEXT]=&&L_TSEXT,
         [OP_TPACK]=&&L_TPACK,[OP_TUNPACK]=&&L_TUNPACK,
+        [OP_LIT0]=&&L_LIT0,[OP_LIT1]=&&L_LIT1,[OP_LIT2]=&&L_LIT2,
         [OP_CSRRW]=&&L_CSRRW,[OP_CSRRS]=&&L_CSRRS,[OP_CSRRC]=&&L_CSRRC,
         [OP_CSRRWI]=&&L_CSRRWI,[OP_CSRRSI]=&&L_CSRRSI,[OP_CSRRCI]=&&L_CSRRCI,
         [OP_MRET]=&&L_MRET,[OP_WFI]=&&L_WFI,
@@ -1040,6 +1048,9 @@ L_TNEG:  v->reg[rd]=u(-a); NEXT();
 L_TSEXT: v->reg[rd]=tsext(v->reg[rs1]); NEXT();
 L_TPACK: {__uint128_t x=v->reg[rs1];uint64_t bn=0,p=1;for(int i=0;i<5;i++){bn+=(uint64_t)(x%3)*p;x/=3;p*=3;}v->reg[rd]=u(div243(bn*256+242)%256);} NEXT();  /* 无除法器 */
 L_TUNPACK:{__int128_t byte=v->reg[rs1]%256,res=0;for(int i=0;i<5;i++){byte*=3;int d=(int)((byte>>8)&0xFF);byte&=0xFF;res+=d*POW3[4-i];}v->reg[rd]=u(res);} NEXT();
+L_LIT0:  v->reg[rd]=tritwise(2,v->reg[rs1],0); NEXT();   /* x^0 ≡ TNOT 词级 */
+L_LIT1:  v->reg[rd]=tritwise(4,v->reg[rs1],0); NEXT();   /* x^1 循环后继 */
+L_LIT2:  v->reg[rd]=tritwise(5,v->reg[rs1],0); NEXT();   /* x^2 循环前驱 */
 L_CSRRW: csr_op(v,OP_CSRRW,rd,rs1,immraw); NEXT();
 L_CSRRS: csr_op(v,OP_CSRRS,rd,rs1,immraw); NEXT();
 L_CSRRC: csr_op(v,OP_CSRRC,rd,rs1,immraw); NEXT();

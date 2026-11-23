@@ -572,6 +572,13 @@ class VM:
             self.regs[rd] = self._tritwise("min", self.regs[rs1], self.regs[rs2])
         elif name == "TNOT":
             self.regs[rd] = self._tritwise("not", self.regs[rs1], 0)
+        elif name == "LIT0":
+            # Post literal x^0：逐 trit 2−t（Kleene ¬，词级 ≡ TNOT；§6.1）
+            self.regs[rd] = self._tritwise("not", self.regs[rs1], 0)
+        elif name in ("LIT1", "LIT2"):
+            # Post literal x^a 循环：逐 trit (t+a) mod 3
+            self.regs[rd] = self._tritwise("lit1" if name == "LIT1" else "lit2",
+                                           self.regs[rs1], 0)
         elif name == "TAND":
             self.regs[rd] = self._tritwise("min", self.regs[rs1], self.regs[rs2])
         elif name == "TOR":
@@ -725,6 +732,10 @@ class VM:
                 d = dx if dx < dy else dy
             elif op == "not":
                 d = 2 - dx
+            elif op == "lit1":
+                d = (dx + 1) % 3
+            elif op == "lit2":
+                d = (dx + 2) % 3
             else:                                   # xor：逐 trit 模 3 相加
                 d = (dx + dy) % 3
             res += d * p

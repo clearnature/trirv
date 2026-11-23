@@ -56,6 +56,7 @@
 #define O_FENCE 10
 #define O_TLOGIC 11
 #define O_TPACK 12
+#define O_TLIT 22
 #define O_ZICSR 16
 #define O_PRIV 17
 #define O_MEXT 13
@@ -142,6 +143,8 @@ static InstDef ITAB[] = {
        不在 ITAB——find_inst 返回 NULL → 行报 unknown mnemonic 后槽位留零字
        （NOP），~ 静默变成原值穿透；fmt==0 块内的特判因 d==NULL 是死代码。 */
     {"TNOT",O_TLOGIC,0,2,0},
+    /* T-LIT 文字运算（opcode 22，§6.1）：R 型单操作数，funct=a */
+    {"LIT0",O_TLIT,0,0,0},{"LIT1",O_TLIT,1,0,0},{"LIT2",O_TLIT,2,0,0},
     {"ECALL",O_SYSTEM,0,0,1},
     {NULL,0,0,0,0}
 };

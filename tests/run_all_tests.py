@@ -108,6 +108,7 @@ SUITES = [
     ("trirv_mem4_e2e.py",         "LW4/SW4 4-tryte 契约 6 项", False, None),
     ("trirv_arch_e2e.py",         "musl arch 层 read8/write8 12 项", False, None),
     ("trirv_tcc_syscall_e2e.py",  "tri-tcc __tri_syscall 对接面 7 项", False, None),
+    ("trirv_tlit_e2e.py",         "T-LIT 文字运算双 VM 6 项", False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),

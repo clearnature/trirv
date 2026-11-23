@@ -139,6 +139,8 @@ INST = {
     # TSEXT: 单操作数（rs1），funct=2；把 rs1 低 5 trit(1 tryte) 按 3 补码符号扩展到 45 trit
     "TSEXT":(11,2,0,"R"),
     "TPACK":(12,0,0,"R"), "TUNPACK":(12,0,1,"R"),
+    # T-LIT（opcode 22，§6.1）：Post 文字运算 literal x^a，逐 trit 循环
+    "LIT0":(22,0,0,"R"), "LIT1":(22,1,0,"R"), "LIT2":(22,2,0,"R"),
     # ZICSR: I-type，csr 号编码在 imm[6:0] 字段，rs1 字段为源寄存器（读/写值）或立即数
     "CSRRW":(16,0,0,"I"), "CSRRS":(16,1,0,"I"), "CSRRC":(16,2,0,"I"),
     "CSRRWI":(16,3,0,"I"), "CSRRSI":(16,4,0,"I"), "CSRRCI":(16,5,0,"I"),
