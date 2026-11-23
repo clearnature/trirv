@@ -1,20 +1,80 @@
 name: ci
 on: [push, workflow_dispatch]
+
 jobs:
-  fast:
-    runs-on: ${{ matrix.os }}
+  build-test:
     strategy:
-      matrix: { os: [macos-latest, ubuntu-latest] }
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - run: python3 tests/run_all_tests.py --fast
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Checkout musl vendor branch (trirv-vendor)
+        uses: actions/checkout@v4
+        with:
+          repository: clearnature/musl
+          ref: trirv-vendor
+          path: third_party/musl
+
+      - name: (Linux) install LLVM toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang llvm
+
+      - name: (Windows) install LLVM + make via msys2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          install: make clang
+      - name: (Windows) put msys2 clang/make on PATH
+        if: runner.os == 'Windows'
+        run: echo "D:/a/_temp/msys64/usr/bin;D:/a/_temp/msys64/clang64/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Build TriRV core with LLVM (clang)
+        run: |
+          clang -std=gnu11 -O2 -I. -o vm/bin/trirv_vm vm/trirv_vm.c -lm
+          cd cc && clang -std=gnu11 -O2 -o bin/trirv_cc trirv_cc.c -lm
+
+      - name: Build tri-tcc (tinycc trirv branch)
+        run: |
+          cd tinycc
+          ./configure
+          make -j2
+          cp tcc trirv-tcc
+
+      - name: Run fast regression
+        run: python3 tests/run_all_tests.py --fast --timeout 900
+        env:
+          TRV_CC_STRICT: "1"
+
   nightly:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 tests/run_all_tests.py --san --timeout 1200
-      - run: |
-          SEED=$((RANDOM % 100000))
-          echo "fuzz seed=$SEED"
-          python3 tests/run_all_tests.py --fuzz-seed $SEED
+        with: { submodules: recursive }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/checkout@v4
+        with: { repository: clearnature/musl, ref: trirv-vendor, path: third_party/musl }
+      - name: Build with LLVM
+        run: |
+          clang -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o vm/bin/trirv_vm vm/trirv_vm.c -lm
+          cd cc && clang -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o bin/trirv_cc trirv_cc.c -lm
+      - name: Full regression under ASan/UBSan (ADR-29)
+        run: python3 tests/run_all_tests.py --timeout 1200
+      - name: Random-seed fuzz
+        run: |
+          SEED=$((RANDOM % 100000)); echo "fuzz seed=$SEED"
+          python3 tests/run_all_tests.py --fuzz-seed $SEED --only fuzz
