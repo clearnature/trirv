@@ -137,6 +137,31 @@ stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）�
 ③ 共享窗真硬件并行：访问点路由（load/store 分流 hub 窗口）替代步间
    同步——参照 RISC-V multi-hart + RVWMO（弱内存模型契约）+ MESI。
 
+### B4. 外部建议「RV-T」对照复核（2026-11-23）——结论：维持 D1–D5，不迁移
+
+对照对象：标准三进制 {0,1,2} + 3 补码 + Kleene 的 RISC-V 式提案（21-trit 字与
+指令、6-trit tryte、I/S/B imm 8 trit、U/J imm 14 trit、CSR 地址 4 trit）。
+- **一致**：数值制式、负数判定、取负、Kleene AND/OR（min/max）、opcode/rd/funct
+  字段宽、LUI 结构（imm × 3^7）。
+- **分歧且不采纳**：21-trit 字覆盖不了 int64（需 41 trit；5-trit tryte 对齐下 45 最小）；
+  21 与 6-trit tryte 不整除（字与指令均 3.5 tryte）；PC 按 trit 计则分支仅 ±156 条
+  （TriRV ±1093、RV32I ±1024）；CSR 4 trit 装不下 RISC-V 标准编号（mstatus=768>80）；
+  funct 子码数值为纯外观差异（TriRV 连续重编），改动无收益。
+- **提案自身错误**：字段宽三处不一致（架构图 5 trit vs 编码表 4 trit）；PC 口径
+  自相矛盾（按指令计 vs 按 trit 计）；「极限压缩版」witness 在其声明的延迟槽前提下
+  偶数 n 返回 (t2,t2)；「乘法无减捷径」不成立（2·X·3^i = X·3^(i+1) − X·3^i）；
+  标题 41 条实为 47 条。
+- **实证**：witness(n) 的 TriRV C 等价形式（`2 << k`）双 VM 通过，n=0..43 恒等式
+  0 错（exit=44 = 0×100 + 22 偶 + 22 奇）。
+- **由对照引出、待拍板**：
+  - [ ] B4a C-JAL 改走 TC 子格式 sf5（opcode 23 内 t5–t14 共 10 trit 放跳转量），
+        不占 opcode 24——27 个 opcode 已用 24，仅余 24/25/26（修正 B1② 原方案）
+  - [ ] B4b FENCE.I 占位（Zifencei；统一内存下为空操作，WASM/JIT 路线前置）
+  - [ ] B4c CSR 地址空间扩展方案（现 imm7 上限 2186：mcycle 0xB00=2816、
+        cycle 0xC00=3072 编不进；当前实现 8 个）——C3 固件前置
+  - [ ] B4d RTL 期备忘（现不动）：指令步长 4 tryte 非 3 的幂，JALR 对齐只能舍入
+        不能掩码；移位量取 7 trit（0–2186）需比较器而非截断
+
 ## C. 大方向立项（计划文档在库，未开工；附开源参照）
 
 - [ ] C1. LLVM 后端（docs/LLVM_BACKEND_PLAN.md）
