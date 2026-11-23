@@ -31,7 +31,7 @@ TOKEN_RE = re.compile(r"""
   | (?P<op>\.\.\.|==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\.|[-+*/%=<>!&|^~?,;(){}\[\]:])
 """, re.X)
 
-KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed",
+KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed","__tint2","__tint","__tbool",
             "if","else","while","for","return","break","continue"}
 
 class Tok:
@@ -90,6 +90,9 @@ def type_size(ty, structs):
     if m: return int(m.group(2)) * type_size(m.group(1), structs)
     if ty.endswith("*"): return WORD_TRYTES
     if ty in ("char", "uchar", "schar"): return 1
+    if ty == "__tint2": return 4              # C2 方案 A：4-tryte/20-trit
+    if ty == "__tbool": return 1              # 批B'：1-tryte Kleene 布尔
+    # __tint = WORD_TRYTES（默认分支同 int）
     if ty.startswith("struct "):
         name = ty[len("struct "):]
         info = structs.get(name)
@@ -175,6 +178,12 @@ class Parser:
             else:
                 self.accept("int")
                 base = "int"
+        elif self.at("__tint2"):
+            self.take("__tint2"); base = "__tint2"   # 4-tryte/20-trit 档（C2 方案 A）
+        elif self.at("__tint"):
+            self.take("__tint"); base = "__tint"     # Kleene 逻辑词（批B'）
+        elif self.at("__tbool"):
+            self.take("__tbool"); base = "__tbool"   # 1-tryte Kleene 布尔（批B'）
         elif self.at("int") or self.at("char") or self.at("void"):
             base = self.take().val
         elif self.at("va_list"):
@@ -250,7 +259,7 @@ class Parser:
             self.take("break"); self.take(";"); return Node("break")
         if self.at("continue"):
             self.take("continue"); self.take(";"); return Node("continue")
-        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed"):
+        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed") or self.at("__tint2") or self.at("__tint") or self.at("__tbool"):
             ty = self.parse_type()
             decls = []
             while True:
@@ -480,11 +489,15 @@ class CodeGen:
     def load_ty(self, ty, base, off, dst):
         b, o = self._mem_addr(base, off)
         # char 无符号（RISC-V psABI 默认），走 LBU 零扩展；仅 signed char 用 LB 符号扩展。
-        op = "LBU" if ty in ("char", "uchar") else ("LB" if ty == "schar" else "LW")
+        op = ("LBU" if ty in ("char", "uchar") else
+              "LB" if ty in ("schar", "__tbool") else
+              "LW4" if ty == "__tint2" else "LW")   # __tbool 有符号字节容器（精确往返）；
+                                                # __tint2 sx20 符号扩展
         self.emit(f"{op}   {dst}, {o}({b})")
     def store_ty(self, ty, base, off, src):
         b, o = self._mem_addr(base, off)
-        op = "SB" if ty in ("char", "uchar", "schar") else "SW"
+        op = ("SB" if ty in ("char", "uchar", "schar", "__tbool") else
+              "SW4" if ty == "__tint2" else "SW")   # __tint2 mod 3^20 截断
         self.emit(f"{op}   {src}, {o}({b})")
 
     # ---- 结构体整块拷贝（按字，struct 大小恒为 9 的倍数）----
@@ -688,7 +701,10 @@ class CodeGen:
             self.push("t1"); return lty
         elif k == "un":
             ty = self.gen_expr(n.e); self.pop("t0")
-            if n.op == "-": self.emit("SUB  t0, zero, t0")
+            if n.op == "-":
+                if ty in ("__tint", "__tbool"):
+                    raise RuntimeError("UNSUPPORTED: __tint has no unary '-' (Kleene system)")
+                self.emit("SUB  t0, zero, t0")
             elif n.op == "+": pass
             elif n.op == "!":
                 self.emit("SLTIU t0, t0, 1")
@@ -696,7 +712,10 @@ class CodeGen:
                 # 三值本征（2026-11-22 方言拍板）：~ = TNOT 直发（2-t/trit，
                 # ~0 = -1）。方案 A 的 TILDE-SUB 折叠退役。
                 self.emit("TNOT t0, t0")
-            self.push("t0"); return "int" if ty != "char*" else ty
+            self.push("t0")
+            if n.op == "~" and ty in ("__tint", "__tbool"):
+                return ty                        # ~ 保持 Kleene 系类型
+            return "int" if ty != "char*" else ty
         elif k in ("preinc", "postinc"):
             lty = self.gen_addr(n.lv)            # 栈顶 = 左值地址
             self.pop("t0")                       # t0 = 地址
@@ -729,6 +748,18 @@ class CodeGen:
                 self.out.append(end + ":")
                 self.push("t0"); return "int"
             lty = self.gen_expr(n.l); rty = self.gen_expr(n.r)
+            # __tint/__tbool Kleene 门控（批B'，与 tri-tcc C1 / trirv_cc.c 批B
+            # 同口径）：允许 & | == !=；拒绝 ^ < > <= >= + - * / % << >>；
+            # 混 int 报错（==0/!=0 常量豁免——0 中性零）。
+            ltint = lty in ("__tint", "__tbool"); rtint = rty in ("__tint", "__tbool")
+            if ltint and rtint:
+                if op not in ("&", "|", "==", "!="):
+                    raise RuntimeError(f"UNSUPPORTED: __tint has no '{op}' (Kleene system: no xor/order/arithmetic)")
+            elif ltint != rtint:
+                zero_side = ((n.l.kind == "num" and n.l.val == 0)
+                             or (n.r.kind == "num" and n.r.val == 0))
+                if not (op in ("==", "!=") and zero_side):
+                    raise RuntimeError("UNSUPPORTED: implicit mixing of int and __tint/__tbool is not allowed")
             self.pop("t1"); self.pop("t0")
             # 指针 - 指针：差值 / 元素大小（必须先判，否则会被下面的"指针±整数"误命中）
             if op == "-" and self.ty_ptr(lty) and self.ty_ptr(rty):
@@ -769,6 +800,8 @@ class CodeGen:
                     if k > 4096:
                         raise RuntimeError(f"UNSUPPORTED: 移位量 {k} 过大")
             self.gen_bin(op, uns); self.push("t0")
+            if op in ("&", "|") and ltint and rtint:
+                return "__tint" if "__tint" in (lty, rty) else "__tbool"
             return "unsigned" if uns and op in ("/", "%") else "int"
         elif k == "va_start":
             # ap = 参数块基址 + (固定参数个数)*WORD = 第一个变参地址
