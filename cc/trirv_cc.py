@@ -119,6 +119,7 @@ class Parser:
         self.strings = {}                # addr -> bytes
         self.str_ptr = self.STR_BASE
         self.structs = {}                # name -> {"size":N, "members":[(mname,mtype,offset)]}
+        self.gvars = []                  # 批G：全局声明 [(name, ty, dims, init)]
     def peek(self): return self.toks[self.i]
     def at(self, v):
         t = self.peek(); return t.val == v and t.kind in ("op","kw")
@@ -133,12 +134,47 @@ class Parser:
 
     def parse_program(self):
         fns = []
+        gvars = []
         while self.peek().kind != "eof":
             if self.at("struct") and self._struct_is_def():
                 self.parse_struct_def()
+            elif self._glob_is_decl():
+                gvars.extend(self.parse_glob_decl())
             else:
                 fns.append(self.parse_func())
-        return fns
+        return fns, gvars
+
+    def _glob_is_decl(self):
+        """批G：顶层 `类型 名 (=|;|,|[)` 形态 → 全局声明（回溯探测，函数是
+        名字后跟 '('）。"""
+        j = self.i
+        try:
+            self.parse_type()
+        except SyntaxError:
+            self.i = j
+            return False
+        ok = (self.peek().kind == "id"
+              and self.toks[self.i + 1].val in ("=", ";", ",", "["))
+        self.i = j
+        return ok
+
+    def parse_glob_decl(self):
+        """批G：全局声明——init 走 parse_expr，常量性由 data-gen 校验
+        （num / -num / {常量,...} / 字符串）。"""
+        ty = self.parse_type()
+        out = []
+        while True:
+            name = self.take().val
+            dims = []
+            while self.accept("["):
+                dims.append(int(self.take().val))
+                self.take("]")
+            init = self.parse_initializer() if self.accept("=") else None
+            out.append((name, ty, dims, init))
+            if not self.accept(","):
+                break
+        self.take(";")
+        return out
 
     def _struct_is_def(self):
         """区分 `struct S {` 定义与 `struct S f(...)` 类型使用。"""
@@ -486,6 +522,46 @@ class CodeGen:
         self.emit(f"ADD  t3, t3, {base}")
         return "t3", 0
 
+    # ---- 批G：全局初始化数据（编译期常量；enc 口径同 trirv_cc.c enc_word：
+    #      mod 3^(5w) 后小端 w tryte；非常量诚实报错）----
+    def glob_init_bytes(self, ty, init, addr, strings):
+        size = self.ty_size(ty)
+        buf = bytearray(size)
+        if init is not None:
+            self._ginit(ty, init, buf, 0, size, strings)
+        return {addr: bytes(buf)}
+
+    def _ginit(self, ty, n, buf, off, size, strings):
+        if n.kind == "initlist":
+            ety = self.ty_elem(ty) if self.ty_array(ty) else ty
+            esz = self.ty_size(ety)
+            o = off
+            for it in n.items:
+                self._ginit(ety, it, buf, o, esz, strings)
+                o += esz
+            return
+        if n.kind == "str" and ty.startswith("char"):
+            data = strings[n.addr]
+            for i, ch in enumerate(data):
+                if off + i < size:
+                    buf[off + i] = ch
+            return
+        self._ginit_scalar(n, buf, off, size)
+
+    def _ginit_scalar(self, n, buf, off, w):
+        v = 0
+        if n.kind == "num":
+            v = n.val
+        elif n.kind == "un" and getattr(n, "op", "") == "-" and n.e.kind == "num":
+            v = -n.e.val
+        else:
+            raise RuntimeError("UNSUPPORTED: 全局初始化必须是编译期常量")
+        pv = v % (3 ** (5 * w))
+        if pv < 0:
+            pv += 3 ** (5 * w)
+        for b in range(w):
+            buf[off + b] = (pv // (243 ** b)) % 243
+
     def load_ty(self, ty, base, off, dst):
         b, o = self._mem_addr(base, off)
         # char 无符号（RISC-V psABI 默认），走 LBU 零扩展；仅 signed char 用 LB 符号扩展。
@@ -652,15 +728,25 @@ class CodeGen:
             ty = self.vtypes[n.name]
             if self.ty_array(ty):
                 # 数组名退化为指向首元素的指针：压入首址，返回元素指针类型
-                self.load_imm("t0", self.locals[n.name])
-                self.emit("ADD  t0, t0, s0")
+                if n.name in self.locals:
+                    self.load_imm("t0", self.locals[n.name])
+                    self.emit("ADD  t0, t0, s0")
+                else:
+                    self.load_imm("t0", self.gvars[n.name][0])   # 全局绝对地址
                 self.push("t0"); return self.ty_elem(ty) + "*"
             if is_struct(ty):
                 # struct 右值 = 首地址（不做单字 load）
-                self.load_imm("t0", self.locals[n.name])
-                self.emit("ADD  t0, t0, s0")
+                if n.name in self.locals:
+                    self.load_imm("t0", self.locals[n.name])
+                    self.emit("ADD  t0, t0, s0")
+                else:
+                    self.load_imm("t0", self.gvars[n.name][0])
                 self.push("t0"); return ty
-            self.load_ty(ty, "s0", self.locals[n.name], "t0"); self.push("t0"); return ty
+            if n.name in self.locals:
+                self.load_ty(ty, "s0", self.locals[n.name], "t0")
+            else:
+                self.load_ty(ty, "zero", self.gvars[n.name][0], "t0")   # 全局绝对读
+            self.push("t0"); return ty
         elif k == "addr":
             # &x：取左值地址（gen_addr 把地址推栈），结果是指向该类型的指针
             ety = self.gen_addr(n.e)
@@ -882,8 +968,11 @@ class CodeGen:
     def gen_addr(self, n):
         k = n.kind
         if k == "var":
-            self.load_imm("t0", self.locals[n.name])
-            self.emit("ADD  t0, t0, s0")         # 地址 = fp + 偏移
+            if n.name in self.locals:
+                self.load_imm("t0", self.locals[n.name])
+                self.emit("ADD  t0, t0, s0")     # 地址 = fp + 偏移
+            else:
+                self.load_imm("t0", self.gvars[n.name][0])   # 全局绝对地址
             self.push("t0")
             return self.vtypes[n.name]
         elif k == "deref":
@@ -1101,7 +1190,23 @@ class CodeGen:
         else:
             raise RuntimeError(f"未知语句 {k}")
 
-    def compile(self, fns):
+    def compile(self, fns, gvars=None, str_top=None, strings=None):
+        # ---- 批G：全局变量——地址分配（字符串区之上，顺序无对齐，与
+        # trirv_cc.c GBASE 口径一致）+ 编译期常量数据生成 ----
+        self.gvars = {}
+        gdata = {}
+        gcur = str_top if str_top is not None else 200
+        for name, ty0, dims, init in (gvars or []):
+            ty = ty0
+            for d in dims:
+                ty += f"[{d}]"
+            if ty == "char" and init is not None and init.kind == "str":
+                ty = f"char[{len(strings[init.addr]) + 1}]"   # char g[] = "..." 含 NUL
+            addr = gcur
+            gcur += self.ty_size(ty)
+            self.gvars[name] = (addr, ty)
+            gdata.update(self.glob_init_bytes(ty, init, addr, strings))
+        self._gdata = gdata                    # compile_c 取用（并入 mem_init）
         # 先收集函数名与返回类型
         self.func_names = {f.name for f in fns}
         self.func_rets = {f.name: f.ret for f in fns}
@@ -1131,6 +1236,9 @@ class CodeGen:
                     self.locals[nm] = self.nlocals  # tryte 偏移
                     self.nlocals += self.ty_size(ty)
                     seen.add(nm)
+            for gnm, (gaddr, gty) in self.gvars.items():
+                if gnm not in self.vtypes:
+                    self.vtypes[gnm] = gty          # 全局并入类型表（局部遮蔽）
             self.func_prologue(self.nlocals, f.params, sret=is_struct(f.ret),
                                variadic=variadic)
             self.gen_stmt(f.body)
@@ -1154,8 +1262,13 @@ def compile_c(src):
     """C 源码 -> (机器码, 符号表, 汇编文本, 字符串常量表 {addr: bytes})。"""
     toks = lex(src)
     parser = Parser(toks)
-    fns = parser.parse_program()
+    fns, gvars = parser.parse_program()
     cg = CodeGen(parser.structs)
-    asm_text = cg.compile(fns)
+    asm_text = cg.compile(fns, gvars=gvars, str_top=parser.str_ptr,
+                          strings=parser.strings)
     prog, labels = asm.assemble(asm_text)
-    return prog, labels, asm_text, parser.strings
+    gdata = getattr(cg, "_gdata", None) or {}
+    merged = dict(parser.strings)
+    for a, b in gdata.items():
+        merged[a] = b
+    return prog, labels, asm_text, merged
