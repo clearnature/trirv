@@ -1,4 +1,5 @@
 # 指令覆盖矩阵（批次 1.11 快照，2026-11-23）
+状态：快照（批次 1.11 补缺前；重跑 tools/cov_matrix.py 取最新）。
 
 > 静态扫描：助记符出现在 tests/*.py、libc-musl/musl_tri/*.c、crt/firmware 源中即记命中。
 

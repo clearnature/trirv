@@ -1,4 +1,5 @@
 # TriRV 工具链路线转折：TinyCC 移植任务计划书
+状态：进行中（ADR-32 批次 2.15 统一补标——该文档未逐份定稿，收官时更新）
 
 > 状态：**计划（2026-11-21 落档）** —— 用户决策：**tinycc 取代 llvm-project**，LLVM 不是当前任务。
 > 上游仓库 `clarenature/tinycc`（TinyCC/tinycc 的 C23 开发 fork），已从 `dev-c23` 建立

@@ -1,3 +1,5 @@
+状态：进行中（ADR-13 关账后维护；三条 ⚠ 已于 2026-11-23 探针验证关闭）
+
 # tcc 行为理解笔记（TriRV 后端实现者守则）
 
 > 用途：TriRV 后端（tri-gen.c / tri-link.c）与 tccgen 前端改造的实现者执行前必读。
@@ -53,7 +55,7 @@
 
 **后端契约**：c.i 的 64 位模式对 VT_INT 恒为 32 位值的符号/零扩展，VT_LLONG 恒为全 64 位。TriRV 自造常量（tri-gen 内部 vpush）也必须维持该不变量。将来若把 int 提升到 45-trit 常量语义，value64/gen_cast/tccpp 词法器三处都要重做（不建议，见 §5.3）。
 
-### 1.3 gen_opic 常量折叠 = 宿主 mod-2^32，与 45-trit 运行时分歧（⚠ 结构性）
+### 1.3 gen_opic 常量折叠 = 宿主 mod-2^32，与 45-trit 运行时分歧（✅ 已修——2026-11-23 探针 100000*100000%1000=0 双侧一致，45-trit 域折叠落地）
 
 - gen_opic 在 uint64 上做全套算术/比较（tccgen.c:2402-2448），移位掩码 32 位化 `int shm = (t1 == VT_LLONG) ? 63 : 31;`（tccgen.c:2397），结果按左操作数类型 value64 回写（2449）→ **TriRV 的 VT_INT 常量折叠一律 mod-2^32 截断**，而运行时 int 是 45-trit（mod-3^45）。
 - 实测（核实 pass，双 VM）：`return 100000*100000 % 1000` → 152（折叠成 1410065408 后 %1000=408）；`int a=100000,b=100000; return a*b % 1000` → 0（运行时 3^45 域 10^10%1000=0）；`return 100000*100000 == 1410065408` → 1。同一表达式折叠与非折叠结果必有一假。
@@ -65,7 +67,7 @@
 - 0x80000000 边界全部符合 C（实测通过）：十六进制 ≥2^31 无后缀 → TOK_CUINT（tccpp.c:2974-2983，2978-2979 行）→ VT_INT|VT_UNSIGNED（tccgen.c:6237-6239）→ value64 零扩展；`-0x80000000` = 0-0x80000000（tccgen.c:6846-6856）折叠为 unsigned、位型 0x80000000，`-0x80000000 < 0` 为假；十进制 2147483648 升位 TOK_CLLONG（tccpp.c:2967-2971）。probe：u80000000_gt0=1、neg0x80000000_lt0=0、`(char)300`→44、`(int)-1u`→255。
 - ⚠ TriRV 落点：PTR_SIZE=9 时 VT_PTR 目标落入 0xffffffff 掩码分支（3422 条件为假）——对 VM 地址 <2^20 数值无害，但与 9-tryte 指针模型不一致；`char* p = (char*)0x123456789` 类常量会被截断。
 
-### 1.5 char/short 截断双轨分歧（⚠ 需 ABI 拍板）
+### 1.5 char/short 截断双轨分歧（✅ 已定案关闭——ADR-13：mod-243 口径；2026-11-23 八条探针双工具链一致，(char)300=57 双侧）
 
 - 显式 cast 走 gen_cast 常量掩码 0xff（8-bit 口径）；赋值/初始化走 vstore 的 delayed_cast（tccgen.c:3920-3950，本会话核实：3928 行 `delayed_cast = 1`，3943 `gv(RC_TYPE(dbt))`，3946-3950 设 VT_MUSTCAST、不做 gen_cast 截断，靠后端 store 指令自身截断）——x86 存 1 字节=8-bit 截断，TriRV SB 存 1 tryte=mod-243 截断。force_charshort_cast 在 tccgen.c:3285-3293。
 - 实测分歧：`return (char)300` → 44（&0xff）；`char c = 300; return c` → 57（300 mod 243）；`static char m[6]; m[0]=300` → 57。**同一程序两条路径给出 44 与 57 两个值。**
@@ -219,7 +221,7 @@
 
 ## 5. 数据模型与 ABI 决策点
 
-### 5.1 struct 对齐：9-tryte vs 打包（✗ 需拍板 + tccgen 层改造）
+### 5.1 struct 对齐：9-tryte vs 打包（✅ 已修——2026-11-23 探针 struct{char;int*} 指针成员偏移=9 双侧一致，ADR-13）
 
 - ABI §6 要求 struct 成员起始对齐 9 tryte（trirv/trirv-unified-memory-abi.md:86）；tri-tcc 的 type_size 把 int/double/llong/float 对齐全设 1（tccgen.c:3619-3627 `*a = 1; return 9/4`），tri-gen.c:10-12 自认「对齐简化：全 align=1……9-对齐在 T-1 收尾时以专用 hook 重做」。实测 `struct{char c; int *p}` 的 p 落 offset 1 而非 9（全局/局部两版均 1）。
 - **根因不止 type_size**：tccgen 全部对齐圆整是二进制掩码 `(c+align-1) & -align`——成员 tccgen.c:4545、struct 尺寸 4655、局部 9275、临时 1582、sret 空间 7109（本会话核实 4545/4655/9275 原文存在）。align=9 非 2 的幂 → 掩码运算清 bit3 而非圆整到 9，指针成员偏移与含指针 struct 尺寸**系统性错误**。MAX_ALIGN=9（tri-gen.c:43）还使 `__attribute__((aligned))` 裸形式直接报错（tccgen.c:4257-4268 exact_log2p1 校验；实测 aligned(9) → 'alignment must be a positive power of two'）。

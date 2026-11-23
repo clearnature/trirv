@@ -1,3 +1,5 @@
+状态：✅ 已收官（校准 2026-11-23，批次 2.11）
+
 # ternary-abi-minimal
 
 # 三进制 VM 最小 ABI 设计清单（方案 C）
@@ -105,17 +107,27 @@ TriRV 是三进制 ISA，硬件位宽本就不是 2 的幂，宿主 LP64 惯例�
 
 ---
 
-## 6. 系统调用约定
+## 6. 系统调用约定（2026-11-23 校准为现状；冻结政策见 DECISIONS.md ADR-09）
 
-| 项 | 约定 |
+| 项 | 约定（现状实现） |
 | --- | --- |
-| 触发 | 专用 `syscall` 指令 |
-| 调用号 | r15 |
-| 参数 | r3-r7 |
-| 返回值 | r3（负值为 -errno） |
-| 最小集合 | `read, write, open, close, exit, brk, mmap, getpid` |
+| 触发 | `ECALL` 指令（opcode 9） |
+| 调用号 | a7（x17） |
+| 参数 | a0–a5（x10–x15） |
+| 返回值 | a0（负值为 -errno；未知号返回 -ENOSYS=-38） |
+| 退出 | a7=93/94（exit/exit_group），退出码 = a0 & 0xFF |
+| 冻结 | Linux 编号照抄；TriRV 扩展区 5000+ 按族登记只增不改（ADR-09） |
 
-> 起步只需 8 个 syscall，musl 的最小 port 就能跑 `hello world`。
+> 现状 29 个 Linux 号 + 5000 族（read8/write8）+ 5010 族（AMP coreid/msend/mrecv）。
+
+## 6.1 内存对齐（校准为 tryte 口径）
+
+| 类型 | 对齐/宽度 |
+| --- | --- |
+| char | 1 tryte |
+| short | 2 tryte（=10 trit，mod 59049） |
+| int / long / pointer | 9 tryte（=45 trit，long=pointer 同宽） |
+| struct | 成员起始 9-tryte 对齐（ADR-13：tri-tcc 与 trirv_cc 实测一致）
 
 ---
 
@@ -130,11 +142,11 @@ TriRV 是三进制 ISA，硬件位宽本就不是 2 的幂，宿主 LP64 惯例�
 
 ---
 
-## 8. 目标文件格式（起步建议）
+## 8. 目标文件格式（已定案：ADR-10）
 
-- **阶段 1**：自定义简单格式（magic + 段表 + 入口地址），跳过 ELF 复杂性
-- **阶段 2**：切 ELF32/ELF64 风格，配合 binutils 后端
-- 重定位类型：绝对地址、PC 相对
+- **正式格式**：TRVO（文本目标，增量链接）+ TRV1（槽制容器）+ TRV2（tryte 流容器）。
+- ~~阶段 2 切 ELF~~ **作废**（ADR-10：无 binutils/GDB 消费者，ELF 随 LLVM 立项再议）。
+- 重定位类型：绝对地址（符号化 &name）、PC 相对（槽距/流距随容器）。
 
 ---
 

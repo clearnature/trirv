@@ -1,4 +1,5 @@
 # trirv-unified-memory-abi
+状态：进行中（ADR-32 批次 2.15 统一补标——该文档未逐份定稿，收官时更新）
 
 # TriRV 统一内存与指针 ABI（已实现规格）
 
