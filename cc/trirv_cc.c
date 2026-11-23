@@ -710,7 +710,12 @@ static Node* parse_decl(void){
         /* 首声明符的星号已在 parse_type 并入 ty；后续声明符从 base 起步 */
         if(n->ndecls==0) dty=ty;
         else {
-            dty=base;
+            /* 坑实录（ASAN stack-use-after-scope 抓获）：base 是本函数栈缓冲，
+               裸存进 AST（n->dtypes）返回即悬垂——多声明符局部（int i, dp, j;
+               的 dp/j）后来读 ty 时踩栈残留，症状随负载漂移（『address of
+               register-allocated local』随机假错，batch_musl 间歇红）。
+               修复 = strdup；首声明符 ty 已是 parse_type 的堆串无需处理。 */
+            dty=strdup(base);
             while(at("*")){ take();
                 char buf[256]; snprintf(buf,sizeof(buf),"%s*",dty);
                 dty=strdup(buf);
@@ -3627,13 +3632,20 @@ static int sym_emit(uint32_t*prog,int idx,int rd,long long v){
     }
     return idx;
 }
-/* 从汇编行解析 &sym 的值与目的寄存器（操作数一）；成功返回 0 */
+/* 从汇编行解析 &sym 的值与目的寄存器（操作数一）；成功返回 0。
+ * is_lbl=1 表示值来自函数标签（TRV2 发射需随流重排重写）——
+ * 全局数据地址不受流打包影响，标记 0。 */
+static int sym_parse_lbl(const char*line,char*sym,int symcap,long long*val,int*rd,int*is_lbl);
 static int sym_parse(const char*line,char*sym,int symcap,long long*val,int*rd){
+    int dummy; return sym_parse_lbl(line,sym,symcap,val,rd,&dummy);
+}
+static int sym_parse_lbl(const char*line,char*sym,int symcap,long long*val,int*rd,int*is_lbl){
+    *is_lbl=0;
     const char*amp=strchr(line,'&'); if(!amp) return -1;
     snprintf(sym,symcap,"%s",amp+1);
     char*e2=sym; while(*e2&&!isspace((unsigned char)*e2)&&*e2!=',')e2++; *e2=0;
     int la=find_label(sym);
-    if(la>=0){ *val=(long long)la*4; }
+    if(la>=0){ *val=(long long)la*4; *is_lbl=1; }
     else if(!strncmp(sym,"__strimp_",9)||!strncmp(sym,"__str_",6)){
         /* 字符串符号（2026-11-22 §5.7 字符串符号化）：__str_<k>（主单元）/
            __strimp_<j>（导入单元，经改名映射）——k/j = STRSEG 下标，
@@ -3657,6 +3669,9 @@ static int sym_parse(const char*line,char*sym,int symcap,long long*val,int*rd){
     }
     return *rd>=0?0:-1;
 }
+
+/* TRV2 发射用：函数地址常量展开段记录（slot 起止 + 标签槽） */
+static int *SYM_S, *SYM_E, *SYM_LBL; static int NSYM, CAPSYM;
 
 static uint32_t* assemble_all(int*pn){
     /* 三阶段（2026-11-22 §5.7）：
@@ -3697,12 +3712,17 @@ static uint32_t* assemble_all(int*pn){
             char*t=colon+1; while(*t==' ')t++; if(!*t) continue; s=t;
         }
         if(*s&&strchr(s,'&')){
-            char sym[128]; long long v; int rd;
-            if(sym_parse(s,sym,sizeof(sym),&v,&rd)){
+            char sym[128]; long long v; int rd; int is_lbl;
+            if(sym_parse_lbl(s,sym,sizeof(sym),&v,&rd,&is_lbl)){
                 fprintf(stderr,"[asm] unknown symbol &%s\n",sym);
                 return NULL;
             }
-            idx = sym_emit(prog,idx,rd,v);
+            if(is_lbl){
+                int e0=idx; idx = sym_emit(prog,idx,rd,v);
+                if(NSYM>=CAPSYM){CAPSYM=CAPSYM?CAPSYM*2:16;SYM_S=realloc(SYM_S,sizeof(int)*CAPSYM);SYM_E=realloc(SYM_E,sizeof(int)*CAPSYM);SYM_LBL=realloc(SYM_LBL,sizeof(int)*CAPSYM);}
+                SYM_S[NSYM]=e0; SYM_E[NSYM]=idx; SYM_LBL[NSYM]=v/4; NSYM++;
+            } else
+                idx = sym_emit(prog,idx,rd,v);
             continue;
         }
         if(*s){ prog[idx]=asm_line(s,idx); idx++; }
@@ -3710,7 +3730,126 @@ static uint32_t* assemble_all(int*pn){
     return prog;
 }
 
-/* 分配字符串常量地址 */
+/* ---- TRV2 发射（B1① 正式化）：槽制 prog → tryte delta 重写 → 流写出 ----
+ * 1) 宽度表（首 tryte %27>=23 → TC 3 / 否则 4）
+ * 2) 分支/跳转 imm：slot delta → tryte delta（BR 六向 + JAL + TC sf3/4）
+ * 3) 函数地址常量段：sym_emit 展开值 slot*4 → 新流偏移（值变小 → 序列
+ *    缩短时以 NOP(ADDI zero,zero,0) 填充原跨度，槽位稳定）
+ * 4) pack_stream + 写 TRV2 容器（段表与 TRV1 同构——数据地址不受流打包影响） */
+static void put_u32(FILE*f,uint32_t v);
+static int tc_getf(uint32_t v,int lo,int hi){
+    uint32_t p=1,m=1;
+    for(int i=0;i<lo;i++) p*=3;
+    for(int i=0;i<hi-lo+1;i++) m*=3;
+    return (int)((v/p)%m);
+}
+/* ---- TRV2 发射（B1① 正式化）：槽制 prog → tryte delta 重写 → 流写出 ----
+ * 1) 宽度表（首 tryte %27>=23 → TC 3 / 否则 4）
+ * 2) 跳转 imm：slot delta → tryte delta（BR 六向 + JAL + TC sf3/4）
+ * 3) 函数地址常量段：sym_emit 展开值 slot*4 → 新流偏移（值变小 → 序列
+ *    缩短以 NOP=ADDI zero,zero,0 填充，槽位稳定——词 0 非法不可用作填充）
+ * 4) pack 流 + 写 TRV2 容器（段表与 TRV1 同构——数据地址不受流打包影响） */
+static int write_trv2(const char*path,uint32_t*prog,int n){
+    int *w=malloc(sizeof(int)*(size_t)(n?n:1));
+    long long *off=malloc(sizeof(long long)*(size_t)(n+1));
+    off[0]=0;
+    for(int i=0;i<n;i++){
+        w[i]=((prog[i]%243)%27>=23)?3:4;
+        off[i+1]=off[i]+w[i];
+    }
+    const uint32_t P8=6561u,P17=129140163u,P7=2187u,P3=27u;   /* 3^8 3^17 3^7 3^3 */
+    for(int i=0;i<n;i++){
+        uint32_t v=prog[i];
+        if((v%243)%27>=23){                              /* TC：sf3/4 分支重编 */
+            int sf=tc_getf(v,3,4);
+            if(sf==3||sf==4){
+                int imm=tc_getf(v,8,14);
+                int delta=imm<=1093?imm:imm-2187;
+                int tgt=i+delta;
+                if(tgt<0||tgt>n){fprintf(stderr,"TRV2: TC 分支越界 slot%d\n",i);return 1;}
+                long long nd=off[tgt]-off[i];
+                if(nd<-1093||nd>1093){fprintf(stderr,"TRV2: TC 分支超窗 slot%d %lld\n",i,nd);return 1;}
+                int nim=(int)((nd%2187+2187)%2187);
+                prog[i]=v+(uint32_t)(nim-imm)*P8;
+            }
+            continue;
+        }
+        int op=(int)(v%27);
+        if(op==4){                                       /* BR：imm7=t17..19*81+t3..6 */
+            int lo=tc_getf(v,3,6),hi=tc_getf(v,17,19);
+            int imm=hi*81+lo;
+            int delta=imm<=1093?imm:imm-2187;
+            int tgt=i+delta;
+            if(tgt<0||tgt>n){fprintf(stderr,"TRV2: 分支越界 slot%d\n",i);return 1;}
+            long long nd=off[tgt]-off[i];
+            if(nd<-1093||nd>1093){fprintf(stderr,"TRV2: 分支超 delta7 slot%d %lld\n",i,nd);return 1;}
+            int nim=(int)((nd%2187+2187)%2187);
+            prog[i]=v+(uint32_t)(nim/81-hi)*P17+(uint32_t)(nim%81-lo)*P3;
+        } else if(op==5){                                /* JAL：imm13=t7..19 */
+            int imm=tc_getf(v,7,19);
+            int delta=imm<=797161?imm:imm-1594323;
+            int tgt=i+delta;
+            if(tgt<0||tgt>n){fprintf(stderr,"TRV2: JAL 越界 slot%d\n",i);return 1;}
+            long long nd=off[tgt]-off[i];
+            if(nd<-797161||nd>797161){fprintf(stderr,"TRV2: JAL 超 imm13 slot%d\n",i,nd);return 1;}
+            int nim=(int)((nd%1594323+1594323)%1594323);
+            prog[i]=v+(uint32_t)(nim-imm)*P7;
+        }
+    }
+    /* 函数地址常量段重编：rd 取自段首词 t3..6；缩短部分填 NOP（词值 1=ADDI zero,zero,0） */
+    uint32_t NOP=0; NOP=putf(NOP,0,2,1);
+    for(int s=0;s<NSYM;s++){
+        long long nv=off[SYM_LBL[s]];
+        int e0=SYM_S[s],e1=SYM_E[s];
+        int rd=tc_getf(prog[e0],3,6);
+        uint32_t buf[8];
+        int used=sym_emit(buf,0,rd,nv);
+        if(used>e1-e0){fprintf(stderr,"TRV2: sym 段溢出 slot%d\n",e0);return 1;}
+        for(int i=e0;i<e1;i++)
+            prog[i]=(i-e0<used)?buf[i-e0]:NOP;
+    }
+    FILE*f=fopen(path,"wb"); if(!f){perror("trv2");return 1;}
+    fwrite("TRV2",1,4,f);
+    put_u32(f,1); put_u32(f,(uint32_t)off[n]);
+    {   /* 段数 = 字符串段 + 非零初始化全局段（与 TRV1 同构） */
+        int nseg=NSTR;
+        for(int i=0;i<NGLOB;i++){ Global*g=&GLOBS[i];
+            int nz=0; for(int b=0;b<g->size;b++) if(g->data[b]) nz++;
+            if(nz) nseg++; }
+        put_u32(f,nseg);
+    }
+    for(int i=0;i<n;i++){
+        int ww=((prog[i]%243)%27>=23)?3:4;               /* 用重编后的最终词取宽 */
+        uint32_t p=1;
+        for(int j=0;j<ww;j++){
+            uint32_t t=((uint32_t)prog[i]/p)%243u;       /* 每 tryte 5 trit */
+            fputc((int)t,f);
+            p*=243u;
+        }
+    }
+    /* 段表（与 TRV1 同构）：字符串段 + 非零初始化全局段 */
+    {
+        int addr=STRSEG_START;
+        for(int i=0;i<NSTR;i++){
+            put_u32(f,(uint32_t)addr); put_u32(f,(uint32_t)STRLEN[i]);
+            fwrite(STRSEG[i],1,(size_t)STRLEN[i],f);
+            addr+=STRLEN[i];
+        }
+    }
+    for(int i=0;i<NGLOB;i++){
+        Global*g=&GLOBS[i];
+        int nz=0; for(int b=0;b<g->size;b++) if(g->data[b]) nz++;
+        if(!nz) continue;
+        put_u32(f,(uint32_t)g->addr); put_u32(f,(uint32_t)g->size);
+        fwrite(g->data,1,(size_t)g->size,f);
+    }
+    fclose(f);
+    if(getenv("TRV_TRV2_DEBUG"))
+        fprintf(stderr,"[trv2] slots=%d stream=%lld bytes（槽制 %d 字节）\n",
+                n,off[n],4*n);
+    return 0;
+}
+/* 分配字符串常量地址 *//* 分配字符串常量地址 */
 static void strings_walk(Node*n){
     if(!n) return;
     if(n->k==N_STR){
@@ -3993,6 +4132,22 @@ int main(int argc,char**argv){
         fclose(out);
         fprintf(stderr,"[trirv_cc.c] exported TRVO %s (fns=%d globs=%d strs=%d)\n",argv[2],NFN,NGLOB,NSTR);
         return 0;
+    }
+    /* TRV2 输出：后缀 .trv2 或 TRV_FORMAT=2（B1① 正式化） */
+    {
+        size_t L=strlen(argv[2]);
+        int is_trv2=(L>=5&&!strcmp(argv[2]+L-5,".trv2"));
+        const char*fmt=getenv("TRV_FORMAT");
+        if(!is_trv2&&fmt&&!strcmp(fmt,"2")) is_trv2=1;
+        if(is_trv2){
+            uint32_t*p2=assemble_all(&n);
+            if(!p2){return 1;}
+            int rc=write_trv2(argv[2],p2,n);
+            if(rc==0)
+                fprintf(stderr,"[trirv_cc.c] compiled %s: %d instructions -> %s (TRV2)\n",
+                        argv[1],n,argv[2]);
+            return rc;
+        }
     }
     /* 写 TRV1 */
     FILE*out=fopen(argv[2],"wb"); if(!out){perror("out");return 1;}
