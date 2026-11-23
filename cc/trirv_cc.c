@@ -87,6 +87,13 @@ static uint32_t encR(int op,int f2,int rs2,int rs1,int funct,int rd){
  * 程序照常输出数字，只是数字是错的 —— 比编译失败危险得多（2026-11-19 定为此策略）。
  * 范围与 trirv_asm.parse_int 一致：正数是原始位模式 0..3^n-1，负数按 3 补码 -lim..-1。 */
 #define IMM7_LIM   1093
+/* ---- ADR-16 长分支弛豫状态（批次 3.3）----
+ * RELAX[i]=1 表示 OUT 行 i 是超窗条件分支，编码时展开为
+ * 反条件分支(imm=2 固定槽距) + JAL zero 承担长跳（2 槽布局）。
+ * RELAX_HIT=本轮有新增标记 → assemble_all 外层再迭代一轮
+ * （弛豫 +1 槽移动后续标签，LABS 重建自动反映——trirv_cc 每轮重扫
+ * OUT 无基线累积问题）。数组容量跟随 CAPOUT（gen 定格后分配）。 */
+static int *RELAX, *RELAX_LBLV; static int RELAX_CUR=0, RELAX_MODE=0, RELAX_HIT=0;
 #define IMM13_LIM  797161
 static int imm7ok(int v){
     if(v< -IMM7_LIM || v> 2186){ fprintf(stderr,"IMM7 overflow %d | line: %s\n",v,CURASM); exit(1); }
@@ -3365,6 +3372,12 @@ static uint32_t asm_line(const char*line,int idx){
         if(tc_compact() && rs2==0 && lt>=0 && tc_reg(rs1)>=0
            && imm>=-IMM7_LIM && imm<=IMM7_LIM)
           return enc_tc(!strcmp(op,"BEQ")?3:4, tc_reg(rs1), imm);
+        /* ADR-16 长分支弛豫：全宽超窗 → 反条件(funct^1 成对反转) imm=2，
+           assemble_all 在 idx+1 插 JAL zero 承担长跳（fu 0-5 相异或 1 恰好成对） */
+        if(lt>=0 && (imm>IMM7_LIM || imm<-IMM7_LIM)){
+            if(!RELAX[RELAX_CUR]){ RELAX[RELAX_CUR]=1; RELAX_LBLV[RELAX_CUR]=lt; RELAX_HIT=1; }
+            return encS(d->op,RELAX_MODE?2:imm,rs2,rs1,d->fu^1);
+        }
         return encS(d->op,imm,rs2,rs1,d->fu);
     }
     if(d->fmt==3){ /* U/J */
@@ -3715,6 +3728,8 @@ static int sym_parse_lbl(const char*line,char*sym,int symcap,long long*val,int*r
 static int *SYM_S, *SYM_E, *SYM_LBL; static int NSYM, CAPSYM;
 
 static uint32_t* assemble_all(int*pn){
+    if(!RELAX){ RELAX=calloc(CAPOUT?CAPOUT:1,sizeof(int));
+                RELAX_LBLV=calloc(CAPOUT?CAPOUT:1,sizeof(int)); }
     /* 三阶段（2026-11-22 §5.7）：
      * 0) 定点迭代：标签收集 + &符号行展开计数。&引用可前向（如主程序引用
      *    导入单元的函数标签），首轮未命中按保守上界 7 条预占；LABS 每轮
@@ -3735,7 +3750,7 @@ static uint32_t* assemble_all(int*pn){
                     idx += 7;                     /* 未命中（首轮前向引用）：保守上界 */
                 else
                     idx = sym_emit(NULL,idx,rd,v); /* 仅计数 */
-            } else if(*s) idx++;
+            } else if(*s) idx += 1 + RELAX[i];    /* 弛豫行占 2 槽（ADR-16） */
         }
     }
     *pn=idx;
@@ -3747,6 +3762,7 @@ static uint32_t* assemble_all(int*pn){
     uint32_t*prog=calloc(idx?idx:1,sizeof(uint32_t));
     idx=0;
     for(int i=0;i<NOUT;i++){
+        RELAX_CUR=i;
         char line[512]; strncpy(line,OUT[i],sizeof(line)-1); line[sizeof(line)-1]=0;
         char*s=line; while(*s==' '||*s=='\t')s++;
         if(*s&&strchr(s,':')){ char*colon=strchr(s,':'); *colon=':';
@@ -3766,7 +3782,15 @@ static uint32_t* assemble_all(int*pn){
                 idx = sym_emit(prog,idx,rd,v);
             continue;
         }
-        if(*s){ prog[idx]=asm_line(s,idx); idx++; }
+        if(*s){
+            if(RELAX[i]){                          /* 弛豫行：反条件词 + JAL zero 长跳 */
+                RELAX_MODE=1;
+                prog[idx]=asm_line(s,idx); RELAX_MODE=0; idx++;
+                prog[idx]=encU(O_JAL,RELAX_LBLV[i]-idx,ZERO); idx++;
+            } else {
+                prog[idx]=asm_line(s,idx); idx++;
+            }
+        }
     }
     return prog;
 }

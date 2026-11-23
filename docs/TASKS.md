@@ -75,7 +75,14 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 3 / 任务 3.3（trirv_cc 弛豫）**
+**进度游标：批次 3 / 任务 3.4（TC 选取点 tryte 保守界）**
+
+- [x] 3.3 trirv_cc 弛豫：RELAX/RELAX_LBLV 行级数组（容量 CAPOUT，
+      声明前移至 asm_line 之前——放 assemble_all 前不可见）+ 计数轮
+      idx+=1+RELAX[i] + 编码轮 RELAX 行两词（RELAX_MODE 下 asm_line 发
+      反条件 imm=2 + JAL zero 插桩）+ asm_line 超窗门（fu^1 成对反转，
+      0↔1/2↔3/4↔5 恰好）。C 侧实证：1200 槽 then 块 exit=42。
+      trirv_cc 无基线累积坑（LABS 每轮重扫 OUT 自动反映布局）
 
 - [x] 3.1 弛豫设计定案：TC_COMPRESSION_DESIGN §7.1（反条件映射 BEQ↔BNE/
       BLT↔BGE/BLTU↔BGEU；imm=2 固定槽距；弛豫在槽制 prog 层，TRV2 重编
