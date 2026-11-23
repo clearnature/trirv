@@ -6,8 +6,8 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 54 / FAIL 0（连续 30+ 次全绿）
-- HEAD：trirv 9e177d6 / tinycc 21410af4
+- 回归：python3 tests/run_all_tests.py → PASS 55 / FAIL 0（连续 30+ 次全绿）
+- HEAD：trirv bb19bcc / tinycc 21410af4
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
   __tint / __tint2 / __tbool / __builtin_tri_lit / LW4-SW4 / LIT0-2
 - ISA 总量：102 条（含 LW4/SW4 4-tryte 档 + LIT0/1/2 文字运算）
@@ -35,9 +35,11 @@
 
 - [x] T10c-2 CVM TC 执行验证 PASS（9e177d6 + 正确 exit 序列；早期"失败"
       系测试 syscall 号设错——ADDI x17,x11,93 设 a7=100 非 93=exit）
-- [ ] T10d trirv_cc -mcompact 发射（TC 编码选取：高频五类静态子集，
-      超界回退全宽——零正确性风险）
-- [ ] T10e 码长对比（musl_tri 热点函数 C 占比 >= 50% → 码长省 ~15%）
+- [x] T10d TC 压缩发射（5412ae9 基础设施 → 9d5074a 文本层 peephole 原型 →
+      bb19bcc 编码期选取收官：asm_line 五类选取点取代文本层改写，OUT 文本
+      保持规范全宽；契约 42 项三票——语义等价/压缩确实发生/门控干净）
+- [ ] T10e 码长对比（musl_tri 热点函数 TC 占比测算——窗口对齐度评估：
+      代码生成热点寄存器是 t 系临时（TC 窗口外），窗口命中率待量化）
 - [ ] T11 AMP 先行（mailbox syscall + 共享页，多实例双 VM）
 - [ ] T7b py fn-ptr 声明符与间接调用（py 无 fn-ptr 解析基础）
 - [ ] T9b TRVO 多单元直链自旋 bug（取证：符号解析/布局全对，
