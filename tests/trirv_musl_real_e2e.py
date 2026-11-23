@@ -35,7 +35,14 @@ import trirv_vm as vm
 HERE = os.path.dirname(os.path.abspath(__file__))
 CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
 CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
-MUSL_SRC = os.path.join(HERE, "..", "libc-musl", "musl_src")
+# 上游源（third_party/musl 子模块，trirv-vendor 分支）——批次 3 整理：
+# musl_src/ 平铺拷贝（6 文件）与上游重复，删除；此处按 文件名→目录 映射定位。
+UPSTREAM = os.path.join(HERE, "..", "third_party", "musl", "src")
+_SRC_DIRS = {"abs.c": "stdlib"}.get  # 默认 string；abs 在 stdlib
+def _upstream_file(fn):
+    sub = "stdlib" if fn == "abs.c" else "string"
+    return os.path.join(UPSTREAM, sub, fn)
+MUSL_SRC = None  # 兼容旧引用（第 88 行改走 _upstream_file）
 PP = os.path.join(HERE, "..", "libc-musl", "preprocess_musl.py")
 
 passed = 0
@@ -85,7 +92,7 @@ def load_trv(path):
 FILES = ["strcmp.c", "strncmp.c", "strlen.c", "abs.c", "memset.c", "memcpy.c"]
 trvos = []
 for fn in FILES:
-    src = os.path.join(MUSL_SRC, fn)
+    src = _upstream_file(fn)
     pp = preprocess(src)
     tvo = tempfile.mktemp(suffix=".trvo")
     rc, err = compile_trvo(pp, tvo)
