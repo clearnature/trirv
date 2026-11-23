@@ -35,7 +35,7 @@
       保对齐、压缩率 75%）。编码：C 型 opcode=23，t0=1 为压缩标记 trit，
       短格式仅覆盖五类高频（ADDI/LW/SW/BEQ/BNE，寄存器窗口 t0-t6+a0-a7
       静态子集）。子批次：~~T10a 设计文档 §6.2~~ ✓ → ~~T10b isa/asm 编码层~~ ✓
-      → T10c PyVM/CVM → T10d trirv_cc 发射（-mcompact 选项）→ T10e 码长对比
+      → ~~T10c-1 PyVM TC 执行~~ ✓ → T10c-2 打包布局（VM 架构级）→ T10d trirv_cc 发射（-mcompact 选项）→ T10e 码长对比
 - [ ] **T11** B3 AMP 先行（mailbox syscall + 共享页，多实例双 VM）
 
 **验收口径**：py 语法批（T1~T7）= TRV_CC=py 下 cc_e2e 对应用例 + 默认
