@@ -6,6 +6,7 @@
 """
 import trirv_isa as isa
 import trirv_float as tf
+from collections import deque
 
 XLEN = isa.XLEN
 MOD = isa.MOD_X
@@ -42,6 +43,16 @@ SYS_GETTID       = 178
 # ---- TriRV 扩展区：8-bit 视图（octet <-> 双 tryte [lo=o%243, hi=o/243]）----
 SYS_READ8        = 5000
 SYS_WRITE8       = 5001
+# ---- T11 AMP：mailbox + coreid（多实例协作，双 VM 同构；5000 扩展区）----
+SYS_COREID       = 5010
+SYS_MSEND        = 5011
+SYS_MRECV        = 5012
+# AMP 共享页窗口：地址空间顶部固定 64 tryte（与 C VM 逐常量一致）。
+# 调度 = 单步协作轮转 + 步间窗口同步（顺序一致性由调度器保证）。
+AMP_SHARED_BASE  = (1 << 20) - 64
+AMP_SHARED_SZ    = 64
+AMP_MBOX_SLOTS   = 8
+AMP_MSG_MAX      = 64
 SYS_MUNMAP       = 215
 SYS_MMAP         = 222
 SYS_MPROTECT     = 226
@@ -64,8 +75,11 @@ SYS_NAME = {
 class VM:
     WORD_TRYTES = 9                    # int = 45 trit = 9 tryte（每 tryte 5 trit）
 
-    def __init__(self, program, mem_init=None, stdin=b"", argv=None):
+    def __init__(self, program, mem_init=None, stdin=b"", argv=None, core_id=0, amp=None):
         self.regs = [0] * isa.NREG
+        # --- T11 AMP：核号 + 邮箱/共享窗枢纽（单实例 core_id=0, amp=None）---
+        self.core_id = core_id
+        self.amp = amp
         # F 扩展浮点寄存器堆：f0..f31，存 TF45 的 45-trit raw（= (sign,mant,exp3)
         # 分离表示的无损打包）。裸 double 会把指数卡在 3^646，违背全阶码模型；
         # raw 打包天然无损，算术时才 decompose → mant 进 FPU、exp3 走整数 → compose。
@@ -310,6 +324,49 @@ class VM:
                 ret = a2
             else:
                 ret = -9               # E_BADF
+        elif num == SYS_COREID:
+            # coreid()：本核号。单实例（amp=None）恒 0。
+            ret = self.core_id
+        elif num == SYS_MSEND:
+            # msend(dst, buf, len) -> 0 | -3 无此核/自环 | -105 邮箱满 | -22 畸形
+            hub = self.amp
+            if hub is None:
+                ret = -3
+            elif a0 < 0 or a0 >= hub.ncores or a0 == self.core_id:
+                ret = -3
+            elif a2 < 0 or a2 > AMP_MSG_MAX:
+                ret = -22
+            elif len(hub.queues[a0]) >= AMP_MBOX_SLOTS:
+                ret = -105
+            elif not (0 <= a1 and a1 + a2 <= len(self.mem)):
+                ret = -22               # buf 越界：不投递
+            else:
+                hub.queues[a0].append((self.core_id, bytes(self.mem[a1:a1 + a2])))
+                ret = 0
+        elif num == SYS_MRECV:
+            # mrecv(src, buf, max) -> n | -2 空 | -22 畸形（src=-1 任意来源，
+            # 保持 FIFO 序消费首个匹配）
+            hub = self.amp
+            if hub is None:
+                ret = -2
+            elif a2 < 0:
+                ret = -22
+            else:
+                pick = -1
+                for k, (srcid, data) in enumerate(hub.queues[self.core_id]):
+                    if a0 < 0 or srcid == a0:
+                        pick = k
+                        break
+                if pick < 0:
+                    ret = -2
+                elif not (0 <= a1 and a1 + a2 <= len(self.mem)):
+                    ret = -22           # buf 越界：不消费消息
+                else:
+                    srcid, data = hub.queues[self.core_id][pick]
+                    del hub.queues[self.core_id][pick]
+                    n = min(len(data), a2)
+                    self.mem[a1:a1 + n] = data[:n]
+                    ret = n
         elif num in (SYS_EXIT, SYS_EXIT_GROUP):
             # exit / exit_group：停机并记录退出码
             self.exit_code = a0 & 0xFF
@@ -814,3 +871,42 @@ if __name__ == "__main__":
     print(f"  执行步数 = {vm.steps}")
     assert s(vm.regs[10]) == 5, "累加结果错误"
     print("  ✓ 断言通过")
+
+
+# ---------------------------------------------------------------------------
+# T11 AMP：多实例协作运行器（mailbox + 共享页窗口）
+# ---------------------------------------------------------------------------
+class AmpHub:
+    """AMP 枢纽：每核一条 FIFO 邮箱（元素 = (src_core, bytes)）+ 共享窗镜像。
+
+    共享窗的权威副本在各核 mem 的 [AMP_SHARED_BASE, +AMP_SHARED_SZ) 区间，
+    hub.shared 仅作调度器同步的目的镜像（与 C VM 语义逐常量一致）。"""
+    def __init__(self, ncores):
+        self.ncores = ncores
+        self.queues = [deque() for _ in range(ncores)]
+        self.shared = bytearray(AMP_SHARED_SZ)
+
+
+def run_amp(prog, ncores, mem_init=None, stdin=b"", argv=None, max_steps=300000):
+    """协作式轮转 AMP：每核每次执行一条指令，步间同步共享窗（步进核 → 其余核）。
+
+    单步轮转保证顺序一致性——契约测试可复现；真硬件并行窗口属 B3 SMP 范畴。
+    返回 (cores, hub)；core i 停机后跳过。"""
+    hub = AmpHub(ncores)
+    cores = [VM(prog, mem_init=mem_init, stdin=stdin, argv=argv, core_id=i, amp=hub)
+             for i in range(ncores)]
+    steps = 0
+    while any(not c.halted for c in cores) and steps < max_steps:
+        for i, c in enumerate(cores):
+            if c.halted:
+                continue
+            c.step()
+            steps += 1
+            w = bytes(c.mem[AMP_SHARED_BASE:AMP_SHARED_BASE + AMP_SHARED_SZ])
+            hub.shared[:] = w
+            for j, o in enumerate(cores):
+                if j != i:
+                    o.mem[AMP_SHARED_BASE:AMP_SHARED_BASE + AMP_SHARED_SZ] = w
+            if all(cc.halted for cc in cores):
+                break
+    return cores, hub

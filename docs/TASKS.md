@@ -6,8 +6,8 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 55 / FAIL 0（连续 30+ 次全绿）
-- HEAD：trirv bb19bcc+TC v2 / tinycc 21410af4
+- 回归：python3 tests/run_all_tests.py → PASS 56 / FAIL 0（连续 30+ 次全绿）
+- HEAD：trirv bb19bcc+TC v2+T11 AMP / tinycc 21410af4
 - TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
@@ -45,7 +45,11 @@
       双寄存器 + 帧窗 C-LWs/C-SWs → **28.0% TC 率 / TRV2 打包节省 7.0%**；
       四类子格式全发射；15% 目标在 15-trit 预算下不可达——结构边界记账
       于 TC_COMPRESSION_DESIGN.md §8，C-JAL 等扩展留 B1 拍板）
-- [ ] T11 AMP 先行（mailbox syscall + 共享页，多实例双 VM）
+- [x] T11 AMP 先行（mailbox syscall 5010-5012 + 共享页窗口 64 tryte +
+      单步协作轮转调度——CVM `-a N` / PyVM run_amp 双 VM 同构；
+      保留符号 `__amp_shared` 编译器绑定窗口地址；契约 10 项四票：
+      mailbox 往返/共享窗加倍/窗口地址绑定/错误路径 -3 -2 自环）
+- [ ] T11b AMP 扩展（记账：tri-tcc 侧 AMP 用例、>2 核契约、阻塞式 mrecv）
 - [ ] T7b py fn-ptr 声明符与间接调用（py 无 fn-ptr 解析基础）
 - [ ] T9b TRVO 多单元直链自旋 bug（取证：符号解析/布局全对，
       热点=未调用单元体 → 导入补丁层 bug——独立深水排查）

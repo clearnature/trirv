@@ -1033,6 +1033,13 @@ static void weakg_add(const char*n){
     WEAKG_NAMES[NWEAKG++]=strdup(n);
 }
 
+/* T11 AMP 共享页窗口：guest 以 `int __amp_shared[N];`（N*9 ≤ 64 tryte）
+ * 声明保留符号，地址固定在地址空间顶部窗口（双 VM 常量一致）。
+ * 非 AMP 运行（单实例）窗口照常可读写——语义退化为普通内存。 */
+#define AMP_SHARED_BASE (((int)1<<20)-64)
+#define AMP_SHARED_SZ   64
+static int amp_reserved(const char*n){ return !strcmp(n,"__amp_shared"); }
+
 static Global* global_add(const char*name,char*ty,int size,Node*init){
     /* A3 同名合并（2026-11-22，C file-scope tentative/common 语义）：
      * - 双方均有初值 → 重复定义，诚实报错；
@@ -1058,6 +1065,7 @@ static Global* global_add(const char*name,char*ty,int size,Node*init){
     Global*g=&GLOBS[NGLOB++];
     memset(g,0,sizeof(*g));
     g->name=strdup(name); g->ty=ty; g->size=size; g->init=init;
+    if(amp_reserved(name)) g->addr=AMP_SHARED_BASE;   /* 保留符号：地址固定，见 assign_glob_addrs */
     return g;
 }
 /* 3^45 装不进任何整型字面量，运行时算。TRV_P45V = 3^45（模数本体）。 */
@@ -1378,6 +1386,14 @@ static void assign_glob_addrs(void){
     int pos=GBASE;
     for(int i=0;i<NGLOB;i++){
         Global*g=&GLOBS[i];
+        if(amp_reserved(g->name)){       /* T11 AMP 共享窗：地址已定，不占全局区 */
+            g->size=ty_bytes(g->ty);
+            if(g->size>AMP_SHARED_SZ){
+                fprintf(stderr,"UNSUPPORTED: __amp_shared 超过 %d tryte 共享窗（声明 %d）\n",AMP_SHARED_SZ,g->size);
+                exit(2);
+            }
+            continue;
+        }
         g->addr=((pos+8)/9)*9;           /* 字/结构体 9 对齐；char 数组从对齐位置起也无妨 */
         g->size=ty_bytes(g->ty);
         pos=g->addr+g->size;
@@ -1708,9 +1724,11 @@ static int syscall_no(const char*name){
     static const char*sys[]={"write","read","read8","write8","exit","brk","getcwd","openat","close",
         "lseek","readv","writev","newfstatat","fstat","exit_group","set_tid_address",
         "futex","clock_gettime","sched_yield","rt_sigaction","rt_sigprocmask",
-        "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",NULL};
+        "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",
+        "coreid","msend","mrecv",NULL};
     static const int num[]={64,63,5000,5001,93,214,17,56,57,62,65,66,79,80,94,96,98,113,124,
-        134,135,139,160,172,178,215,222,226,278};
+        134,135,139,160,172,178,215,222,226,278,
+        5010,5011,5012};
     for(int i=0;sys[i];i++) if(!strcmp(name,sys[i])) return num[i];
     return -1;
 }
@@ -2973,10 +2991,14 @@ static void collect_decls(Node*n){
 
 /* 判断表达式/语句里是否含"真实函数调用"（非 syscall）。syscall 用 ECALL 不改 ra。 */
 static int is_syscall_name(const char*s){
+    /* 坑实录：与 syscall_no 是双点白名单（scan_undef/表驱动各一份），
+       新增 syscall 名必须两处同步——coreid/msend/mrecv 曾漏此处致
+       undefined reference（2026-11-23 T11 AMP）。 */
     static const char*sys[]={"write","read","read8","write8","exit","brk","getcwd","openat","close",
         "lseek","readv","writev","newfstatat","fstat","exit_group","set_tid_address",
         "futex","clock_gettime","sched_yield","rt_sigaction","rt_sigprocmask",
-        "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",NULL};
+        "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",
+        "coreid","msend","mrecv",NULL};
     for(int i=0;sys[i];i++) if(!strcmp(s,sys[i])) return 1;
     return 0;
 }

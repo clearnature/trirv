@@ -26,6 +26,22 @@
 #define XLEN 45
 #define NREG 32   /* 4-trit 寄存器字段 (0..31)，对齐 RISC-V x0-x31 */
 #define MEMSZ (1u << 20)
+/* ---- T11 AMP：共享页窗口 + 邮箱参数（与 vm/trirv_vm.py 逐常量一致）----
+ * 共享窗在地址空间顶部，guest 以保留符号 __amp_shared 引用；
+ * 调度 = 单步协作轮转 + 步间窗口同步（顺序一致性由调度器保证）。 */
+#define AMP_SHARED_BASE (((int)MEMSZ) - 64)
+#define AMP_SHARED_SZ   64
+#define AMP_MBOX_SLOTS  8
+#define AMP_MSG_MAX     64
+#define AMP_MAX_CORES   8
+typedef struct {
+    int ncores;
+    int head[AMP_MAX_CORES], count[AMP_MAX_CORES];
+    int src[AMP_MAX_CORES][AMP_MBOX_SLOTS];
+    int len[AMP_MAX_CORES][AMP_MBOX_SLOTS];
+    uint8_t data[AMP_MAX_CORES][AMP_MBOX_SLOTS][AMP_MSG_MAX];
+    uint8_t shared[AMP_SHARED_SZ];
+} AmpHub;
 /* ---- Zicsr + 特权最小集常量（对齐 trirv_isa.CSR）---- */
 #define CSR_MSTATUS  768   /* 0x300 */
 #define CSR_MIE      772   /* 0x304 */
@@ -329,6 +345,9 @@ typedef struct {
     int shared;                         /* 1=多实例共享同一 mem（SMP 原子性验证） */
     uint8_t *mem_ref;                   /* 共享时指向公共 buffer；否则指向自身 mem */
     struct SharedSync *sync;            /* 共享锁 + 内存版本号（所有核指向同一结构） */
+    /* ---- T11 AMP：核号 + 邮箱枢纽（单实例 core_id=0, amp=NULL）---- */
+    int core_id;
+    AmpHub *amp;
 } VM;
 
 static inline void vm_out(VM *v, uint8_t c) {
@@ -655,7 +674,9 @@ SYS_MUNMAP=215,SYS_MMAP=222,SYS_MPROTECT=226,SYS_BRK=214,SYS_GETRANDOM=278,
 /* ---- TriRV 扩展区（Linux 编号空间之外的自定义原语）----
  * read8/write8：8-bit 视图层。octet(0..255) <-> 双 tryte [lo=o%243, hi=o/243]，
  * 内存保持纯三进制（tryte 仍 0..242），musl 的 CHAR_BIT==8 依赖由边界编解码满足。 */
-SYS_READ8=5000,SYS_WRITE8=5001};
+SYS_READ8=5000,SYS_WRITE8=5001,
+/* ---- T11 AMP：mailbox + coreid（多实例协作，与 PyVM 逐常量一致）---- */
+SYS_COREID=5010,SYS_MSEND=5011,SYS_MRECV=5012};
 #define E_BADF  (-9)
 #define E_INVAL (-22)
 #define E_NOMEM (-12)
@@ -701,6 +722,55 @@ static void syscall_vm(VM *v){
             }
             ret=a2;
         } else ret=E_BADF;
+    } else if(num==SYS_COREID){
+        ret=v->core_id;                                     /* 单实例（amp=NULL）恒 0 */
+    } else if(num==SYS_MSEND){
+        /* a0=dst a1=buf a2=len → 0 | -3 无此核/自环 | -105 邮箱满 | -22 畸形 */
+        AmpHub*h=v->amp;
+        if(!h) ret=-3;
+        else if(a0<0||a0>=h->ncores||a0==v->core_id) ret=-3;
+        else if(a2<0||a2>AMP_MSG_MAX) ret=E_INVAL;
+        else if(h->count[a0]>=AMP_MBOX_SLOTS) ret=-105;
+        else if(a1<0||a1+a2>MEMSZ) ret=E_INVAL;             /* buf 越界：不投递 */
+        else{
+            int slot=(h->head[a0]+h->count[a0])%AMP_MBOX_SLOTS;
+            h->src[a0][slot]=v->core_id;
+            h->len[a0][slot]=(int)a2;
+            for(int i=0;i<a2;i++) h->data[a0][slot][i]=v->mem_ref[a1+i]%243;
+            h->count[a0]++;
+            ret=0;
+        }
+    } else if(num==SYS_MRECV){
+        /* a0=src(-1=任意) a1=buf a2=max → n | -2 空 | -22 畸形（FIFO 序取首个匹配） */
+        AmpHub*h=v->amp;
+        if(!h) ret=-2;
+        else if(a2<0) ret=E_INVAL;
+        else{
+            int me=v->core_id,found=-1;
+            for(int k=0;k<h->count[me]&&found<0;k++){
+                int slot=(h->head[me]+k)%AMP_MBOX_SLOTS;
+                if(a0<0||h->src[me][slot]==a0) found=k;
+            }
+            if(found<0) ret=-2;
+            else{
+                int slot=(h->head[me]+found)%AMP_MBOX_SLOTS;
+                int n=h->len[me][slot];
+                if(a2<n) n=(int)a2;
+                if(a1<0||a1+n>MEMSZ){ ret=E_INVAL; }        /* buf 越界：不消费 */
+                else{
+                    for(int i=0;i<n;i++) v->mem_ref[a1+i]=h->data[me][slot][i];
+                    for(int k=found;k<h->count[me]-1;k++){   /* 线性弹出保序 */
+                        int c=(h->head[me]+k)%AMP_MBOX_SLOTS;
+                        int nx=(h->head[me]+k+1)%AMP_MBOX_SLOTS;
+                        h->src[me][c]=h->src[me][nx];
+                        h->len[me][c]=h->len[me][nx];
+                        memcpy(h->data[me][c],h->data[me][nx],AMP_MSG_MAX);
+                    }
+                    h->count[me]--;
+                    ret=n;
+                }
+            }
+        }
     } else if(num==SYS_EXIT||num==SYS_EXIT_GROUP){v->exit_code=a0&0xFF;v->halted=1;ret=a0;}
     else if(num==SYS_BRK){
         if(a0==0)ret=v->brk_ptr;
@@ -1172,15 +1242,17 @@ static void vm_init(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_data,s
 /* ---------------- CLI ---------------- */
 static void usage(const char *p){fprintf(stderr,"用法: %s [-n 次数] [-t 线程数] [-s] [-o 地址] <prog.trv> [stdin文件] [-- guest参数...]\n"
     "  -s  共享内存 SMP 模式：所有实例共享同一内存与原子锁\n"
+    "  -a  AMP 模式：N 实例各持私有内存 + mailbox/共享窗，单步轮转调度\n"
     "  -o  运行后把该 tryte 地址的 8-tryte word 以 9 字节写到 stdout\n"
     "  --  之后的参数作为 guest 程序的 argv（argv[0]=.trv 路径）\n",p);}
 int main(int argc,char**argv){
     init_consts();init_trit_tab();
-    int repeat=1,nthreads=0,argi=1,shared=0,outaddr=-1;
+    int repeat=1,nthreads=0,argi=1,shared=0,amp_mode=0,outaddr=-1;
     while(argi<argc&&argv[argi][0]=='-'){
         if(!strcmp(argv[argi],"-n")){repeat=atoi(argv[++argi]);argi++;}
         else if(!strcmp(argv[argi],"-t")){nthreads=atoi(argv[++argi]);argi++;}
         else if(!strcmp(argv[argi],"-s")){shared=1;argi++;}
+        else if(!strcmp(argv[argi],"-a")){amp_mode=1;repeat=atoi(argv[++argi]);argi++;}
         else if(!strcmp(argv[argi],"-o")){outaddr=atoi(argv[++argi]);argi++;}
         else break;
     }
@@ -1226,6 +1298,38 @@ int main(int argc,char**argv){
     SharedSync sync={0,0};
     VM *vms=calloc(1,sizeof(VM)*(size_t)repeat);
     struct timespec t0,t1;clock_gettime(CLOCK_MONOTONIC,&t0);
+    if(amp_mode){
+        /* T11 AMP：各核私有内存（同镜像），mailbox+共享窗协作轮转。
+         * 单步轮转 + 步间窗口同步 = 顺序一致性（与 PyVM run_amp 同构，
+         * 契约测试可复现）；真硬件并行窗口属 B3 SMP 范畴。 */
+        if(repeat>AMP_MAX_CORES){fprintf(stderr,"AMP 实例上限 %d\n",AMP_MAX_CORES);return 1;}
+        AmpHub hub;memset(&hub,0,sizeof(hub));hub.ncores=repeat;
+        for(int r=0;r<repeat;r++){
+            vm_init_ex(&vms[r],prog,nprog,segmem,stdin_data,stdin_len,NULL,&sync,gargc,gargv);
+            vms[r].core_id=r; vms[r].amp=&hub;
+        }
+        long amp_steps=0;
+        while(1){
+            int alive=0;
+            for(int r=0;r<repeat;r++){
+                if(vms[r].halted) continue;
+                alive=1;
+                step(&vms[r]);          /* 单步切片（vm_run(v,1) 的 max 是总额度——首次后恒 0 步死锁实证） */
+                for(int j=0;j<repeat;j++){
+                    if(j==r) continue;
+                    memcpy(vms[j].mem_ref+AMP_SHARED_BASE,
+                           vms[r].mem_ref+AMP_SHARED_BASE,AMP_SHARED_SZ);
+                }
+                memcpy(hub.shared,vms[r].mem_ref+AMP_SHARED_BASE,AMP_SHARED_SZ);
+                amp_steps++;
+                if(amp_steps>=200000000){alive=0;break;}
+            }
+            if(!alive) break;
+        }
+        if(getenv("TRV_AMP_DEBUG"))fprintf(stderr,"[amp] steps=%ld exits=",amp_steps);
+        for(int r=0;r<repeat;r++)if(getenv("TRV_AMP_DEBUG"))fprintf(stderr,"%d ",vms[r].exit_code);
+        if(getenv("TRV_AMP_DEBUG"))fprintf(stderr,"\n");
+    } else
     #pragma omp parallel for num_threads(nthreads?nthreads:1) if(repeat>1)
     for(int r=0;r<repeat;r++){
         vm_init_ex(&vms[r],prog,nprog,shared_mem?shared_mem:segmem,stdin_data,stdin_len,shared_mem,&sync,gargc,gargv);
@@ -1243,6 +1347,6 @@ int main(int argc,char**argv){
     } else fwrite(vms[0].output,1,vms[0].out_len,stdout);
     long total_steps=0;for(int r=0;r<repeat;r++)total_steps+=vms[r].steps;
     fprintf(stderr,"\n[TriRV C VM] 实例=%d 指令=%d 步数=%ld 时间=%.4fs 吞吐=%.2f MIPS exit=%lld halted=%d shared=%d\n",
-            repeat,nprog,total_steps,sec,total_steps/sec/1e6,(long long)vms[0].exit_code,vms[0].halted,shared);
+            repeat,nprog,total_steps,sec,sec>0?total_steps/sec/1e6:0,(long long)vms[0].exit_code,vms[0].halted,shared);
     return 0;
 }
