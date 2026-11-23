@@ -24,6 +24,25 @@ def compile_run(src, steps=300000, stdin=b""):
     return S(cpu.regs[10]), cpu
 
 
+def _tlit(v, a):
+    """python oracle：逐 trit Post literal（ISA §6.1 同口径；返回 45-trit 词）"""
+    r = 0
+    p = 1
+    for _ in range(45):
+        v, t = divmod(v, 3)
+        r += ((2 - t) if a == 0 else (t + a) % 3) * p
+        p *= 3
+    return r
+
+
+def _tlit_signed(v, a):
+    """45-trit 词 -> 带符号值（compile_run 返回带符号口径）"""
+    w = _tlit(v, a)
+    if w > (3 ** 45 - 1) // 2:
+        w -= 3 ** 45
+    return w
+
+
 CASES = [
     ("算术 + - * / %", "int main(){ return 7*3 + 8/2 - 4; }", 21),
     ("比较运算", "int main(){ return (3<5) + (5<=5)*2 + (7==7)*4 + (8!=8); }", 7),
@@ -37,8 +56,18 @@ CASES = [
     ("函数参数", "int add(int a,int b){ return a+b; } int main(){ return add(20,22); }", 42),
     ("递归阶乘", "int fact(int n){ if(n<=1){return 1;} return n*fact(n-1); } int main(){ return fact(6); }", 720),
     ("递归斐波那契", "int fib(int n){ if(n<2){return n;} return fib(n-1)+fib(n-2); } int main(){ return fib(12); }", 144),
+    # ---- __builtin_tri_lit 内建（2026-11-23 trirv_cc 与 tri-tcc 同名同语义；§6.1）----
+    # 方言注：trirv_cc 无 (type) 强转与 ?: 三元——用直返/if-else（与 tri-tcc
+    # 契约的差异面，属 trirv_cc 方言子集，非内建语义差异）
+    ("tlit内建后继", "int main(){ return __builtin_tri_lit(729, 1); }", _tlit_signed(729, 1)),
+    ("tlit内建前驱", "int main(){ return __builtin_tri_lit(729, 2); }", _tlit_signed(729, 2)),
+    ("tlit内建补", "int main(){ return __builtin_tri_lit(729, 0); }", _tlit_signed(729, 0)),
+    ("tlit变量操作数", "int main(){ int x = 729; int y = __builtin_tri_lit(x, 1); "
+     "int z = __builtin_tri_lit(y, 1); int w = __builtin_tri_lit(x, 2); "
+     "int r = 0; if (z == w) { r = 1; } return r; }", 1),
+    ("tlit嵌套恒等", "int main(){ int x = __builtin_tri_lit(__builtin_tri_lit(729, 1), 2); "
+     "int r = 0; if (x == 729) { r = 1; } return r; }", 1),
 ]
-
 
 def main():
     print("=" * 60)

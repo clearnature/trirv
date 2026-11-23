@@ -800,6 +800,18 @@ class CodeGen:
             is_var = self.func_variadic.get(n.name, (False, 0))[0]
             # 变参一律走栈块（va_start 需连续参数区）；普通函数仅参数超寄存器时走栈块
             need_stack = is_var or (nargs > REG)
+            if n.name == "__builtin_tri_lit":
+                # Post 文字运算 x^a 直发（2026-11-23 内建拍板，与 tri-tcc 同名
+                # 同语义；ternary-isa-design.md §6.1）。a 编译期常量 0..2
+                # （超界/非常量诚实报错）；结果类型同 x（词级 int）。
+                if (len(n.args) != 2 or n.args[1].kind != "num"
+                        or not (0 <= n.args[1].val <= 2)):
+                    raise SyntaxError("__builtin_tri_lit expects constant a in 0..2")
+                self.gen_expr(n.args[0])
+                self.pop("t0")
+                self.emit(("LIT0", "LIT1", "LIT2")[int(n.args[1].val)] + "  t0, t0, zero")
+                self.push("t0")
+                return retty
             if n.name in self.SYSCALLS:
                 # syscall：参数直接走 a0..（无 sret、无栈块）
                 for a in n.args: self.gen_expr(a)

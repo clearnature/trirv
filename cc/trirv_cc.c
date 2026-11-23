@@ -2255,6 +2255,27 @@ static int eval(Node*n){
     case N_CALL: {
         int nargs=n->nargs;
         int sn=syscall_no(n->s);
+        /* __builtin_tri_lit(x, a)：Post 文字运算直发（2026-11-23 内建，与
+           tri-tcc 同名同语义；ternary-isa-design.md §6.1）。a 编译期常量
+           0..2；超界/非常量诚实报错（exit 2 口径）。结果类型同 x（词级 int）。 */
+        if(!strcmp(n->s,"__builtin_tri_lit")){
+            Node *xa;
+            if(nargs!=2){ fprintf(stderr,"UNSUPPORTED: __builtin_tri_lit expects 2 args\n"); exit(2); }
+            xa=n->args[1];
+            if(xa->k!=N_NUM || xa->numw<0 || xa->numw>2){
+                fprintf(stderr,"UNSUPPORTED: __builtin_tri_lit expects constant a in 0..2\n");
+                exit(2);
+            }
+            {
+                int r=eval(n->args[0]);
+                int d=tacq();
+                emitf("LIT%d %s, %s, zero",(int)xa->numw,regname(d),regname(r));
+                /* 结果在临时寄存器而非 a0——return 语境的 A0_DIRECT 必须清零，
+                   否则 return-gen 跳过 a0 拷贝（return 直返 0 实证）。 */
+                A0_DIRECT = 0;
+                return d;
+            }
+        }
         /* 间接调用：(*fp)(...) / (fn)(...) 形态，n->s=="(*target)"，
          * 目标表达式在 n->e。返回类型按 int（无签名信息）。 */
         int indirect = (n->s[0]=='(') && strstr(n->s,"target")!=NULL;
@@ -2729,7 +2750,10 @@ static void gen_stmt(Node*n){
             copy_words(dst,src,FUNC_RET_BYTES);
             emitf("ADDI a0, %s, 0",regname(dst));
             TDN=0;
-        } else if(n->expr&&n->expr->k==N_CALL){    /* return f(...)：结果直接留在 a0 */
+        } else if(n->expr&&n->expr->k==N_CALL
+                  && strcmp(n->expr->s,"__builtin_tri_lit")!=0){    /* return f(...)：结果直接留在 a0。
+                       __builtin_tri_lit 结果在临时寄存器（gen 期直发，非 a0 ABI），
+                       走下方通用拷贝路径——结构性误判实证：return 直返 0。 */
             A0_DIRECT=1; eval(n->expr); A0_DIRECT=0;
         } else if(n->expr){ int r=eval(n->expr); if(r!=10) emitf("ADDI a0, %s, 0",regname(r)); }
         else emitf("ADDI a0, zero, 0");
@@ -3253,6 +3277,10 @@ static void scan_undef_node(Node*n,int *nundef,char (*names)[64]){
     case N_CALL:
         if(!is_syscall_name(n->s) && strncmp(n->s,"(*target)",9)!=0){
             int known=0;
+            /* __builtin_tri_lit：gen 期直发内建（2026-11-23），非外部符号——
+               本遍历与 gen 各走各的 AST（双点白名单教训，同 tinycc
+               tri_patch_symbol/tri_sym_final），漏一点即 undefined reference。 */
+            if(!strcmp(n->s,"__builtin_tri_lit")) known=1;
             const char*real=alias_follow(n->s);
             for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,n->s)){known=1;break;}
             if(!known && real){
