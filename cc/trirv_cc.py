@@ -31,7 +31,7 @@ TOKEN_RE = re.compile(r"""
   | (?P<op>\.\.\.|==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\.|[-+*/%=<>!&|^~?,;(){}\[\]:])
 """, re.X)
 
-KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed","__tint2","__tint","__tbool",
+KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed","__tint2","__tint","__tbool","const",
             "if","else","while","for","return","break","continue"}
 
 class Tok:
@@ -199,9 +199,15 @@ class Parser:
         self.structs[name] = {"size": align9(cur), "members": members}
 
     def parse_type(self):
-        """解析类型 + 0+ 个 *，返回类型字符串（int / char* / struct S / struct S*）。"""
+        """解析类型 + 0+ 个 *，返回类型字符串（int / char* / struct S / struct S*）。
+        const 限定符消费后丢弃（T1：存储等价口径，无 rodata 区分——与
+        trirv_cc.c 的 while(accept("const")) 同范围：前缀 + unsigned 组合内）。"""
+        while self.accept("const"):
+            pass
         if self.at("unsigned"):
             self.take("unsigned")
+            while self.accept("const"):
+                pass
             if self.accept("char"):
                 base = "uchar"                          # unsigned char：1 tryte，零扩展
             else:
@@ -295,7 +301,7 @@ class Parser:
             self.take("break"); self.take(";"); return Node("break")
         if self.at("continue"):
             self.take("continue"); self.take(";"); return Node("continue")
-        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed") or self.at("__tint2") or self.at("__tint") or self.at("__tbool"):
+        if self.at("int") or self.at("char") or self.at("struct") or self.at("va_list") or self.at("unsigned") or self.at("signed") or self.at("__tint2") or self.at("__tint") or self.at("__tbool") or self.at("const"):
             ty = self.parse_type()
             decls = []
             while True:

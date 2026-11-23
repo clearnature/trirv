@@ -112,6 +112,12 @@ CASES = [
     ("tbool负词精确往返", "int main(){ __tint z0=0; __tbool n=~z0; __tint t=n; "
      "__tint e=~z0; if(t==e){return 1;} return 2; }", 1),
     ("tbool与tint混用合法", "__tint t=2; __tbool b=1; int main(){ return t & b; }", 1),
+
+    # ---- T1 const 限定符（存储等价口径；两后端同语义）----
+    ("const全局", "const int c = 7;\nint main(){ return c; }", 7),
+    ("const局部", "int main(){ const int x = 5; return x; }", 5),
+    ("const前缀组合", "const unsigned char u = 3;\nint main(){ return u; }", 3),
+    ("const数组", "const int a[2] = {4,5};\nint main(){ return a[0]+a[1]; }", 9),
 ]
 
 def main():
