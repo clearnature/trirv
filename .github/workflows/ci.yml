@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: recursive   # tinycc(trirv) + musl(trirv-vendor)
 
       - uses: actions/setup-python@v5
         with:
@@ -63,11 +63,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: recursive }
+        with: { submodules: recursive   # tinycc(trirv) + musl(trirv-vendor) }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - uses: actions/checkout@v4
-        with: { repository: clearnature/musl, ref: trirv-vendor, path: third_party/musl }
       - name: Build with LLVM
         run: |
           clang -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o vm/bin/trirv_vm vm/trirv_vm.c -lm

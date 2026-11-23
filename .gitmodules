@@ -2,3 +2,7 @@
 	path = tinycc
 	url = https://github.com/clearnature/tinycc.git
 	branch = trirv
+[submodule "third_party/musl"]
+	path = third_party/musl
+	url = https://github.com/clearnature/musl.git
+	branch = trirv-vendor
