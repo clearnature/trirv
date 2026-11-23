@@ -51,8 +51,11 @@
       mailbox 往返/共享窗加倍/窗口地址绑定/错误路径 -3 -2 自环）
 - [ ] T11b AMP 扩展（记账：tri-tcc 侧 AMP 用例、>2 核契约、阻塞式 mrecv）
 - [ ] T7b py fn-ptr 声明符与间接调用（py 无 fn-ptr 解析基础）
-- [ ] T9b TRVO 多单元直链自旋 bug（取证：符号解析/布局全对，
-      热点=未调用单元体 → 导入补丁层 bug——独立深水排查）
+- [x] T9b TRVO 多单元直链自旋——破案修复（根因：global_add 的 g->ty 裸
+      别名 TRVO 导入的栈上行缓冲，悬垂后类型塌成 int*（9 tryte）→ 数组
+      全局互相重叠 → SD_E 常量被 g_ec_buf 初始化循环踩踏 → ec 边界永假
+      自旋。修复 = global_add 内 strdup(ty)。契约：直链==拼接轨迹级一致
+      （PyVM (1,True,20,19674) / CVM exit=1），trvo_e2e 25→30 项）
 
 ### 前置缺口记账（不阻断主线）
 

@@ -27,6 +27,7 @@ import trirv_vm as vm
 HERE = os.path.dirname(os.path.abspath(__file__))
 CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
 CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
+ROOT = os.path.dirname(HERE)
 
 passed = 0
 failed = 0
@@ -359,8 +360,48 @@ else:
     c5 = vm.VM(pp2, mem_init=mem4).run(max_steps=2000000)
     check("弱符号/强覆盖行为(99)", c5.exit_code & 0xFF, 99)
 
+# ================ T9b 多单元直链回归（2026-11-23 悬垂 ty 修复锁死） ================
+# 根因：global_add 的 g->ty 裸别名 TRVO 导入的栈上行缓冲 → 后续行复用即悬垂
+# → 类型变垃圾字节（int*）→ ty_bytes 塌成 9 → 数组全局互相重叠 →
+# ec_core 的 SD_E 常量被 g_ec_buf 初始化循环踩踏 → 直链自旋（拼接式无导入
+# 路径故幸存）。修复后契约：直链 == 拼接式（双 VM 轨迹级一致）。
+EC_CORE = os.path.join(ROOT, "libc-musl", "musl_tri", "ec_core_tri.c")
+ECVT = os.path.join(ROOT, "libc-musl", "musl_tri", "ecvt_tri.c")
+if os.path.exists(EC_CORE) and os.path.exists(ECVT):
+    u1 = tempfile.mktemp(suffix=".trvo")
+    u2 = tempfile.mktemp(suffix=".trvo")
+    rc_u1, _ = compile_any(u1, main_src=open(EC_CORE).read())
+    rc_u2, _ = compile_any(u2, main_src=open(ECVT).read())
+    if rc_u1 == 0 and rc_u2 == 0:
+        main_src = (
+            "extern char *ecvt(double value, int n, int *decpt, int *sign);\n"
+            "int main(){\n"
+            "  char buf[64]; int decpt; int sign; char *s;\n"
+            "  s = ecvt(492400275253316431169, 4, &decpt, &sign);\n"
+            "  return decpt;\n"
+            "}\n"
+        )
+        trv_direct = tempfile.mktemp(suffix=".trv")
+        rc_d, _ = compile_any(trv_direct, main_src=main_src, libs=[u1, u2])
+        cat_src = open(EC_CORE).read() + "\n" + open(ECVT).read() + "\n" + main_src
+        trv_cat = tempfile.mktemp(suffix=".trv")
+        rc_c, _ = compile_any(trv_cat, main_src=cat_src)
+        if rc_d == 0 and rc_c == 0:
+            pD, mD = load_trv(trv_direct)
+            pC, mC = load_trv(trv_cat)
+            check("T9b/直链指令数==拼接", len(pD), len(pC))
+            cD = vm.VM(pD, mem_init=mD).run(max_steps=2000000)
+            cC = vm.VM(pC, mem_init=mC).run(max_steps=2000000)
+            check("T9b/PyVM 直链 ecvt(3.5)→decpt=1", cD.exit_code, 1)
+            check("T9b/PyVM 直链==拼接轨迹", (cD.exit_code, cD.halted, cD.pc, cD.steps),
+                  (cC.exit_code, cC.halted, cC.pc, cC.steps))
+            if os.path.exists(CVM):
+                rD = subprocess.run([CVM, trv_direct], capture_output=True, text=True)
+                rC = subprocess.run([CVM, trv_cat], capture_output=True, text=True)
+                eD = next((l for l in rD.stderr.split() if l.startswith("exit=")), "")
+                eC = next((l for l in rC.stderr.split() if l.startswith("exit=")), "")
+                check("T9b/CVM 直链 decpt=1", eD, "exit=1")
+                check("T9b/CVM 直链==拼接", eD, eC)
+
 print(f"\nTRVO 目标文件端到端：{passed} PASS / {failed} FAIL")
-sys.exit(1 if failed else 0)
-sys.exit(1 if failed else 0)
-sys.exit(1 if failed else 0)
 sys.exit(1 if failed else 0)

@@ -1064,7 +1064,11 @@ static Global* global_add(const char*name,char*ty,int size,Node*init){
     GROW(GLOBS,CAPGLOB,NGLOB,Global);
     Global*g=&GLOBS[NGLOB++];
     memset(g,0,sizeof(*g));
-    g->name=strdup(name); g->ty=ty; g->size=size; g->init=init;
+    /* 坑实录（T9b 根因）：ty 必须 strdup——TRVO 导入传栈上 char[128] 行缓冲，
+       后续行复用即悬垂（类型变垃圾字节 → ty_bytes 塌成 9 → 数组全局互相
+       重叠 → SD_E 常量被踩 → ec 初始化循环边界永假 → 直链自旋）。
+       既有调用方（声明路径）早已 strdup，仅导入路径裸传——修在此处防御全部来路。 */
+    g->name=strdup(name); g->ty=strdup(ty); g->size=size; g->init=init;
     if(amp_reserved(name)) g->addr=AMP_SHARED_BASE;   /* 保留符号：地址固定，见 assign_glob_addrs */
     return g;
 }
