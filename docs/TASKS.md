@@ -75,30 +75,83 @@
 纯虚拟硬件+软件栈先行；硬件直通后置（行业默认不暴露底层硬件）。
 syscall 表 = 虚拟设备接口（virtio 半虚拟化同构）。
 
-### B1. TC 压缩扩展（机器全链路就绪，增益扩展待拍板）
+### B1. TC 压缩扩展（TC v2 已收官，增益扩展三选待拍板）
 
-TC v2 已收官（T10d/T10e）：五类子格式 + 窗口 {t0-t2,s0,s1,a0-a2}，
+TC v2（bb19bcc+881b702）：五类子格式 + 窗口 {t0-t2,s0,s1,a0-a2}，
 musl 语料 28.0% TC 率 / TRV2 打包节省 7.0%（实测）。
-待拍板扩展：3-trit 子格式重编（9 槽，imm 降至 6 trit）→ 可开 C-JAL
-（+7.5% 槽覆盖）与更多访存变体，但与 sf0 双寄存器布局互斥（payload
-预算），需在「调用密集 vs 指针运算」两类负载间取舍。
+
+**拍板项 ①TRV2 打包正式化——建议先行（收益兑现）**
+现状：TC v2 的 7% 节省是「理论值」——.trv 仍是 4-tryte 槽制，节省只在
+TRV2 tryte 流（ff8f50a 原型）下兑现。正式化 = imem word 索引→tryte 粒度、
+PC 语义 slot→tryte、JAL/BRANCH 目标迁移、双 VM 加载器集成、全量回归。
+改动面大但方向已在 TC 拍板内延。
+参照：RISC-V 的 C 扩展直接编入基础 ISA 规范（非可选后补）+ ELF 容器
+版本字段纪律；TRV1/TRV2 magic+version 已预留（兼容 TRV1 三字段布局）。
+
+**拍板项 ②C-JAL = TC 组 2（opcode 24）——建议次之（+7.5% 槽覆盖）**
+设计：opcode 24 首 subformat = C-JAL delta7（ra 隐含，10-trit payload
+3+7 恰好放下）——**加法扩展，零破坏已提交的 TC v2 编码**；判宽推广为
+`首 tryte %27 >= 23`（全宽 opcode 仅用 0-22，23-26 恒空闲，无歧义）。
+覆盖 +592 槽（7.5%）→ 合计 ~35%，节省 ~8.8%。
+参照：RVC C.JAL（RV32；RV64 因 rtireturn 惯例裁撤——我们 ra 隐含同款
+取舍）/ Thumb BL 长跳两段式（超 delta7 的调用回退全宽 JAL 即可）。
+
+**拍板项 ③3-trit 子格式重编——建议远期（破坏性，负载取舍）**
+9 子格式槽，imm 降 6 trit；与 sf0 双寄存器布局互斥（payload 预算）——
+「调用密集 vs 指针运算」负载二选一。TC v2 刚提交，重编即全链返工；
+等 TRV2 正式化后的真实负载分布数据再定。
+
 参照：RISC-V RVC / Thumb-2 / MIPS16e；Termite / REBEL-6 / alopx.li wiki
 
-### B2. 二进制兼容白名单——直通期后置
+### B2. 二进制兼容白名单——翻译层直通期后置；ABI 冻结政策建议现在定
 
-参照：Rosetta 2 / FEX-Emu / Box64（翻译层惯例）；REBEL-6 双模式学术参照
+翻译层本体（Rosetta 2 / FEX-Emu / Box64 惯例；REBEL-6 双模式学术参照）
+按 B0 拍板后置，无需现在动工。
+**建议现在拍板的可执行动作 = syscall ABI 冻结政策**（虚拟平台的
+「设备接口契约」，零代码成本）：
+- Linux 编号空间照抄（17/56/62/63/64/93/94/...——现状即如此，musl 依赖）；
+- 5000+ TriRV 扩展区登记制：5000/5001（8-bit 视图）、5010-5012（AMP）
+  已开张，新号只增不挪（Linux syscall 稳定先例：号码永不变语义）；
+- .trv 容器 magic+version 字段纪律（TRV1 现状 → TRV2 升级通道已留）。
+参照：RISC-V psABI 的 stability process（riscv-abi SIG 冻结流程）。
 
-### B3. SMP 模拟——纯虚拟期，AMP 先行
+### B3. SMP——AMP 已先行（T11），真并行路径待拍板
 
-参照：RISC-V multi-hart + RVWMO + MESI；AMP 惯例（核间中断+共享内存）
+已落地：mailbox + 共享窗 + 单步协作轮转（顺序一致性，契约可复现）。
+**建议路径（三步递进）**：
+① 真并行 AMP：CVM OpenMP 多线程 + hub 锁保护邮箱（CVM 已有
+   SharedSync/-s 共享基建可复用）——参照 FreeRTOS SMP（2021 起官方
+   SMP 内核）、Zephyr SMP 调度；
+② 核间中断替代轮询：VM 已有 irq_timer + mstatus.MIE/MPIE + mtimer
+   陷入基建，加 MSIP 型核间中断位——参照 RISC-V CLINT/MSIP 惯例、
+   OpenAMP（rpmsg/remoteproc——AMP 的工业标准开源实现，T11 mailbox
+   即其玩具版）；
+③ 共享窗真硬件并行：访问点路由（load/store 分流 hub 窗口）替代步间
+   同步——参照 RISC-V multi-hart + RVWMO（弱内存模型契约）+ MESI。
 
-## C. 大方向立项（计划文档在库，未开工）
+## C. 大方向立项（计划文档在库，未开工；附开源参照）
 
 - [ ] C1. LLVM 后端（docs/LLVM_BACKEND_PLAN.md）
-- [ ] C2. WASM 路线深化（docs/WASM_ROUTE_A.md）
+  参照：llvm/lib/Target/RISC-V（规范标准骨架）、M68k（2022 回归的现代
+  简洁后端，非主流架构融入主干的成功先例）、VE/BPF（小后端范例）。
+  核心难题：LLVM 整数类型强制 2 幂（MVT）——45-trit≈2^71.3，可行路径
+  = i128 容器+掩码（务实，浪费）或自定义 MVT/EVT（重写 legalization）。
+  建议：WASM 前端垫稳后再启动，首步 = out-of-tree 目标骨架 + 三条
+  冒烟指令（ADDI/JAL/ECALL）。
+- [ ] C2. WASM 路线深化（docs/WASM_ROUTE_A.md；现状 112 例差分已通）
+  参照：wabt、Binaryen（优化器）、wasm3（wasm→C 元编译先例——
+  与「wasm→TriRV native 直译」同构）、wasmtime/Cranelift。
+  深化方向：wasm→TriRV 直译器（借 TC 压缩输出）。
 - [ ] C3. 固件架构（docs/trirv-firmware-architecture.md）
-- [ ] C4. 三值逻辑综合器 / Post 代数（T-LIT 应用层）
-- [ ] C5. musl 覆盖面扩展（65/66 → 开放式扩展）
+  参照：OpenSBI（RISC-V M 态固件——我们的 VM 已有 M 态 CSR/trap/
+  mret/mtimer 同构基建）；coreboot/U-Boot 分阶段惯例。
+  建议：与 B3② 核间中断联动（固件是中断分发者）。
+- [ ] C4. 三值逻辑综合器 / Post 代数应用层
+  开源无强参照（学术领域）；建议以 T-LIT 用户态库形态推进，等具体
+  消费方（如三值电路仿真/EDA 需求）立项。
+- [ ] C5. musl 覆盖面扩展（65/66 → 开放式）
+  参照：musl 自身 src/* 目录构建序（string/stdlib 已完成，stdio/math/
+  multibyte 待扩）；建议作为批次间隙的填充项。
 
 ## D. 归档——已收官批次汇总
 
