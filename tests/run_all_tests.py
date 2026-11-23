@@ -160,6 +160,7 @@ SUITES = [
     ("trirv_trv2_e2e.py",         "TRV2 打包正式化 50 项",    False, None),
     ("trirv_tcjump_e2e.py",       "TC sf5 C-J/C-JAL 12 项",   False, None),
     ("trirv_golden_e2e.py",       "手算黄金补缺 26 项",       False, None),
+    ("trirv_dual_fuzz.py",        "双引擎随机差分 200+40 对",  False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),
