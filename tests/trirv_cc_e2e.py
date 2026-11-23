@@ -118,6 +118,13 @@ CASES = [
     ("const局部", "int main(){ const int x = 5; return x; }", 5),
     ("const前缀组合", "const unsigned char u = 3;\nint main(){ return u; }", 3),
     ("const数组", "const int a[2] = {4,5};\nint main(){ return a[0]+a[1]; }", 9),
+
+    # ---- T2 do-while / T3 goto+标签（continue 跳条件求值处——C 口径）----
+    ("do-while累加", "int main(){ int s=0; int i=0; do { s=s+i; i=i+1; } while(i<3); return s; }", 3),
+    ("do-while保底执行", "int main(){ int i=5; int r=0; do { r=7; i=0; } while(i>0); return r; }", 7),
+    ("do-while continue", "int main(){ int s=0; int i=0; do { i=i+1; if(i==2){continue;} s=s+i; } while(i<4); return s; }", 8),
+    ("goto循环回跳", "int main(){ int i=0; back: i=i+1; if(i<3){ goto back; } return i; }", 3),
+    ("goto跳过", "int main(){ goto skip; return 1; skip: return 2; }", 2),
 ]
 
 def main():

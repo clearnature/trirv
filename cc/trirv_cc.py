@@ -32,7 +32,8 @@ TOKEN_RE = re.compile(r"""
 """, re.X)
 
 KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed","__tint2","__tint","__tbool","const",
-            "if","else","while","for","return","break","continue"}
+            "if","else","while","for","return","break","continue",
+            "do","goto","switch","case","default","typedef"}
 
 class Tok:
     def __init__(self, kind, val): self.kind, self.val = kind, val
@@ -280,6 +281,23 @@ class Parser:
             then = self.parse_stmt()
             els = self.parse_stmt() if self.accept("else") else None
             return Node("if", cond=cond, then=then, els=els)
+        if (self.peek().kind == "id" and self.i + 1 < len(self.toks)
+                and self.toks[self.i + 1].val == ":"):
+            # T3：标签语句 name:（TK_ID + ":" 形态；case/default 是 kw 不冲突）
+            name = self.take().val; self.take(":")
+            return Node("label", name=name)
+        if self.at("goto"):
+            self.take("goto")
+            name = self.take().val
+            self.take(";")
+            return Node("goto", name=name)
+        if self.at("do"):
+            # T2：do body while(cond);——体至少执行一次，cond 真则回跳
+            self.take("do")
+            body = self.parse_stmt()
+            self.take("while"); self.take("(")
+            cond = self.parse_expr(); self.take(")"); self.take(";")
+            return Node("dowhile", cond=cond, body=body)
         if self.at("while"):
             self.take("while"); self.take("(")
             cond = self.parse_expr(); self.take(")")
@@ -1151,6 +1169,23 @@ class CodeGen:
                 self.out.append(els + ":")
                 self.gen_stmt(n.els)
             self.out.append(end + ":")
+        elif k == "dowhile":
+            # C 语义：continue 跳到条件求值处（cont 标签在体后 cond 前），
+            # 不是体首——体首回跳会重跑 continue 之后的体语句。
+            start = self.new_label("do"); cont = self.new_label("dwc")
+            end = self.new_label("dwe")
+            self.out.append(start + ":")
+            self.loops.append((end, cont))
+            self.gen_stmt(n.body)
+            self.out.append(cont + ":")
+            self.gen_expr(n.cond); self.pop("t0")
+            self.emit(f"BNE  t0, zero, {start}")
+            self.out.append(end + ":")
+        elif k == "label":
+            self.out.append(n.name + ":")            # 用户标签（与生成 _L 前缀无碰撞；
+                                                     # 跨函数同名标签为教学实现已知边界）
+        elif k == "goto":
+            self.emit(f"JAL  x0, {n.name}")          # rd=x0 纯跳转，不写 ra
         elif k == "while":
             start = self.new_label("while"); end = self.new_label("end")
             self.out.append(start + ":")
