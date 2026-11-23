@@ -209,7 +209,7 @@ static void tok_push(Token t){
     TOKS[NTOK++]=t;
 }
 static int is_kw(const char*s){
-    static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list","__tint2",
+    static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list","__tint2","__tint","__tbool",
         "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else","extern",NULL};
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
@@ -402,6 +402,14 @@ static char* parse_type(void){
         /* __tint2（2026-11-23 C2 方案 A）：4-tryte/20-trit 档——存取即窄化
            （SW4 mod 3^20 截断 / LW4 sx20 符号扩展），寄存器内 int 语义 */
         snprintf(base,sizeof(base),"__tint2");
+    } else if(accept("__tint")){
+        /* __tint（批B）：Kleene 逻辑词（9 tryte，与 int 同宽）——& | ~ ==
+           != 真值判断直发，^/序比较/算术/混 int 门控拒绝 */
+        snprintf(base,sizeof(base),"__tint");
+    } else if(accept("__tbool")){
+        /* __tbool（批B）：1-tryte Kleene 布尔（值域 0/1/2，与 __tint 同编码）——
+           有符号 LB 容器（与 tri-tcc VT_DEFSIGN 口径一致，精确往返） */
+        snprintf(base,sizeof(base),"__tbool");
     } else if(accept("int")){
         while(accept("const")){ }
         snprintf(base,sizeof(base),"int");
@@ -702,7 +710,7 @@ static int is_decl_start(void){
     if(t->kind==TK_KW){
         /* 坑实录：类型清单共三处硬编码（is_kw / parse_type accept 链 /
            本表）——新类型三处都要补，漏一处即 parse_primary: bad 报错 */
-        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const","extern","__tint2",NULL};
+        static const char*dt[]={"int","char","void","unsigned","signed","struct","va_list","const","extern","__tint2","__tint","__tbool",NULL};
         for(int i=0;dt[i];i++) if(!strcmp(t->s,dt[i])){
             /* struct X; 与 struct X f() 区分：先看后面 */
             return 1;
@@ -852,6 +860,10 @@ static int is_char_ty(const char*ty){
     return ty && (!strcmp(ty,"char")||!strcmp(ty,"uchar")||!strcmp(ty,"schar"));
 }
 static int char_signed(const char*ty){ return ty && !strcmp(ty,"schar"); }
+/* Kleene 系类型判定（批B）：__tint / __tbool——门控与类型传播共用 */
+static int is_tinty(const char*ty){
+    return ty && (!strcmp(ty,"__tint") || !strcmp(ty,"__tbool"));
+}
 /* 真数组：带维度且不是"指向数组的指针"（int[3]* 是指针，大小仍是 9） */
 static int is_array(const char*ty){
     return ty && strchr(ty,'[') && ty[strlen(ty)-1]!='*';
@@ -921,6 +933,8 @@ static int ty_bytes(const char*ty){
     if(is_array(ty)){ char*el=array_elem(ty); int n=array_count(ty); return n*ty_bytes(el); }
     if(is_char_ty(ty)) return 1;
     if(!strcmp(ty,"__tint2")) return 4;    /* __tint2 = 4 tryte（C2 方案 A） */
+    if(!strcmp(ty,"__tbool")) return 1;    /* __tbool = 1 tryte（批B） */
+    /* __tint = 9 tryte（默认分支同 int） */
     StructDef*sd=struct_find(ty);
     if(sd) return sd->size;
     return 9;
@@ -1794,9 +1808,17 @@ static char* expr_type(Node*n){
     case N_PREINC: return expr_type(n->k==N_ASSIGN?n->l:n->e);
     case N_POSTINC: return expr_type(n->e);
     case N_CALL:  return (char*)fn_ret_type(n->s);
+    case N_UN:
+        if(n->e && !strcmp(n->s,"~") && is_tinty(expr_type(n->e)))
+          return expr_type(n->e);            /* ~ 保持 Kleene 系类型 */
+        return "int";
     case N_BIN: {
         const char*op=n->s;
         char*lt=expr_type(n->l), *rt=expr_type(n->r);
+        if(!strcmp(op,"&")||!strcmp(op,"|")){
+            if(is_tinty(lt) && is_tinty(rt))
+              return (!strcmp(lt,"__tint")||!strcmp(rt,"__tint"))?"__tint":"__tbool";
+        }
         if(!strcmp(op,"+")||!strcmp(op,"-")){
             if(is_ptr(lt)&&!is_ptr(rt)) return lt;
             if(is_ptr(rt)&&!is_ptr(lt)) return rt;
@@ -1815,6 +1837,8 @@ static void load_mem(int dst,int base,int off,const char*ty){
         emitf("%s %s, %d(%s)", char_signed(ty)?"LB":"LBU", regname(dst),off,regname(base));
     else if(!strcmp(ty,"__tint2"))
         emitf("LW4 %s, %d(%s)",regname(dst),off,regname(base));   /* sx20 符号扩展 */
+    else if(!strcmp(ty,"__tbool"))
+        emitf("LB %s, %d(%s)",regname(dst),off,regname(base));    /* 有符号字节容器（精确往返） */
     else emitf("LW %s, %d(%s)",regname(dst),off,regname(base));
 }
 static void store_mem(int src,int base,int off,const char*ty){
@@ -1822,6 +1846,8 @@ static void store_mem(int src,int base,int off,const char*ty){
     if(is_char_ty(ty)) emitf("SB %s, %d(%s)",regname(src),off,regname(base));
     else if(!strcmp(ty,"__tint2"))
         emitf("SW4 %s, %d(%s)",regname(src),off,regname(base));   /* mod 3^20 截断 */
+    else if(!strcmp(ty,"__tbool"))
+        emitf("SB %s, %d(%s)",regname(src),off,regname(base));
     else emitf("SW %s, %d(%s)",regname(src),off,regname(base));
 }
 static void load_glob(int dst,Global*g){
@@ -1988,7 +2014,13 @@ static int eval(Node*n){
     case N_UN: {
         int a=eval(n->e);
         int d=dstof(a);                                  /* -x 不能原地改写 x */
-        if(!strcmp(n->s,"-")) emitf("SUB %s, zero, %s",regname(d),regname(a));
+        if(!strcmp(n->s,"-")){
+            if(is_tinty(expr_type(n->e))){
+                fprintf(stderr,"UNSUPPORTED: __tint has no unary '-' (Kleene system)\n");
+                exit(2);
+            }
+            emitf("SUB %s, zero, %s",regname(d),regname(a));
+        }
         else if(!strcmp(n->s,"!")) emitf("SLTIU %s, %s, 1",regname(d),regname(a));
         else if(!strcmp(n->s,"~")){
             emitf("TNOT %s, %s",regname(d),regname(a));    /* 本征：2-t，~0=-1 */
@@ -2030,6 +2062,25 @@ static int eval(Node*n){
             }
         }
         char*lt=expr_type(n->l), *rt=expr_type(n->r);
+        {   /* __tint/__tbool Kleene 门控（批B，2026-11-23）：与 tri-tcc C1 同口径。
+               允许 & |（本征直发即 TAND/TOR）与 ==/!=（位型全等）；拒绝
+               ^ < > <= >= + - * / % << >>；混 int 报错（==0/!=0 常量豁免）。
+               && || 走 int 真值路径（与 tri-tcc 同，不入契约）。 */
+            int ltint=is_tinty(lt), rtint=is_tinty(rt);
+            if(ltint&&rtint){
+                if(strcmp(op,"&")&&strcmp(op,"|")&&strcmp(op,"==")&&strcmp(op,"!=")){
+                    fprintf(stderr,"UNSUPPORTED: __tint has no '%s' (Kleene system: no xor/order/arithmetic)\n",op);
+                    exit(2);
+                }
+            } else if(ltint!=rtint){
+                int zero_side = (n->l->k==N_NUM && n->l->numw==0)
+                             || (n->r->k==N_NUM && n->r->numw==0);
+                if(!((!strcmp(op,"==")||!strcmp(op,"!=")) && zero_side)){
+                    fprintf(stderr,"UNSUPPORTED: implicit mixing of int and __tint/__tbool is not allowed\n");
+                    exit(2);
+                }
+            }
+        }
         int a=eval(n->l);
         int b=eval(n->r);
         /* 目标寄存器优先复用本次表达式的私有临时；两侧都是常驻寄存器
@@ -2890,7 +2941,7 @@ static void gen_func(Node*f){
          * struct 形参按值传：入口从 aN（= 源地址）逐字拷进本地副本，之后它就是
          * 一个普通结构体局部变量 —— 修改与调用方完全隔离。 */
         v->spilled = isarr || is_char_ty(v->ty) || struct_find(v->ty)!=NULL
-                     || !strcmp(v->ty,"__tint2");   /* 存取即窄化：必须落槽（同 char） */
+                     || !strcmp(v->ty,"__tint2") || !strcmp(v->ty,"__tbool");   /* 存取即窄化：必须落槽（同 char） */
         /* 叶子函数没有调用会踩 a0-a7，形参可以直接留在它到达时的寄存器里，
            省掉 `ADDI sN, aM, 0` 这次搬运。池从 a_nparams 起，不会与它们冲突。 */
         if(!anycall&&!isarr&&!is_char_ty(v->ty)&&!struct_find(v->ty)&&i<8-abase){
@@ -2906,7 +2957,8 @@ static void gen_func(Node*f){
        SW4/LW4 路径上，寄存器驻留值会绕过截断/符号扩展（x=4000000000
        寄存器驻留直比 513215599 失败实证）——与 char/struct 同款处理 */
     for(int i=0;i<NLOC;i++)
-      if(!LOC[i].spilled && !strcmp(LOC[i].ty,"__tint2")) LOC[i].spilled=1;
+      if(!LOC[i].spilled && (!strcmp(LOC[i].ty,"__tint2") || !strcmp(LOC[i].ty,"__tbool")))
+        LOC[i].spilled=1;   /* 存取即窄化口径：tint2/tbool 必经 LW4|LB / SW4|SB */
     for(int i=0;i<NLOC;i++){
         if(LOC[i].spilled){
             if(LOC[i].reg>0){ USEDREG[LOC[i].reg]=0; LOC[i].reg=0; }   /* 取址后已落栈，归还寄存器 */
@@ -3008,7 +3060,7 @@ static void gen_func(Node*f){
              * 后续 LB/LBU 读回时符号性才与 C 一致；__tint2 形参同理——
              * SW4 把入参截/符号化到 20-trit（实参寄存器传的是全宽词，
              * 不截则 callee 读到未窄化值）。 */
-            if(is_char_ty(v->ty) || !strcmp(v->ty,"__tint2")){
+            if(is_char_ty(v->ty) || !strcmp(v->ty,"__tint2") || !strcmp(v->ty,"__tbool")){
                 int r=tacq(); emitf("ADDI %s, a%d, 0",regname(r),i+abase);
                 store_mem(r,8,v->off,v->ty); TDN=0;
             } else { chk_off(v->off); emitf("SW a%d, %d(s0)",i+abase,v->off); }

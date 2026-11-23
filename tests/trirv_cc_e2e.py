@@ -83,6 +83,35 @@ CASES = [
      "if(x==513215599){return 1;} return 2; }", 1),
     ("tint2结构体成员", "struct S { char c; __tint2 v; }; int main(){ struct S s; s.c = 3; "
      "s.v = 5000000000; if(s.v==1513215599 && s.c==3){return 1;} return 2; }", 1),
+
+    # ---- __tint/__tbool Kleene 类型（批B；与 tri-tcc C1/C2-c 同口径）。
+    #      方言面：无 (int) 强转/无 ?:——tint 结果比较走 v[] 索引（tint vs
+    #      tint 位型全等），期望值构造全在程序内。----
+    ("tint与或全组合", "__tint v[3]; int main(){ v[0]=0; v[1]=1; v[2]=2; int f=0; int i; int j; "
+     "for(i=0;i<3;i=i+1){ for(j=0;j<3;j=j+1){ __tint a=v[i]; __tint b=v[j]; int lo; int hi; "
+     "if(i<j){lo=i;}else{lo=j;} if(i>j){hi=i;}else{hi=j;} "
+     "if((a&b)!=v[lo]){f=f+100;} if((a|b)!=v[hi]){f=f+1;} } } return f; }", 0),
+    ("tint非德摩根", "__tint v[3]; int main(){ v[0]=0; v[1]=1; v[2]=2; int f=0; int i; int j; "
+     "for(i=0;i<3;i=i+1){ for(j=0;j<3;j=j+1){ __tint a=v[i]; __tint b=v[j]; "
+     "__tint L=~(a&b); __tint R=(~a)|(~b); if(L!=R){f=f+1;} } } return f; }", 0),
+    ("tint相等位型", "__tint v[3]; int main(){ v[0]=0; v[1]=1; v[2]=2; int f=0; int i; int j; "
+     "for(i=0;i<3;i=i+1){ for(j=0;j<3;j=j+1){ if((v[i]==v[j])!=(i==j)){f=f+4;} } } "
+     "return f+100*(v[1]!=v[2]); }", 100),
+    ("tint真值判断", "__tint v[3]; int main(){ v[0]=0; v[1]=1; v[2]=2; int f=0; "
+     "if(v[0]){f=f+1;} if(!v[1]){f=f+2;} if(!v[2]){f=f+4;} if(v[2]){f=f+8;} return f; }", 8),
+    ("tint传参返回", "__tint tmax(__tint a, __tint b){ return a|b; } __tint v[3]; "
+     "int main(){ v[0]=0; v[1]=1; v[2]=2; int f=0; int i; int j; "
+     "for(i=0;i<3;i=i+1){ for(j=0;j<3;j=j+1){ __tint m=tmax(v[i],v[j]); int hi; "
+     "if(i>j){hi=i;}else{hi=j;} if(m!=v[hi]){f=f+1;} } } return f; }", 0),
+    ("tbool与或非真值表", "__tbool v[3]; int main(){ v[0]=0; v[1]=1; v[2]=2; int f=0; int i; int j; "
+     "for(i=0;i<3;i=i+1){ for(j=0;j<3;j=j+1){ __tbool a=v[i]; __tbool b=v[j]; int lo; int hi; "
+     "if(i<j){lo=i;}else{lo=j;} if(i>j){hi=i;}else{hi=j;} "
+     "if((a&b)!=v[lo]){f=f+1;} if((a|b)!=v[hi]){f=f+2;} "
+     "__tbool L=~(a&b); __tbool R=(~a)|(~b); if(L!=R){f=f+4;} "  # 德摩根（TNOT 词级
+     "} } return f; }", 0),                                                       # 非值域映射）
+    ("tbool负词精确往返", "int main(){ __tint z0=0; __tbool n=~z0; __tint t=n; "
+     "__tint e=~z0; if(t==e){return 1;} return 2; }", 1),
+    ("tbool与tint混用合法", "__tint t=2; __tbool b=1; int main(){ return t & b; }", 1),
 ]
 
 def main():
@@ -105,8 +134,6 @@ def main():
             print(f"  [FAIL] {name:16s} 异常: {e}")
     print("-" * 60)
     print(f"基础用例通过 {passed}/{len(CASES)}")
-    passed += test_syscalls()
-    passed += test_rejects()
 
     # 展示一个完整编译产物（阶乘）作为工具链能力样本
     demo = "int fact(int n){ if(n<=1){return 1;} return n*fact(n-1); } int main(){ return fact(5); }"
@@ -115,10 +142,13 @@ def main():
     print("前 12 条汇编:")
     for line in [l for l in txt.splitlines() if l.strip()][:12]:
         print("   " + line.strip())
-    total = len(CASES) + 4 + 2
+    total = len(CASES)
     ok_dr, tot_dr = test_data_region()
     passed += ok_dr
     total += tot_dr
+    ok_rj, tot_rj = test_rejects()
+    passed += ok_rj
+    total += tot_rj
     print(f"\n总计通过 {passed}/{total}")
     assert passed == total, "存在失败用例"
     print("全部通过 ✓ 工具链已具备编译 C + syscall 的 libc 地基能力")
@@ -182,9 +212,23 @@ def test_rejects():
     """
     print("-" * 60)
     print("必须拒绝的语义（静默错算 > 编译失败）")
+    # tint NEG 锁 C 后端诚实报错：统一后端 C 失败会静默回退 py 参考（py 无
+    # tint 类型、以语法错误拒绝但无 UNSUPPORTED 文案）——STRICT 下直接抛 C 错。
+    import os as _os
+    _prev = _os.environ.get("TRV_CC_STRICT")
+    _os.environ["TRV_CC_STRICT"] = "1"
     bad = [
         ("移位量为负", "int main(){ int x=10; return x << -1; }", "移位量"),
         ("移位量过大", "int main(){ int x=10; return x >> 99999; }", "移位量"),
+        # __tint/__tbool Kleene 门控（批B）——TRV_CC_STRICT=1 锁 C 后端诚实报错
+        # （py 参考无 tint 类型，回退层以语法错误拒绝——双后端拒绝纪律成立）
+        ("tint异或报错", "__tint a; __tint b; int main(){ __tint c = a ^ b; return 0; }", "Kleene"),
+        ("tint算术报错", "__tint a; __tint b; int main(){ __tint c = a + b; return 0; }", "Kleene"),
+        ("tint序比较报错", "__tint a; __tint b; int main(){ return a < b; }", "Kleene"),
+        ("tint一元负号报错", "__tint a; int main(){ return -a; }", "Kleene"),
+        ("tint混int报错", "int main(){ int i=1; __tint t=2; return t & i; }", "mixing"),
+        ("tint序非零常量报错", "__tint t=2; int main(){ return t == 7; }", "mixing"),
+        ("tbool算术报错", "__tbool a; __tbool b; int main(){ __tbool c = a * b; return 0; }", "Kleene"),
     ]
     ok_count = 0
     for name, src, kw in bad:
@@ -196,7 +240,11 @@ def test_rejects():
             good = "UNSUPPORTED" in msg and kw in msg
             print(f"  [{'PASS' if good else 'FAIL'}] {name:18s} 已拒绝: {msg.splitlines()[0][:60]}")
             ok_count += good
-    return ok_count
+    if _prev is None:
+        del _os.environ["TRV_CC_STRICT"]
+    else:
+        _os.environ["TRV_CC_STRICT"] = _prev
+    return ok_count, len(bad)
 
 
 def test_syscalls():
@@ -204,6 +252,7 @@ def test_syscalls():
     print("-" * 60)
     print("syscall ABI 专项:")
     ok_count = 0
+    total = 0
 
     # 1) write(1, "Hello, TriRV!\n", 14) + return 42
     src = 'int main(){ write(1, "Hello, TriRV!\\n", 14); return 42; }'
@@ -212,6 +261,7 @@ def test_syscalls():
     p1 = out == b"Hello, TriRV!\n" and got == 42 and cpu.exit_code == 42
     print(f"  [{'PASS' if p1 else 'FAIL'}] write 输出={out!r} 返回值={got} 退出码={cpu.exit_code}")
     ok_count += p1
+    total += 1
 
     # 2) write 返回写入字节数
     src2 = 'int main(){ return write(1, "ABCD", 4); }'
@@ -219,6 +269,7 @@ def test_syscalls():
     p2 = got2 == 4 and bytes(cpu2.output) == b"ABCD"
     print(f"  [{'PASS' if p2 else 'FAIL'}] write 返回值={got2} (期望4) 输出={bytes(cpu2.output)!r}")
     ok_count += p2
+    total += 1
 
     # 3) read 从 stdin 读取 + write 回显
     src3 = 'int main(){ int n = read(0, 200, 5); write(1, 200, n); return n; }'
@@ -226,6 +277,7 @@ def test_syscalls():
     p3 = got3 == 4 and bytes(cpu3.output) == b"XYZ\n"
     print(f"  [{'PASS' if p3 else 'FAIL'}] read 读取={got3} 回显={bytes(cpu3.output)!r}")
     ok_count += p3
+    total += 1
 
     # 4) exit(code) 中途停机：exit(9) 后的 return 不执行
     src4 = 'int main(){ write(1, "X", 1); exit(9); return 0; }'
@@ -233,9 +285,10 @@ def test_syscalls():
     p4 = cpu4.exit_code == 9 and bytes(cpu4.output) == b"X"
     print(f"  [{'PASS' if p4 else 'FAIL'}] exit 退出码={cpu4.exit_code} (期望9) 输出={bytes(cpu4.output)!r}")
     ok_count += p4
+    total += 1
 
     assert ok_count == 4, "syscall 用例未全过"
-    return ok_count
+    return ok_count, 4
 
 
 if __name__ == "__main__":
