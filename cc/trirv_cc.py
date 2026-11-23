@@ -361,6 +361,24 @@ class Parser:
             ty = self.parse_type()
             decls = []
             while True:
+                # T7b：函数指针声明符 int (*fp)(int) —— 括号包裹 *name + 参数表。
+                # 存储即一个 word（地址），类型串加 "(*)" 标记（type_size 走默认 word）。
+                if self.at("(") and self.i + 1 < len(self.toks) and self.toks[self.i + 1].val == "*":
+                    self.take("("); self.take("*")
+                    name = self.take().val
+                    self.take(")")
+                    self.take("(")
+                    while not self.at(")"):
+                        self.parse_type()
+                        if self.peek().kind == "id":
+                            self.take()
+                        if not self.accept(","): break
+                    self.take(")")
+                    dty = ty + "(*)"
+                    init = self.parse_initializer() if self.accept("=") else None
+                    decls.append((name, dty, init))
+                    if not self.accept(","): break
+                    continue
                 name = self.take().val
                 dty = ty
                 while self.accept("["):         # 多维数组：int a[2][3]
@@ -471,6 +489,15 @@ class Parser:
                 arrow = self.toks[self.i - 1].val == "->"
                 mname = self.take().val
                 n = Node("member", base=n, mname=mname, arrow=arrow)
+            elif self.accept("("):
+                # T7b：间接调用 (expr)(args) —— (*fp)(x) / (fp)(x) 形态
+                # （具名调用在 parse_primary 内直发，不经过本分支）
+                args = []
+                while not self.at(")"):
+                    args.append(self.parse_expr())
+                    if not self.accept(","): break
+                self.take(")")
+                n = Node("callind", target=n, args=args)
             else: break
         return n
     def parse_primary(self):
@@ -810,6 +837,12 @@ class CodeGen:
         elif k == "str":
             self.load_imm("t0", n.addr); self.push("t0"); return "char*"  # 字符串首址
         elif k == "var":
+            if n.name not in self.vtypes and n.name in self.func_rets \
+               and n.name not in self.locals and n.name not in self.gvars:
+                # T7b：函数名作值（fn-ptr decay）——装载函数地址。
+                # &name 由 trirv_asm 的 &sym 展开落地址（ADDI/LUI+ADDI）。
+                self.emit("ADDI t0, zero, &" + n.name)
+                self.push("t0"); return "int*"
             ty = self.vtypes[n.name]
             if self.ty_array(ty):
                 # 数组名退化为指向首元素的指针：压入首址，返回元素指针类型
@@ -1033,6 +1066,20 @@ class CodeGen:
             self.push("t2"); return n.argty
         elif k == "va_end":
             self.load_imm("t0", 0); self.push("t0"); return "int"  # 空操作
+        elif k == "callind":
+            # T7b：间接调用 (*fp)(args) / (fp)(args) —— JALR 跳转。
+            # C 语义：调用位的 *fp 即 fp（fn-ptr decay）——deref 包装在这里
+            # 解包取其内层表达式，绝不能按 deref 取值（那是把码字当地址）。
+            tgt = n.target.e if n.target.kind == "deref" else n.target
+            self.gen_expr(tgt)
+            for a in n.args:
+                self.gen_expr(a)
+            for i in range(len(n.args) - 1, -1, -1):
+                self.pop(f"a{i}")
+            self.pop("t0")
+            self.emit("JALR ra, 0(t0)")
+            self.push("a0")
+            return "int"
         elif k == "call":
             retty = self.func_rets.get(n.name, "int")
             sret = is_struct(retty)

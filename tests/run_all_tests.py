@@ -111,6 +111,7 @@ SUITES = [
     ("trirv_tlit_e2e.py",         "T-LIT 文字运算双 VM 6 项", False, None),
     ("trirv_compact_e2e.py",      "TC 压缩发射契约 42 项",    False, None),
     ("trirv_amp_e2e.py",          "AMP mailbox/共享页 10 项",  False, None),
+    ("trirv_cc_py_fnptr_e2e.py",  "py fn-ptr 双后端同构 11 项", False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),

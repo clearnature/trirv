@@ -75,8 +75,45 @@ def first_pass(lines):
         insts.append(s)
     return labels, insts
 
+def _expand_sym_lines(lines, labels):
+    """&sym 操作数展开（T7b py fn-ptr）：ADDI rd, rs1, &label →
+    单 ADDI（地址<2187）或 LUI+ADDI（<3^13）。值 = 标签槽位 ×4（tryte 地址）。
+    与 C 后端 sym_emit_seg 语义对齐；依赖标签值 → 定点迭代由 assemble 驱动。"""
+    out = []
+    for ln in lines:
+        m = re.search(r"&([A-Za-z_]\w*)", ln)
+        if not m or not ln.strip().upper().startswith("ADDI"):
+            out.append(ln); continue
+        sym = m.group(1)
+        if sym not in labels:
+            out.append(ln); continue            # 未命中（首轮）：原样保留
+        ops = [o.strip() for o in ln.split(",")]
+        if len(ops) != 3:
+            out.append(ln); continue
+        rd, rs1 = ops[0].split()[1], ops[1]
+        v = labels[sym] * 4
+        if v < 0:
+            raise ValueError(f"&{sym} 地址为负：不支持")
+        h, lo = divmod(v, 2187)
+        if lo > 1093: lo -= 2187; h += 1
+        if h == 0:
+            out.append(f"ADDI {rd}, {rs1}, {lo}")
+        else:
+            out.append(f"LUI {rd}, {h}")
+            if lo: out.append(f"ADDI {rd}, {rd}, {lo}")
+    return out
+
+
 def assemble(src):
-    labels, insts = first_pass(src.splitlines())
+    lines = src.splitlines()
+    labels, insts = first_pass(lines)
+    # &sym 展开定点迭代：展开改变行数 → 标签重排 → 值可能变 → 至稳定（实测 2 轮）
+    for _ in range(5):
+        new_lines = _expand_sym_lines(lines, labels)
+        if new_lines == lines:
+            break
+        lines = new_lines
+        labels, insts = first_pass(lines)
     out = []
     for idx, s in enumerate(insts):
         parts = re.split(r"\s+", s, maxsplit=1)

@@ -6,7 +6,7 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 56 / FAIL 0（连续 30+ 次全绿）
+- 回归：python3 tests/run_all_tests.py → PASS 57 / FAIL 0（连续 30+ 次全绿）
 - HEAD：trirv bb19bcc+TC v2+T11 AMP / tinycc 21410af4
 - TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
@@ -50,7 +50,10 @@
       保留符号 `__amp_shared` 编译器绑定窗口地址；契约 10 项四票：
       mailbox 往返/共享窗加倍/窗口地址绑定/错误路径 -3 -2 自环）
 - [ ] T11b AMP 扩展（记账：tri-tcc 侧 AMP 用例、>2 核契约、阻塞式 mrecv）
-- [ ] T7b py fn-ptr 声明符与间接调用（py 无 fn-ptr 解析基础）
+- [x] T7b py fn-ptr 收官（声明符 `int (*fp)(int)` + 函数名退化 `fp=f` +
+      间接调用 `(*fp)(x)`/`(fp)(x)`；trirv_asm &sym 定点展开（ADDI/LUI+ADDI
+      对齐 C 后端 sym_emit_seg）；契约 11 项双后端 STRICT 同构。
+      记账：C 后端裸 `(fp)(x)` 形态与声明带初始化 declarator 不支持——回退已实证）
 - [x] T9b TRVO 多单元直链自旋——破案修复（根因：global_add 的 g->ty 裸
       别名 TRVO 导入的栈上行缓冲，悬垂后类型塌成 int*（9 tryte）→ 数组
       全局互相重叠 → SD_E 常量被 g_ec_buf 初始化循环踩踏 → ec 边界永假
@@ -60,8 +63,9 @@
 ### 前置缺口记账（不阻断主线）
 
 - py 参考后端 tint 正向全量（当前以语法错误拒绝——双后端拒绝纪律成立）
-- trirv_cc.py fn-ptr / switch / typedef / do-while / goto / 三目 / 强转 / const
-  （py 参考后端教学子集差距——按需补）
+- trirv_cc.py switch / typedef / do-while / goto / 三目 / 强转 / const
+  （py 参考后端教学子集差距——按需补；fn-ptr 已于 T7b 补齐）
+- C 后端 fn-ptr 裸括号形态 (fp)(x) 与声明带初始化 int (*fp)(int)=f;（回退实证）
 
 ## B. 待办——需拍板才启动（附行业/开源参考意见）
 
