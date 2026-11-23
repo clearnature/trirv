@@ -34,13 +34,51 @@ README「模块完善度」节过时：调试器"🔴空白"（MVP 已入册 18 
 "for+指针写 bug 待修"（已销案）、TINT C1"进行中"（已收官）。
 顺带同步指令计数（97→102）。
 
-## B. 待办——需拍板才启动
+## B. 待办——需拍板才启动（附行业/开源参考意见，2026-11-23 检索落档）
 
-- [ ] B1. **TC 压缩扩展**（opcode 23–26 预留区）——压缩格式设计未规划，
-      需先拍板目标（码长/性能取舍、16-trit 槽形态？）
-- [ ] B2. **二进制兼容白名单**——已拍板后期另立项
-- [ ] B3. **SMP 模拟**——arch_tri 原子层当前单核口径；SMP 时切 ISA
-      A 扩展（LR/SC/AMO 双 VM 已实现），需拍板多核语义与缓存模型
+### B1. TC 压缩扩展（opcode 23–26 预留区）
+
+- **行业参照**：RISC-V RVC（16/32-bit 变长，核心教训四条——①只压缩高频
+  子集，映射表法不重新设计编码；②长度由指令前缀位决定，流式解码无需
+  前瞻；③压缩与原指令一一对应，反汇编/调试零成本；④分支目标对齐约束）
+  / ARM Thumb-2（16/32 混合流） / MIPS16e、microMIPS / PowerPC VLE。
+- **开源三进制参照**：Termite（16-trit 定长 + 8-trit tryte——与 TriRV
+  tryte 概念同构，可对照其码密度取舍）；alopex.li TernaryComputer wiki
+  （ISA 编码/寻址设计讨论）；REBEL-6（32-trit ISA，IEEE ISMVL 2025）。
+- **建议拍板方案**：13-trit 短格式 + 20-trit 长格式变长流（RVC 式），
+  长度由 t0 前缀 trit 决定；首批只压缩高频五类（ADDI/LW/SW/BEQ/BNE+JAL
+  片段），映射表一一对应；opcode 23 = C-LOAD/STORE、24 = C-OPIMM、
+  25 = C-BRANCH/JAL，26 机动。验收：musl_tri 热点函数码长对比 + 双 VM
+  差分。**待拍板点：变长流 vs 双定长模式切换。**
+
+### B2. 二进制兼容白名单
+
+- **行业参照**：二进制兼容的行业主流是**翻译层**而非双模式硬件——
+  Rosetta 2 / FEX-Emu / Box64（x86→ARM 用户态翻译）、QEMU user-mode；
+  同家族双模式先例 = AArch64 的 AArch32 兼容模式。
+- **开源三进制参照**：REBEL-6 的 RV32I 兼容对比管线（同 ISA 家族双模式
+  学术实现）；Douglas Jones 的 binary-coded ternary（trit 装箱到二进制
+  宿主——反向问题，可借鉴其 trit↔bit 表示学）；xTern 的 5-trits/byte
+  装箱。
+- **建议拍板方案**：与已拍板红线（VM 拦截二进制 = 安全边界）一致——
+  **不做硬件双模式**；兼容层立项为「二进制→三进制用户态翻译器」
+  （QEMU user-mode 式）：白名单 = guest syscall 面（对齐 TriRV syscall
+  表）+ 允许指令子集翻译表；先做 ELF 子集（静态链接、无 TLS）。
+  **待拍板点：翻译粒度（整函数 AOT vs 逐块 JIT）。**
+
+### B3. SMP 模拟
+
+- **行业参照**：RISC-V 生态惯例——multi-hart + RVWMO 弱内存模型 +
+  LR/SC 的 aq/rl 序约束 + MESI 一致性；模拟器先例 = Spike（multi-hart）、
+  QEMU TCG 多核、gem5。嵌入式行业惯例 = AMP（非对称多处理：核间中断 +
+  共享内存标志），一致性 SMP 后置。
+- **开源三进制参照**：检索确认**无现成多核三进制模拟器**（niche）——
+  TriRV 若做即是首个；CVM 已有雏形（v->shared/sh_lock 共享内存 +
+  __atomic 版本计数）。
+- **建议拍板方案**：分两步——①**AMP 先行**（多实例 PyVM/CVM + 核间
+  mailbox 系统调用 + 共享页），复用现有 A 扩展指令做核间同步，零内存
+  模型改动；②**SMP 后置**（RVWMO 式弱模型 + hart 概念 + aq/rl），需要
+  时另行立项。**待拍板点：AMP 起步是否满足当前需求（固件/并发实验）。**
 
 ## C. 大方向立项（计划文档在库，未开工）
 
