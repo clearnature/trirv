@@ -34,9 +34,12 @@ PY = sys.executable or "python3"
 
 def _build_binaries():
     """确保 C 编译器与 C VM 是最新的（源码比二进制新就重建）。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cc_src = os.path.join(root, "cc", "trirv_cc.c")
+    cc_bin = os.path.join(root, "cc", "bin", "trirv_cc")
+    vm_src = os.path.join(root, "vm", "trirv_vm.c")
+    vm_bin = os.path.join(root, "vm", "bin", "trirv_vm")
     notes = []
-    cc_src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/cc/trirv_cc.c")
-    cc_bin = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
     if os.path.exists(cc_src) and (not os.path.exists(cc_bin)
                                    or os.path.getmtime(cc_bin) < os.path.getmtime(cc_src)):
         for c in ("clang", "gcc", "cc"):
@@ -47,18 +50,60 @@ def _build_binaries():
                 break
         else:
             notes.append("!! trirv_cc 重建失败")
-    vm_src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/vm/trirv_vm.c")
-    vm_bin = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
     if os.path.exists(vm_src) and (not os.path.exists(vm_bin)
                                    or os.path.getmtime(vm_bin) < os.path.getmtime(vm_src)):
         for c in ("clang", "gcc", "cc"):
-            r = subprocess.run([c, "-O2", "-o", vm_bin, vm_src, "-lm"],
+            r = subprocess.run([c, "-O2", "-I", root, "-o", vm_bin, vm_src, "-lm"],
                                capture_output=True, text=True)
             if r.returncode == 0:
                 notes.append(f"重建 trirv_vm（{c}）")
                 break
         else:
             notes.append("!! trirv_vm 重建失败")
+    return notes
+
+
+def _build_forced(cc_src, cc_bin, flags):
+    """强制重建（不看 mtime）——--san 跑完恢复 O2 用。
+    cwd=源码目录：trirv_vm.c 的 #include "trirv_float.h" 在仓库根，
+    引号 include 搜索源目录+cwd，缺 cwd 是历史坑（常规构建因 mtime
+    检查从不触发，强制重建首次暴露）。"""
+    inc = os.path.dirname(os.path.dirname(cc_src))     # 仓库根（trirv_float.h 所在）
+    for c in ("clang", "gcc", "cc"):
+        r = subprocess.run([c] + flags + ["-I", inc, "-o", cc_bin, cc_src, "-lm"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return f"重建（{c}）"
+    return "重建失败"
+
+
+def _build_san():
+    """ADR-29 门禁：ASan/UBSan 版编译器与 CVM 写到规范路径（套件用绝对路径）。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pairs = (("trirv_cc", os.path.join(root, "cc", "trirv_cc.c"),
+              os.path.join(root, "cc", "bin", "trirv_cc")),
+             ("trirv_vm", os.path.join(root, "vm", "trirv_vm.c"),
+              os.path.join(root, "vm", "bin", "trirv_vm")))
+    flags = ["-std=gnu11", "-O1", "-g", "-fsanitize=address,undefined",
+             "-fno-omit-frame-pointer"]
+    notes = []
+    for tag, s, b in pairs:
+        r = subprocess.run(["clang"] + flags + ["-o", b, s, "-lm"],
+                           capture_output=True, text=True)
+        notes.append(f"{tag} ASan/UBSan 构建{'✓' if r.returncode == 0 else '✗ ' + r.stderr[-120:]}")
+    return notes
+
+
+def _restore_o2():
+    """--san 跑完恢复 O2 规范二进制（强制重建——san 版 mtime 更新会骗过常规检查）。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pairs = (("trirv_cc", os.path.join(root, "cc", "trirv_cc.c"),
+              os.path.join(root, "cc", "bin", "trirv_cc")),
+             ("trirv_vm", os.path.join(root, "vm", "trirv_vm.c"),
+              os.path.join(root, "vm", "bin", "trirv_vm")))
+    notes = []
+    for tag, s, b in pairs:
+        notes.append(f"{tag} 恢复 O2：{_build_forced(s, b, ['-std=gnu11', '-O2'])}")
     return notes
 
 
@@ -126,7 +171,9 @@ SUITES = [
     ("trirv_fuzz_csr.py",         "随机 CSR fuzz 800",        True,  None),
 ]
 
-FAIL_PAT = re.compile(r"(\[FAIL\]|^\s*FAIL\b|Traceback)", re.M)
+FAIL_PAT = re.compile(r"(\[FAIL\]|^\s*FAIL\b|Traceback)"
+                      r"|AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer"
+                      r"|runtime error:", re.M)   # 末三段=sanitizer 门禁（--san）
 NUM_PAT = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 
@@ -160,7 +207,7 @@ def summarize(out):
     return "(无输出)"
 
 
-def run_one(script, name, known_gap, strict, timeout):
+def run_one(script, name, known_gap, strict, timeout, fuzz_seed="0"):
     path = os.path.join(HERE, script)
     if not os.path.exists(path) and os.path.exists(os.path.join(ROOT, script)):
         path = os.path.join(ROOT, script)   # 兼容仓库根脚本（test_isa_completeness.py 等）
@@ -171,9 +218,13 @@ def run_one(script, name, known_gap, strict, timeout):
         env["TRV_CC_STRICT"] = "1"
     else:
         env.pop("TRV_CC_STRICT", None)
+    # fuzz 套件种子透传（ADR-29）：脚本读 argv[1]=seed；默认 0 可复现
+    cmd = [PY, path]
+    if fuzz_seed and script in ("trirv_fuzz.py", "trirv_fuzz_mem.py", "trirv_fuzz_csr.py"):
+        cmd.append(str(fuzz_seed))
     t0 = time.time()
     try:
-        r = subprocess.run([PY, path], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        r = subprocess.run(cmd, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            capture_output=True,
                            text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
@@ -193,6 +244,10 @@ def main():
     ap.add_argument("--list", action="store_true", help="只列套件")
     ap.add_argument("--no-strict", action="store_true", help="不设 TRV_CC_STRICT")
     ap.add_argument("--timeout", type=int, default=600)
+    ap.add_argument("--san", action="store_true",
+                    help="ASan/UBSan 构建编译器与 CVM 后跑全量（ADR-29 门禁），跑完恢复 O2")
+    ap.add_argument("--fuzz-seed", default="0",
+                    help="fuzz 套件种子：数字或 random（ADR-29：默认 0 可复现，提交门禁抽随机）")
     args = ap.parse_args()
 
     # 去重（占位项 name=None 直接丢）
@@ -216,17 +271,25 @@ def main():
     print("TriRV 全量测试")
     for note in _build_binaries():
         print(f"  · {note}")
-    print(f"  · TRV_CC_STRICT={'0' if args.no_strict else '1'}   套件={len(suites)}")
+    if args.san:
+        for note in _build_san():
+            print(f"  · [san] {note}")
+    print(f"  · TRV_CC_STRICT={'0' if args.no_strict else '1'}"
+          + ("   SAN=1" if args.san else "") + f"   套件={len(suites)}")
     print()
 
     rows = []
     t_all = time.time()
     for script, name, slow, gap in suites:
-        status, dt, summary = run_one(script, name, gap, not args.no_strict, args.timeout)
+        status, dt, summary = run_one(script, name, gap, not args.no_strict, args.timeout,
+                                      fuzz_seed=args.fuzz_seed)
         rows.append((script, name, status, dt, summary))
         print(f"  {status:7s} {name:26s} {dt:6.2f}s  {summary}")
         sys.stdout.flush()
 
+    if args.san:
+        for note in _restore_o2():
+            print(f"  · [san] {note}")
     total = time.time() - t_all
     n = {k: sum(1 for r in rows if r[2] == k)
          for k in ("PASS", "FAIL", "XFAIL", "XPASS", "TIMEOUT", "MISS")}
