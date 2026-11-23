@@ -1095,10 +1095,18 @@ static void parse_program(void){
                 }
                 IPOS=save;                       /* 非函数指针：回溯走纯别名 */
             }
-            /* 形态二：纯别名。struct 别名也支持。 */
+            /* 形态二：纯别名（T7：可带数组维度 typedef int arr3[3]——维度
+               并入别名类型串；struct 别名也支持）。 */
             char*real=parse_type();
             if(getenv("TRV_TOP")) fprintf(stderr,"[alias] real='%s' nm='%s'\n",real,cur()->s);
             char*nm=take()->s;
+            while(accept("[")){
+                Token*dim=take();
+                char buf[128];
+                snprintf(buf,sizeof(buf),"%s[%s]",real,dim->s);
+                real=strdup(buf);
+                expect("]");
+            }
             expect(";");
             GROW(TYPEDEFS,CAPTDEF,NTDEF,Typedef);
             TYPEDEFS[NTDEF].name=strdup(nm); TYPEDEFS[NTDEF].real=strdup(real); NTDEF++;

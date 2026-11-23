@@ -149,6 +149,13 @@ CASES = [
 ]
 
 def main():
+    import builtins
+    _rp = builtins.print
+    def _tee(*a, **k):
+        _rp(*a, **k)
+        with open("/tmp/cc_e2e_debug.log", "a") as f:
+            _rp(*a, file=f, **k)
+    builtins.print = _tee
     print("=" * 60)
     print("TriRV C 编译器端到端验证")
     print("C 源码 -> 编译器 -> 汇编器 -> 机器码 -> VM 执行")
