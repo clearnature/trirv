@@ -236,19 +236,24 @@ class VM:
             imm4 = (imm // 27) % 81
             if imm4 > 40: imm4 -= 81             # 4-trit 3 补码 ±40
             self.regs[rd] = u(s(self.regs[r1]) + imm4)
+        # 坑实录（1.1）：sign_extend_imm 返回 45-trit 非负模值（负数 = 3^45−|x|），
+        # 必须再过 s() 转回带符号才能参与地址/跳转算术。全宽分支带 s()，
+        # 本函数三处曾漏——负跳距把 pc 变成 3^45 量级（do-while 压缩档
+        # PyVM 停机实证，CVM 的 sx() 返回带符号故无恙）；帧偏移现为恒正
+        # 未暴露，一并修。
         elif sf == 1:    # C-LWs r_s, off7（基址隐含 s0=帧指针，帧相对装载）
-            addr = s(self.regs[8]) + isa.sign_extend_imm(imm)
+            addr = s(self.regs[8]) + s(isa.sign_extend_imm(imm))
             self.regs[rd] = self._load_word(addr)
         elif sf == 2:    # C-SWs r_s, off7（基址隐含 s0，帧相对存储）
-            addr = s(self.regs[8]) + isa.sign_extend_imm(imm)
+            addr = s(self.regs[8]) + s(isa.sign_extend_imm(imm))
             self._store_word(addr, self.regs[rd])
         elif sf == 3:    # C-BEQ rs, imm7 → BEQ rs, zero, imm7（old_pc 相对；
                          #  流制 imm 已是 tryte delta，槽制为 slot delta ×4）
             if s(self.regs[rd]) == 0:
-                self.pc = old_pc + (1 if self.packed else 4) * isa.sign_extend_imm(imm)
+                self.pc = old_pc + (1 if self.packed else 4) * s(isa.sign_extend_imm(imm))
         elif sf == 4:    # C-BNE rs, imm7
             if s(self.regs[rd]) != 0:
-                self.pc = old_pc + (1 if self.packed else 4) * isa.sign_extend_imm(imm)
+                self.pc = old_pc + (1 if self.packed else 4) * s(isa.sign_extend_imm(imm))
 
     def _mret(self):
         """从 M 态 trap 返回：pc<-mepc, priv<-MPP, MIE<-MPIE, MPIE<-1, MPP<-U。"""

@@ -83,6 +83,8 @@ CASES = [
     ("真值分支+TC 分支",
      "int f(int a){ int s=0; while(a){ s=s+a; a=a-1; } return s; } "
      "int main(){ return f(5); }", 15),
+    ("do-while 向后 TC 分支（流制）",
+     "int main(){ int i=0; int s=0; do{ s=s+i; i=i+1; }while(i<5); return s; }", 10),
     ("调用链（JAL 重编）",
      "int inc3(int v){ v=v+3; return v; } "
      "int main(){ int a=inc3(4); a=a+10; int b=inc3(a); return b; }", 20),
