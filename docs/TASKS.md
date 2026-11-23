@@ -6,8 +6,8 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 57 / FAIL 0（连续 30+ 次全绿）
-- HEAD：trirv bb19bcc+TC v2+T11 AMP / tinycc 21410af4
+- 回归：python3 tests/run_all_tests.py → PASS 58 / FAIL 0（连续 30+ 次全绿）
+- HEAD：trirv 66a8e6e（TRV2 正式化）/ tinycc 21410af4
 - TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
@@ -80,13 +80,21 @@ syscall 表 = 虚拟设备接口（virtio 半虚拟化同构）。
 TC v2（bb19bcc+881b702）：五类子格式 + 窗口 {t0-t2,s0,s1,a0-a2}，
 musl 语料 28.0% TC 率 / TRV2 打包节省 7.0%（实测）。
 
-**拍板项 ①TRV2 打包正式化——建议先行（收益兑现）**
-现状：TC v2 的 7% 节省是「理论值」——.trv 仍是 4-tryte 槽制，节省只在
-TRV2 tryte 流（ff8f50a 原型）下兑现。正式化 = imem word 索引→tryte 粒度、
-PC 语义 slot→tryte、JAL/BRANCH 目标迁移、双 VM 加载器集成、全量回归。
-改动面大但方向已在 TC 拍板内延。
-参照：RISC-V 的 C 扩展直接编入基础 ISA 规范（非可选后补）+ ELF 容器
-版本字段纪律；TRV1/TRV2 magic+version 已预留（兼容 TRV1 三字段布局）。
+**拍板项 ①TRV2 打包正式化——已拍板已收官（2026-11-23，5446131+66a8e6e）**
+落地方案=**双格式双引擎**（RISC-V「C 是可选编码」同款）：TRV1 槽制引擎
+原样保留（历史生态/57 套零改动），TRV2 原生 tryte 流引擎并行
+（PyVM VM.from_stream / CVM load_trv TRV2 分支 + packed 取指）；编译器
+.trv2 后缀 / TRV_FORMAT=2 发射。TRV1 二进制因无符号表（烘焙槽制地址
+常量不可靠识别）不做自动迁移——测试用 isa.migrate_trv1_stream 做
+跳转重写等价验证。
+实测：musl 语料 TRV1 32608B → TRV2 30414B = **6.7% 节省兑现**
+（TC v2 理论 7.0% 吻合）。契约 50 项（roundtrip/迁移等价/流制 TC 分支/
+非对齐 JALR 诚实停机/.trv2 直发 sym 重写/双 VM/密度）。
+附带破案：parse_decl 多声明符 dtypes 悬垂栈缓冲（ASAN
+stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）。
+遗留记账：流制 B 型 delta7（±1093 tryte）比槽制窗口窄 4 倍，大函数
+（>273 槽）内部回跳需诚实报错或 LUI+JALR 长链（语料 max 219 槽安全）；
+调试器/固件默认 TRV1 不受影响。
 
 **拍板项 ②C-JAL = TC 组 2（opcode 24）——建议次之（+7.5% 槽覆盖）**
 设计：opcode 24 首 subformat = C-JAL delta7（ra 隐含，10-trit payload
