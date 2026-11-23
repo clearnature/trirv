@@ -70,7 +70,22 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 1 / 任务 1.11**
+**进度游标：批次 1 / 任务 1.13**
+
+- [x] 1.11 覆盖矩阵：tools/cov_matrix.py（可重跑）+ docs/COVERAGE_MATRIX.md
+      快照（补缺前静态零覆盖 18/109：AUIPC/BGE/BGEU/BLTU/CSR.H×6/EBREAK/
+      FCVT.F/FENCE/FENCE.I/FEQ.S/FLE.S/FLT.S/WFI；口径注明编译器发射型
+      指令由 C e2e/musl/wasm/fuzz 大面积覆盖，静态扫描仅测手写助记符）
+- [x] 1.12 手算补缺 tests/trirv_golden_e2e.py 26 项（ADR-28②）：
+      AUIPC pc+imm·3^7、有符号/无符号分支四向（-1 vs 1 双口径）、
+      CSR 高区六条写忽略读 0、EBREAK 断点陷入（mtvec=0 复位向量→重启
+      循环步耗尽）、FENCE/WFI NOP 不变性、FCVT.F 往返（黄金=独立
+      trirv_float 编码器）、TF20 三向比较。**退出模型固化进套件
+      docstring：exit=a0&0xFF（a7=93）；a7=0=传统停机；EBREAK→mtvec=0
+      合法复位→重跑**。26 个期望值全部手算推导，写作过程中三次自摆
+      乌龙（跳过段无 a7=93、exit=a0 口径、重启循环末圈 x10=5），
+      全部由「实现与模型自洽性检查」定位后修正期望
+- 基线：回归 **60 套全绿**（新增 tcjump 12 + golden 26 两套已注册）
 
 - [x] 1.9 CSR 高区登记：INST 六条 .H（opcode9 funct2–7）+ tri-isa.h 重生成
       （109 条，守卫一致）+ trirv_asm 自动选区（<2187 低区 op16 / 2187–4373
