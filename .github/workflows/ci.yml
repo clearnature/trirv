@@ -1,0 +1,20 @@
+name: ci
+on: [push, workflow_dispatch]
+jobs:
+  fast:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix: { os: [macos-latest, ubuntu-latest] }
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tests/run_all_tests.py --fast
+  nightly:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tests/run_all_tests.py --san --timeout 1200
+      - run: |
+          SEED=$((RANDOM % 100000))
+          echo "fuzz seed=$SEED"
+          python3 tests/run_all_tests.py --fuzz-seed $SEED

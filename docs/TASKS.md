@@ -72,7 +72,18 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 2 / 任务 2.8**
+**进度游标：批次 2 / 任务 2.16（收官）**
+
+- [x] 2.2 首次全量 --san：60 套全绿（ASan/UBSan 零报错，422s）✓ 后台完成
+- [x] 2.8 ABI 探针固化：difftest_tcc 22→28 组（常量折叠 45-trit 域/
+      三值 AND/XOR/OR/移位乘除 3 六条手算探针，双工具链×双 VM 四路一致）
+- [x] 2.9 固定微基准：bench/{fib,sumloop,axpy}.c + tests/run_perf.py
+      （5 次取最小；TRV2 流制引擎分支密集 2.3× 慢的引擎代价入 PERF_REPORT）
+- [x] 2.10 CI：.github/workflows/ci.yml（fast 双平台 + 手动 nightly 全量
+      --san + 随机种子）+ tools/ci_local.sh 本地门禁（--fast 55 套绿）
+- [x] 2.11–2.12 ABI/笔记/固件文档校准 ✓ 9bbdae6
+- [x] 2.13–2.14 ISA 差异表 §7.1（八项实质差异，ADR-07/08 关账）✓ 9bbdae6
+- [x] 2.15 全部 docs 状态行（ADR-32；DECISIONS/TASKS/矩阵专属文案）✓
 
 - [x] 2.1 run_all --san（ASan/UBSan 规范路径构建+跑完强制恢复 O2+
       FAIL_PAT 四个 sanitizer 模式；顺手修 vm 构建 -I 缺失——常规构建因

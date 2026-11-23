@@ -477,3 +477,15 @@ for p in ['sum','mul','mem']:
     print(p, re.search(r'吞吐=[\d.]+ MIPS',r.stderr).group())
 PY
 ```
+
+## 固定微基准集（ADR-31，2026-11-24 起）
+
+`python3 tests/run_perf.py`——bench/{fib,sumloop,axpy}.c 三档，5 次取最小；
+性能主张一律出自本 harness。首批数据（Apple M2，O2 CVM）：
+
+| 基准 | TRV1 | TRV2 | exit | 备注 |
+|---|---|---|---|---|
+| fib(24) | 204B 52.3ms | 189B 118.1ms | 32 | TRV2 流制引擎分支密集 2.3× 慢——packed 取指 hint 对递归回跳二分回退，属引擎代价非语义问题（ADR-17 准入为行为一致） |
+| sumloop | 140B 4.2ms | 131B 5.5ms | 12 | |
+| axpy | 256B 3.8ms | 242B 3.2ms | 255 | 访存密集两引擎持平 |
+| 合计码长 | 600B | 562B（6.3%） | | |
