@@ -31,20 +31,31 @@ from trirv_vm import VM, s as _signed
 
 
 def read_trv(path):
-    """TRV1 -> (prog list, mem dict {addr: bytes-list})。头：magic+ver+n_inst+n_seg。"""
+    """TRV1/TRV2 -> (prog list, mem dict, packed)。TRV2 tryte 流解包为流序词；
+    调用方据 packed 设置 VM.packed（流制 PC=tryte 偏移，ADR-17 准入②）。"""
     data = open(path, "rb").read()
-    if data[:4] != b"TRV1":
-        raise ValueError("%s: 非 TRV1 镜像" % path)
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from("<%dI" % n_inst, data, 16))
-    off = 16 + 4 * n_inst
+    magic = data[:4]
+    n_seg = struct.unpack_from("<I", data, 12)[0]
     mem = {}
+    if magic == b"TRV2":
+        n_trytes = struct.unpack_from("<I", data, 8)[0]
+        stream = list(data[16:16 + n_trytes])
+        off = 16 + n_trytes
+        prog = isa.stream_to_words(stream)
+        packed = True
+    elif magic == b"TRV1":
+        n_inst = struct.unpack_from("<I", data, 8)[0]
+        prog = list(struct.unpack_from("<%dI" % n_inst, data, 16))
+        off = 16 + 4 * n_inst
+        packed = False
+    else:
+        raise ValueError("%s: 非 TRV1/TRV2 镜像" % path)
     for _ in range(n_seg):
         addr, ln = struct.unpack_from("<II", data, off)
         off += 8
         mem[addr] = list(data[off:off + ln])
         off += ln
-    return prog, mem
+    return prog, mem, packed
 
 
 def write_trv(path, prog, mem_init=None):
@@ -95,9 +106,22 @@ class TriRVDebugger:
     """TRV1 程序的交互式调试器（PyVM 语义）。"""
 
     def __init__(self, trv_path, stdin=b""):
-        prog, mem = read_trv(trv_path)
+        prog, mem, packed = read_trv(trv_path)
         self.vm = VM(prog, mem_init=mem, stdin=stdin)
+        if packed:
+            self.vm.packed = True
+            self.vm.imem_offs = isa.stream_offsets(isa.pack_stream(prog))
+        self.fmt_trv2 = packed
         self.breakpoints = set()
+
+    def _slot_of(self, pc):
+        """流制：PC→流序指令号（未命中 -1）；槽制：pc//4。"""
+        if self.vm.packed:
+            from bisect import bisect_right
+            offs = self.vm.imem_offs
+            i = bisect_right(offs, pc) - 1
+            return i if (i >= 0 and offs[i] == pc) else -1
+        return self.vm.pc // 4
 
     # ---- 执行控制 ----
     def _step(self):
@@ -107,7 +131,9 @@ class TriRVDebugger:
         start_pc = self.vm.pc          # c 语义：从当前位置出发，本 pc 不立即再停
         while not self.vm.halted:
             if self.vm.pc in self.breakpoints and self.vm.pc != start_pc:
-                return "breakpoint @ pc=%d (slot%d)" % (self.vm.pc, self.vm.pc // 4)
+                return "breakpoint @ pc=%d (%s)" % (
+                    self.vm.pc, ("off%d" % self._slot_of(self.vm.pc))
+                    if self.vm.packed else ("slot%d" % (self.vm.pc // 4)))
             self._step()
         return "halted (exit=%d)" % self.vm.exit_code
 
@@ -143,17 +169,27 @@ class TriRVDebugger:
         out = []
         pc = self.vm.pc
         for k in range(n):
-            idx = pc // 4 + k
-            if idx >= len(self.vm.imem):
-                break
-            mark = " ->" if k == 0 else "   "
-            out.append("%s slot%-3d pc=%-5d %s" % (mark, idx, pc + 4 * k,
-                                                   disasm_one(self.vm.imem[idx])))
+            if self.vm.packed:
+                i0 = self._slot_of(pc)
+                if i0 < 0: break
+                idx = i0 + k
+                if idx >= len(self.vm.imem) or idx < 0: break
+                mark = " ->" if k == 0 else "   "
+                out.append("%s off%-4d pc=%-5d %s" % (mark, idx,
+                            self.vm.imem_offs[idx], disasm_one(self.vm.imem[idx])))
+            else:
+                idx = pc // 4 + k
+                if idx >= len(self.vm.imem):
+                    break
+                mark = " ->" if k == 0 else "   "
+                out.append("%s slot%-3d pc=%-5d %s" % (mark, idx, pc + 4 * k,
+                                                       disasm_one(self.vm.imem[idx])))
         return "\n".join(out)
 
     def _where(self):
-        return ("pc=%d slot=%d sp=x2=%d s8=x8=%d ra=x1=%d steps=%d halted=%s exit=%d"
-                % (self.vm.pc, self.vm.pc // 4, _signed(self.vm.regs[2]),
+        pos = ("off%d" % self._slot_of(self.vm.pc)) if self.vm.packed else ("slot%d" % (self.vm.pc // 4))
+        return ("pc=%d %s sp=x2=%d s8=x8=%d ra=x1=%d steps=%d halted=%s exit=%d"
+                % (self.vm.pc, pos, _signed(self.vm.regs[2]),
                    _signed(self.vm.regs[8]), _signed(self.vm.regs[1]),
                    self.vm.steps, self.vm.halted, self.vm.exit_code))
 
@@ -169,7 +205,9 @@ class TriRVDebugger:
             if op == "b":
                 addr = int(args[0], 0)
                 self.breakpoints.add(addr)
-                return "breakpoint set @ pc=%d (slot%d)" % (addr, addr // 4)
+                return "breakpoint set @ pc=%d (%s)" % (
+                    addr, ("off%d" % self._slot_of(addr)) if self.vm.packed
+                    else "slot%d" % (addr // 4))
             if op == "c":
                 return self._continue()
             if op == "s":
