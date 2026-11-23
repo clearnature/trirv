@@ -332,3 +332,11 @@ $ ./trirv_vm /tmp/t.trv
 - 同步文档：§6 opcode 表补齐 13–18 实际分配；刷新过时计数。
 - 修复 `trirv_csr_diff.py` D3 用例构造错误：`mtvec=8` 指向非法指令自身形成自陷循环、
   `mepc+1` 应为 `+4`。修后两版 VM 一致，CSR 差分 3/4 → 4/4。
+
+## 提交门禁（hooks）与 CI
+
+clone 后启用入库的 pre-commit 钩子（跑 `--fast` 回归，约 3.5 分钟）：
+
+    git config core.hooksPath .githooks
+
+CI（.github/workflows/ci.yml）：push 跑 `--fast`（双平台），手动触发跑全量 + ASan/UBSan + 随机种子 fuzz。增强门禁本地手动：`python3 tests/run_all_tests.py --san`。
