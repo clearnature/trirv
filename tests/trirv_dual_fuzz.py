@@ -132,8 +132,8 @@ def main():
             stream = isa.migrate_trv1_stream(prog)
         except ValueError:
             continue
-        tf1 = "/tmp/dfuzz_%d.trv" % trial
-        tf2 = "/tmp/dfuzz_%d.trv2" % trial
+        tf1 = _bootstrap.scratch("dfuzz_%d.trv" % trial)
+        tf2 = _bootstrap.scratch("dfuzz_%d.trv2" % trial)
         for path, payload in ((tf1, prog), (tf2, stream)):
             with open(path, "wb") as f:
                 f.write(b"TRV2" if path.endswith(".trv2") else b"TRV1")

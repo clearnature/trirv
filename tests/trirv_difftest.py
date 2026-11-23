@@ -26,14 +26,15 @@ cases = [
 passed=0
 for name,body,stdin,need_lib in cases:
     src=(STDIO+"\n"+LIBC+"\n"+body) if need_lib else body
-    pf=f"/tmp/d_{name}.c"; tf=f"/tmp/d_{name}.trv"
+    pf=_bootstrap.scratch(f"d_{name}.c"); tf=_bootstrap.scratch(f"d_{name}.trv")
     open(pf,"w").write(src)
     prog,lab,txt,strs=cc.compile_c(src)
     c=vm.VM(prog,mem_init=strs or None,stdin=stdin.encode()).run(max_steps=500000)
     py_exit=c.exit_code&0xFF; py_out=bytes(c.output).decode('latin1')
     export(pf,tf)
-    open("/tmp/din","wb").write(stdin.encode())
-    r=subprocess.run([CVM,tf,"/tmp/din"],capture_output=True)
+    din=_bootstrap.scratch("din")
+    open(din,"wb").write(stdin.encode())
+    r=subprocess.run([CVM,tf,din],capture_output=True)
     c_out=r.stdout.decode('latin1')
     errs=[l for l in r.stderr.decode().split() if l.startswith('exit=')]
     c_exit=int(errs[0].split('=')[1]) if errs else -999

@@ -104,8 +104,8 @@ def main():
         results = {}
         gap = None
         for tag, cc in (("trirv_cc", CC_A), ("tri-tcc", CC_B)):
-            sp = "/tmp/diff_%s_%s.c" % (abs(hash(name)), tag)
-            op = "/tmp/diff_%s_%s.trv" % (abs(hash(name)), tag)
+            sp = _bootstrap.scratch("diff_%s_%s.c" % (abs(hash(name)), tag))
+            op = _bootstrap.scratch("diff_%s_%s.trv" % (abs(hash(name)), tag))
             with open(sp, "w") as f:
                 f.write(src)
             r = compile_with(tag, sp, op)

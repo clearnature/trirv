@@ -26,7 +26,7 @@ CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
 PP = os.path.join(HERE, "..", "libc-musl", "preprocess_musl.py")
 TRI = os.path.join(HERE, "..", "libc-musl", "musl_tri")
 MUSL_STR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party", "musl", "src", "string")
-PPDIR = "/tmp/tri_musl_pp"
+PPDIR = _bootstrap.scratch("tri_musl_pp")
 
 passed = 0
 failed = 0

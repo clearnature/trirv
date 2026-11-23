@@ -82,7 +82,7 @@ def main():
     v = trirv_vm.VM(prog).run(max_steps=500000)
     py = bytes(v.output)
 
-    trv = "/tmp/tritlogic.trv"
+    trv = _bootstrap.scratch("tritlogic.trv")
     trirv_wasm.build_trv(src, {}, trv)
     r = subprocess.run(["./trirv_vm", trv], capture_output=True)
     c = r.stdout

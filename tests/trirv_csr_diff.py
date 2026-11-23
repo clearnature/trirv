@@ -19,9 +19,10 @@ def write_trv(path, prog):
             f.write(struct.pack("<I", inst & 0xFFFFFFFF))
 
 def c_exit(prog, irq=False):
-    write_trv("/tmp/csr_diff.trv", prog)
+    trv = _bootstrap.scratch("csr_diff.trv")
+    write_trv(trv, prog)
     env = dict(os.environ)
-    r = subprocess.run(["./trirv_vm", "/tmp/csr_diff.trv"], capture_output=True, env=env)
+    r = subprocess.run(["./trirv_vm", trv], capture_output=True, env=env)
     line = [l for l in r.stderr.decode().split("\n") if "exit=" in l]
     return int(line[0].split("exit=")[1].split()[0]) if line else None
 

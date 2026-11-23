@@ -407,9 +407,11 @@ def load_trv(path):
 def main():
     global skipped, passed, failed
     # __tint 特性检测：未实现时 TINT 组 SKIP（TERNARY_COMPAT_PLAN 批次 C1 待专项）
-    with open("/tmp/_tint_probe.c", "w") as _f:
+    probe_c = _bootstrap.scratch("_tint_probe.c")       # 草稿落仓库 tmp/（按进程隔离），不写系统 /tmp
+    probe_trv = _bootstrap.scratch("_tint_probe.trv")
+    with open(probe_c, "w") as _f:
         _f.write("__tint x;\nint main(void){ return (__tint)0; }\n")
-    _r = subprocess.run([TCC, "-nostdlib", "/tmp/_tint_probe.c", "-o", "/tmp/_tint_probe.trv"],
+    _r = subprocess.run([TCC, "-nostdlib", probe_c, "-o", probe_trv],
                         capture_output=True, text=True, timeout=30)
     _tint_ok = _r.returncode == 0
     if not _tint_ok:
@@ -423,8 +425,8 @@ def main():
         if not _tint_ok and name.startswith(("tint",)):
             skipped += 1
             continue
-        cpath = "/tmp/tri_e2e_%s.c" % abs(hash(name))
-        tpath = "/tmp/tri_e2e_%s.trv" % abs(hash(name))
+        cpath = _bootstrap.scratch("tri_e2e_%s.c" % abs(hash(name)))
+        tpath = _bootstrap.scratch("tri_e2e_%s.trv" % abs(hash(name)))
         with open(cpath, "w") as f:
             f.write(src)
         r = subprocess.run([TCC, "-nostdlib", cpath, "-o", tpath],
@@ -444,9 +446,9 @@ def main():
     # 多 TU：同进程多源文件编译（T-2.1 前置：符号进程内解析）
     for name, srcs, want in MULTI_CASES:
         cpaths = []
-        tpath = "/tmp/tri_e2e_multi_%s.trv" % abs(hash(name))
+        tpath = _bootstrap.scratch("tri_e2e_multi_%s.trv" % abs(hash(name)))
         for k, s in enumerate(srcs):
-            cp = "/tmp/tri_e2e_multi_%s_%d.c" % (abs(hash(name)), k)
+            cp = _bootstrap.scratch("tri_e2e_multi_%s_%d.c" % (abs(hash(name)), k))
             with open(cp, "w") as f:
                 f.write(s)
             cpaths.append(cp)
@@ -467,8 +469,8 @@ def main():
         if not _tint_ok and name.startswith(("tint",)):
             skipped += 1
             continue
-        cpath = "/tmp/tri_e2e_neg_%s.c" % abs(hash(name))
-        tpath = "/tmp/tri_e2e_neg_%s.trv" % abs(hash(name))
+        cpath = _bootstrap.scratch("tri_e2e_neg_%s.c" % abs(hash(name)))
+        tpath = _bootstrap.scratch("tri_e2e_neg_%s.trv" % abs(hash(name)))
         with open(cpath, "w") as f:
             f.write(src)
         r = subprocess.run([TCC, "-nostdlib", cpath, "-o", tpath],

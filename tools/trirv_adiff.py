@@ -32,8 +32,11 @@ def write_trv(path, prog, seg=None):
             f.write(struct.pack("<II", 0, len(seg)))
             f.write(bytes(seg))
 
+_SCRATCH = os.path.join(_R, "tmp", "adiff")     # 草稿落仓库 tmp/（.gitignore 已忽略），不写系统 /tmp
+
 def c_run(prog, vmbin, extra=None, seg=None):
-    path = "/tmp/adiff.trv"
+    os.makedirs(_SCRATCH, exist_ok=True)
+    path = os.path.join(_SCRATCH, "adiff.trv")
     write_trv(path, prog, seg)
     args = [vmbin] + (extra or []) + [path]
     r = subprocess.run(args, capture_output=True)

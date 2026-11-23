@@ -19,8 +19,12 @@ import os
 import subprocess
 import sys
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
+UNDECL_C = _bootstrap.scratch("und.c")       # 草稿落仓库 tmp/（按进程隔离），不写系统 /tmp
+UNDECL_TRV = _bootstrap.scratch("und.trv")
 
 passed = 0
 failed = 0
@@ -28,8 +32,8 @@ failed = 0
 
 def expect_compile_error(name, src, needle):
     global passed, failed
-    open('/tmp/und.c', 'w').write(src)
-    r = subprocess.run([CC, '/tmp/und.c', '/tmp/und.trv'], capture_output=True, text=True)
+    open(UNDECL_C, 'w').write(src)
+    r = subprocess.run([CC, UNDECL_C, UNDECL_TRV], capture_output=True, text=True)
     if r.returncode == 0:
         failed += 1
         print("FAIL %s: 编译意外成功（静默零页风险）" % name)
@@ -43,8 +47,8 @@ def expect_compile_error(name, src, needle):
 
 def expect_compile_ok(name, src):
     global passed, failed
-    open('/tmp/und.c', 'w').write(src)
-    r = subprocess.run([CC, '/tmp/und.c', '/tmp/und.trv'], capture_output=True, text=True)
+    open(UNDECL_C, 'w').write(src)
+    r = subprocess.run([CC, UNDECL_C, UNDECL_TRV], capture_output=True, text=True)
     if r.returncode != 0:
         failed += 1
         print("FAIL %s: 合法代码被误报（stderr=%r）" % (name, r.stderr[:120]))

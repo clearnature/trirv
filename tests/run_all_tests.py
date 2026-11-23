@@ -162,6 +162,7 @@ SUITES = [
     ("trirv_golden_e2e.py",       "手算黄金补缺 26 项",       False, None),
     ("trirv_dual_fuzz.py",        "双引擎随机差分 200+40 对",  False, None),
     ("trirv_relax_e2e.py",        "长分支弛豫契约 5 项",      False, None),
+    ("trirv_trv2_equiv.py",       "全语料 TRV1≡TRV2 102 项",  False, None),
     ("trirv_compound_e2e.py",     "复合字面量契约 6 项",      False, None),
     ("trirv_qsort_tri_e2e.py",    "qsort 三进制重写 4 项",    False, None),
     ("trirv_strtol_tri_e2e.py",   "strtol 三进制重写 4 项",   False, None),

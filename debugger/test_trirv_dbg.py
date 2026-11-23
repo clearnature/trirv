@@ -8,10 +8,11 @@ import os, struct, sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _R = os.path.dirname(_HERE)
-for _d in (_R, os.path.join(_R, "isa"), os.path.join(_R, "vm"), _HERE):
+for _d in (_R, os.path.join(_R, "isa"), os.path.join(_R, "vm"), os.path.join(_R, "tests"), _HERE):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path；草稿文件经 scratch() 落仓库 tmp/）
 import trirv_isa as isa
 from trirv_dbg import TriRVDebugger, write_trv
 
@@ -37,7 +38,7 @@ def make_add_prog():
 def main():
     # ---- T1 TRV1 打包/加载往返 ----
     prog = make_add_prog()
-    p = "/tmp/dbg_t1.trv"
+    p = _bootstrap.scratch("dbg_t1.trv")
     write_trv(p, prog, mem_init={100: [5, 6, 7]})
     dbg = TriRVDebugger(p)
     check("T1 加载指令数", len(dbg.vm.imem) == 4)
@@ -51,7 +52,7 @@ def main():
     check("T2 s 输出含 pc", "pc=" in out)
 
     # ---- T3 断点：新实例 b slot2 → c 停在 slot2 ----
-    dbg2 = TriRVDebugger(write_trv("/tmp/dbg_t3.trv", prog))
+    dbg2 = TriRVDebugger(write_trv(_bootstrap.scratch("dbg_t3.trv"), prog))
     out = dbg2.cmd("b 8")          # tryte 地址：slot2 = 8
     out += dbg2.cmd("c")
     check("T3 停在 slot2", dbg2.vm.pc == 8, "pc=%d" % dbg2.vm.pc)
@@ -69,14 +70,14 @@ def main():
              e("SW",   rs2=1, rs1=0, imm=200),  # S 格式：rs2=源(x1)，存 200(x0)
              e("ECALL")]
     # S 格式 SW 字段：rd 位置存的是 imm 低段？——直接查 decode 字段名再组
-    dbg4 = TriRVDebugger(write_trv("/tmp/dbg_t4.trv", prog4))
+    dbg4 = TriRVDebugger(write_trv(_bootstrap.scratch("dbg_t4.trv"), prog4))
     dbg4.cmd("s 2")
     out = dbg4.cmd("m 200 3")
     check("T4 m 含 42", "42" in out, out)
     check("T4 内存真值", dbg4.vm.mem[200] == 42, "got %d" % dbg4.vm.mem[200])
 
     # ---- T5 反汇编 d：含 ADDI/ECALL 助记符 ----
-    dbg5 = TriRVDebugger(write_trv("/tmp/dbg_t5.trv", prog))
+    dbg5 = TriRVDebugger(write_trv(_bootstrap.scratch("dbg_t5.trv"), prog))
     out = dbg5.cmd("d 4")
     check("T5 d 含 ADDI", "ADDI" in out, out)
     check("T5 d 含 ECALL", "ECALL" in out)
@@ -90,7 +91,7 @@ def main():
 
     # ---- T7 批命令文件端到端（-x 语义：run_script） ----
     script = "b 8\nc\ns 1\nc\nr\n"
-    out = TriRVDebugger.run_script("/tmp/dbg_t3.trv", script)
+    out = TriRVDebugger.run_script(_bootstrap.scratch("dbg_t3.trv"), script)
     check("T7 run_script 完整走通", dbg2.vm.regs[3] == 12 or "x3=12" in out)
 
     print("调试器 MVP 契约：%d PASS / %d FAIL" % (PASS, FAIL))

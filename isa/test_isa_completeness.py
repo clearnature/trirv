@@ -145,8 +145,28 @@ check("AUIPC -1 = 3^13-1", isa.decode(out[0])["imm"] == 3**13 - 1)
 
 # ---------------------------------------------------------------- C. C VM 差分
 print("\n=== C. Python VM vs C VM 差分对照 ===")
-CVM = "/tmp/trirv_vm_test"
-if os.path.exists(CVM):
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))     # 仓库根（经根目录符号链接调用时 abspath 不解引用）
+CVM = os.path.join(ROOT, "vm", "bin", "trirv_vm")                       # 与回归其余套件同一份，受构建管理
+CVM_DEPS = (os.path.join(ROOT, "vm", "trirv_vm.c"), os.path.join(ROOT, "float", "trirv_float.h"))
+
+def ensure_cvm():
+    """vm/bin/trirv_vm 缺失或比源码旧就重建（口径同 tests/run_all_tests.py）。
+
+    不回退到系统 /tmp 里的残留件：/tmp 重启即清，那里的旧二进制还会把「C VM 一致」
+    验在过期的实现上。构建不出来返回 False，由调用处判 FAIL，不静默跳过。"""
+    if os.path.exists(CVM) and all(os.path.getmtime(CVM) >= os.path.getmtime(d) for d in CVM_DEPS):
+        return True
+    os.makedirs(os.path.dirname(CVM), exist_ok=True)
+    for c in ("clang", "gcc", "cc"):
+        try:
+            r = subprocess.run([c, "-O2", "-I", ROOT, "-o", CVM, CVM_DEPS[0], "-lm"], capture_output=True)
+        except OSError:                # 该编译器未安装
+            continue
+        if r.returncode == 0:
+            return True
+    return False
+
+if ensure_cvm():
     def dump_trv(insts, seg=None):
         """生成 TRV1 程序；在末尾放 SW 把 x1..x3 写入结果区，供 -o dump。"""
         raws = list(insts)
@@ -189,7 +209,8 @@ if os.path.exists(CVM):
     cvm_case("TSEXT(5)=5", {2: 5}, [e("TSEXT", rd=1, rs1=2)], 5)
     cvm_case("SRLI(90,1)=30", {2: 90}, [e("SRLI", rd=1, rs1=2, imm=1)], 30)
 else:
-    print(f"  [SKIP] C VM 二进制 {CVM} 不存在，先编译: gcc -O2 -o {CVM} trirv_vm.c")
+    check("C VM 二进制就绪（vm/bin/trirv_vm 可构建）", False,
+          f"{CVM} 缺失或过期，且自动构建失败（需要 clang/gcc/cc）")
 
 # ---------------------------------------------------------------- E. 第二轮深度审查修复
 print("\n=== E. 第二轮审查修复（编译器大栈帧/大常量/短路 + VM 边界）===")
@@ -233,10 +254,8 @@ v = run_py([e("ADDI", rd=10, rs1=0, imm=1), e("ADDI", rd=12, rs1=0, imm=2186),
             e("ADDI", rd=17, rs1=0, imm=64), e("ECALL")])
 check("write(count=-1) 返回 -EINVAL", s(v.regs[10]) == -22, f"got {s(v.regs[10])}")
 
-# E5. C VM 差分：负移位与 Python 一致（CVM 二进制存在时）
-CVM2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trirv_vm")
-if not os.path.exists(CVM2):
-    CVM2 = CVM  # 回退到 /tmp/trirv_vm_test
+# E5. C VM 差分：负移位与 Python 一致
+CVM2 = CVM
 if os.path.exists(CVM2):
     def _dump_trv(insts):
         return b"TRV1" + struct.pack("<III", 1, len(insts), 0) + \
@@ -285,9 +304,7 @@ if v.trap_log:
 else:
     check("非法指令触发 trap", False, "trap_log 空")
 # F6. C/Python 差分：JAL/分支/负JALR 两版一致
-CVM3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trirv_vm")
-if not os.path.exists(CVM3):
-    CVM3 = CVM
+CVM3 = CVM
 if os.path.exists(CVM3):
     def _pc_diff(prog, slot):
         # 把寄存器 x10 存到 mem[1000] 供 C VM dump；slot=存 x10 前已完成的跳转

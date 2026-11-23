@@ -8,14 +8,15 @@
 # PGO 三阶段：训练插桩 -> 训练运行生成 .profraw -> merge -> 用 profile 重新优化编译。
 set -e
 cd "$(dirname "$0")"
+mkdir -p tmp                                # PGO 中间件落仓库 tmp/（.gitignore 已忽略）；/tmp 重启即清，不放项目产物
 
 CC=${CC:-clang}                       # Apple clang / gcc 均可
 CFLAGS="-std=gnu11 -Wno-unknown-pragmas -fopenmp"
 OPT="-O3 -march=native"
 OPT_PORTABLE="-O3"
-TRAIN="/tmp/trirv_pgo_train.c"
+TRAIN="tmp/trirv_pgo_train.c"
 PROFRAW="default.profraw"
-PROFDATA="/tmp/trirv_train.profdata"
+PROFDATA="tmp/trirv_train.profdata"
 PROFTOOL=${PROFTOOL:-llvm-profdata}   # gcc 用户可改为: PROFTOOL=gcov 变体见文末
 
 echo "=== [0/5] 构建 C 编译器（默认编译后端，零 Python 依赖）==="
@@ -37,16 +38,16 @@ int main(){
   return s+sum(200);
 }
 SRC
-python3 export_trv.py "$TRAIN" /tmp/trirv_train.trv >/dev/null
+python3 export_trv.py "$TRAIN" tmp/trirv_train.trv >/dev/null
 echo "  训练程序就绪"
 
 echo "=== [2/5] 编译插桩版 ==="
-$CC $OPT $CFLAGS -fprofile-instr-generate -o /tmp/trirv_train_bin trirv_vm.c -lm
+$CC $OPT $CFLAGS -fprofile-instr-generate -o tmp/trirv_train_bin trirv_vm.c -lm
 echo "  插桩版就绪"
 
 echo "=== [3/5] 运行训练，收集 profile ==="
 rm -f "$PROFRAW" "$PROFRAW".*
-/tmp/trirv_train_bin -n 40 -t 1 /tmp/trirv_train.trv >/dev/null 2>&1
+tmp/trirv_train_bin -n 40 -t 1 tmp/trirv_train.trv >/dev/null 2>&1
 if [ ! -f "$PROFRAW" ]; then
   echo "  警告：未生成 $PROFRAW，回退到无 PGO 构建"; USE_PGO=0
 else

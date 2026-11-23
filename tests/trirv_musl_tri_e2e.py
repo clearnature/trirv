@@ -25,7 +25,6 @@ import trirv_vm as vm
 HERE = os.path.dirname(os.path.abspath(__file__))
 CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
 CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
-BATCH = "/tmp/musl_batch"          # 批量管线 TRVO 输出目录
 TRI = os.path.join(HERE, "..", "libc-musl", "musl_tri")
 
 passed = 0
@@ -90,7 +89,8 @@ def run_dual(trv_path, max_steps=30000):
 # strncmp 体 → duplicate 诚实报错（安全网）。链形：strstr 先吸收
 # strncmp/strlen/memcmp 成 C1；memmem 链入 C1（∪ memcmp 已在 C1 内）；
 # 最终 main -l memmem闭包 ∪ strcspn ∪ strspn，成员互斥。
-DEPS_ALL = [os.path.join(BATCH, f) for f in
+batch_dir, _ = _bootstrap.run_musl_batch()      # 依赖的 TRVO 自己产，不依赖别处残留的批量产物
+DEPS_ALL = [os.path.join(batch_dir, f) for f in
             ("strncmp.trvo", "strlen.trvo", "memcmp.trvo")]
 tri_trvos = {}
 for tri_c in ("strcspn_tri", "strspn_tri", "strstr_tri", "memmem_tri"):

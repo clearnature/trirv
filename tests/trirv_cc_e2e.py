@@ -153,7 +153,7 @@ def main():
     _rp = builtins.print
     def _tee(*a, **k):
         _rp(*a, **k)
-        with open("/tmp/cc_e2e_debug.log", "a") as f:
+        with open(_bootstrap.project_tmp("logs", "cc_e2e_debug.log"), "a") as f:
             _rp(*a, file=f, **k)
     builtins.print = _tee
     print("=" * 60)

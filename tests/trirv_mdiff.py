@@ -56,7 +56,7 @@ def py_run(inst_name, a, b):
 
 def c_run(inst_name, a, b, vmbin):
     prog, seg = build(inst_name, a, b)
-    path = "/tmp/mdiff.trv"
+    path = _bootstrap.scratch("mdiff.trv")
     write_trv(path, prog, seg)
     r = subprocess.run([vmbin, path], capture_output=True)
     return r.stdout

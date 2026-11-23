@@ -156,10 +156,8 @@ if os.path.exists(CVM):
 # 剩余 60+ 单元一次性全部导入链接 + 跨单元行为验证——README「预编译一次、
 # 多次链接」的增量构建语义从此成为被测事实。
 # 数据地址已符号化（&name，§5.7 修复）：各单元全局在合并镜像里重排后仍正确。
-BATCH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "libc-musl", "batch_musl_compile.py")
-subprocess.run([sys.executable, BATCH], capture_output=True, text=True)
-units = sorted(__import__("glob").glob("/tmp/musl_batch/*.trvo"))
+batch_dir, _ = _bootstrap.run_musl_batch()      # 批量管线跑进本进程草稿目录
+units = sorted(__import__("glob").glob(os.path.join(batch_dir, "*.trvo")))
 check("全量/批量产出单元数>=60", len(units) >= 60, True)
 
 # 符号感知去重（真链接器语义）：解析各单元 FUNC 名，贪心接受无碰撞单元，

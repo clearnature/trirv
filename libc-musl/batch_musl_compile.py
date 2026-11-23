@@ -3,12 +3,15 @@
 import os, subprocess, sys
 
 _SCRIPT = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_SCRIPT)                 # 仓库根
 PP = os.path.join(_SCRIPT, "preprocess_musl.py")
-OUTDIR = "/tmp/musl_batch"
+# 产物目录：默认落仓库根 tmp/（.gitignore 已忽略）——/tmp 重启即清，不放项目产物。
+# argv[1] 可指定：测试套件把 TRVO 产进各自的草稿目录，互不干扰。
+OUTDIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_ROOT, "tmp", "musl_batch")
 os.makedirs(OUTDIR, exist_ok=True)
+CC = os.path.join(_ROOT, "cc", "bin", "trirv_cc")
 
-DIRS = ["/Users/zesheng/ai-lab/trirv/third_party/musl/src/string",
-        "/Users/zesheng/ai-lab/trirv/third_party/musl/src/stdlib"]
+DIRS = [os.path.join(_ROOT, "third_party", "musl", "src", d) for d in ("string", "stdlib")]
 
 # 三进制原生重写表：这些文件的语义适配版在 musl_tri/（纯三进制实现，
 # 与上游差异逐条注释）。批处理跳过上游版本、编译 tri 版。
@@ -46,7 +49,7 @@ for d in DIRS:
         if fn in TRI_REWRITE:
             # 三进制原生重写版：直接编译（无需预处理——已是 TriRV C 子集）
             tvo = os.path.join(OUTDIR, fn.replace('.c', '.trvo'))
-            rc = subprocess.run(['/Users/zesheng/ai-lab/trirv/cc/bin/trirv_cc', TRI_REWRITE[fn], tvo], capture_output=True, text=True)
+            rc = subprocess.run([CC, TRI_REWRITE[fn], tvo], capture_output=True, text=True)
             if rc.returncode == 0:
                 ok.append(d.split('/')[-1]+'/'+fn+' [tri]')
             else:
@@ -67,7 +70,7 @@ for d in DIRS:
             details[d.split('/')[-1] + '/' + fn] = reason
             continue
         tvo = os.path.join(OUTDIR, fn.replace('.c', '.trvo'))
-        rc = subprocess.run(['/Users/zesheng/ai-lab/trirv/cc/bin/trirv_cc', pp, tvo], capture_output=True, text=True)
+        rc = subprocess.run([CC, pp, tvo], capture_output=True, text=True)
         if rc.returncode == 0:
             ok.append(d.split('/')[-1]+'/'+fn)
         else:

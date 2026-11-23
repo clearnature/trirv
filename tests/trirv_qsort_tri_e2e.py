@@ -20,7 +20,6 @@ import trirv_vm as vm
 HERE = os.path.dirname(os.path.abspath(__file__))
 CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(HERE, "..", "vm", "bin", "trirv_vm"))
 CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
-BATCH = "/tmp/musl_batch"
 
 passed = 0
 failed = 0
@@ -95,9 +94,10 @@ trv = tempfile.mktemp(suffix=".trv")
 cf = tempfile.mktemp(suffix=".c")
 with open(cf, "w") as f:
     f.write(TEST_SRC)
+batch_dir, _ = _bootstrap.run_musl_batch()      # 依赖的 TRVO 自己产，不依赖别处残留的批量产物
 r = subprocess.run([CC, cf, trv, "-l", trvo,
-                    "-l", os.path.join(BATCH, "memcmp.trvo"),
-                    "-l", os.path.join(BATCH, "memcpy.trvo")],
+                    "-l", os.path.join(batch_dir, "memcmp.trvo"),
+                    "-l", os.path.join(batch_dir, "memcpy.trvo")],
                    capture_output=True, text=True)
 if r.returncode != 0:
     print(f"  [link rc={r.returncode}] {r.stderr.strip()[:150]}")

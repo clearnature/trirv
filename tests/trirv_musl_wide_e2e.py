@@ -51,8 +51,7 @@ def check(name, got, want):
 
 
 # ================ 1. 批量编译统计 ================
-r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/libc-musl/batch_musl_compile.py")],
-                   capture_output=True, text=True)
+OUTDIR, r = _bootstrap.run_musl_batch()         # 批量管线跑进本进程草稿目录
 check("批量/管线退出码", r.returncode, 0)
 m_ok = [l for l in r.stdout.splitlines() if l.startswith("OK:")]
 check("批量/统计行存在", len(m_ok), 1)
@@ -61,7 +60,6 @@ check("批量/编译成功数>=40", ok_n >= 40, True)
 check("批量/编译失败数=0", "FAIL: 0" in r.stdout, True)
 
 # ================ 2. 新覆盖函数功能断言 ================
-OUTDIR = "/tmp/musl_batch"
 TEST_SRC = """
 int strsep(char **str, const char *sep);
 int strlcpy(char *d, const char *s, int n);

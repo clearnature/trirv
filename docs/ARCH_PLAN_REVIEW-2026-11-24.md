@@ -2,14 +2,14 @@
 
 # TriRV 架构与计划评审（参照数学库工程纪律）
 
-> 撰写日 2026-11-24。事实截至 trirv `76f7995`、tinycc `21410af4`（另有未提交的 `tri-isa.h`）。
-> 采集期间另一会话在同一工作树连续提交（`598a243` → `2869d9e` → `76f7995`），`docs/TASKS.md`
-> 的行号以 `76f7995` 为准。
+> 撰写日 2026-11-24。事实截至 trirv `170f65f`、tinycc `21410af4`（另有未提交的 `tri-isa.h`）。
+> 采集期间另一会话在同一工作树连续提交（`598a243` → `2869d9e` → `76f7995` → `170f65f`），
+> `docs/TASKS.md` 随之改写多次——对该文件只按任务编号引用，行号仅用于文件顶部的基线快照。
 > 参照对象：`~/work/discrete-mathematics`（`be52347`，下称「数学库」）、
 > `~/work/math/hs/sov-math`（下称 sov-math）、`~/work/udk`（`fd631bc`）。
 >
 > **证据标记**：【亲核】本人读文件或跑命令所得；【取证】只读取证清点所得，未逐行复核；
-> 【推断】由前两者推理；【未执行】只读代码、没有运行。
+> 【推断】由前两者推理；【未执行】只读代码、没有运行。文中的行号以 trirv `170f65f` 为准。
 > **本次没有跑 `tests/run_all_tests.py`**：另一会话正在同一工作树工作，多套件共用 `/tmp` 固定
 > 文件名，并行跑可能互相干扰。文中所有「N 套全绿」均引自 `docs/TASKS.md`，未复核。
 
@@ -69,11 +69,11 @@
 | 「索引，不是验证」；权威顺序：类型检查器 > 台账 > 索引 | 数学库 `engineering/index_presentations.sh:2,15,95`【取证】、`AGENTS.md:34` | D3 |
 | 文档分「承诺类」与「快照类」：前者未命中是错位要修，后者未命中是历史、改了是篡改 | 数学库 `memory/doc-code-drift-scan.md:19-30` | A6 |
 | 「别把『扫描通过』当成『文档正确』」 | 同上 `:7` | A4、A6 |
-| 「未做」列表不是可靠事实源；判断被推翻后要清理所有引用处 | 数学库 `memory/lessons-agda-traps-2026-10.md:71, 78-83` | A6 |
+| 「未做」列表不是可靠事实源；判断被推翻后要清理所有引用处 | 数学库 `memory/lessons-agda-traps-2026-10.md:71, 79-83` | A6 |
 | 闸门的「过」必须是命令 + 期望输出；降级必须写明，不许静默 | 数学库 `docs/plans/m3c-atomic-plan.md:30, 207-209` | A3、A4、D6 |
 | 「闭环」的三种含义必须分开写，否则属虚报 | 数学库 `docs/decisions/本源-投影分层-A1线-2026-10-17.md:60-69` | D2、D3 |
-| 不许静默返回默认值：默认值会让错值伪装成正确 | 数学库 `docs/principles.md:63-64` | C3、E1 |
-| 有界实例不证明泛化；oracle 只用于发现反例 | 数学库 `docs/principles.md:50-53` | B1、B2 |
+| 不许静默返回默认值：默认值会让错值伪装成正确 | 数学库 `docs/principles.md:66, 73` | C3、E1 |
+| 有界实例不证明泛化；oracle 只用于发现反例 | 数学库 `docs/principles.md:51, 53` | B1、B2 |
 | 先算后验证：陈述拿不准时先全枚举 | 数学库 `PROVEN.md:217-218` | B1、D3 |
 | `PROVEN.md`：已做清单，防止重复实现 | 数学库 `PROVEN.md:1-11, 323-331` | §4 |
 | SpecAnchor 模式：规范值 ↔ 实现导出逐项对拍，输出 `ORACLE-MANIFEST{basis,domain,points,claim}` | 数学库 `bridge-from-sov-math/crosscheck.py:1-46`、`SpecAnchor.agda:2-10` | B1 |
@@ -103,7 +103,7 @@
   `grep -c "= refl\|= λ ()" > 0`，把六条判为「伪标准」，结论变为「7/7」，并声明
   「验收标准已固定，不再修订」（`docs/七问题验收标准-vFinal.md:14, 30-41, 57`）【亲核】。
   两天之间代码是否也补齐了我没有核对；文档能确定的是判据与结论同日同向变化。
-  该库 10 月的红线（「把 C 级报 A 级」禁止、`principles.md:58`）是这之后的补救。
+  该库 10 月的红线（「把 C 级报 A 级」禁止、`principles.md:55`）是这之后的补救。
   ——对应 A4。
 - **黄金快照只告警。** sov-math 三实现逐字节一致即过，与 golden 不同只打印 ⚠
   （`engineering/ffi_conformance.sh:32-35`）【亲核】；测试入口打印失败清单但不设退出码
@@ -116,7 +116,7 @@
 ### A1 [P0] 全部工作只存在于本机
 
 **事实**
-- trirv：`git remote -v` 为空，181 个提交【亲核】。
+- trirv：`git remote -v` 为空，180 余个提交【亲核】。
 - tinycc 分支 `trirv`：本地领先 `origin/trirv` 20 个提交、落后 0
   （`git -C tinycc rev-list --left-right --count HEAD...origin/trirv` → `20 0`）【亲核】。
   未推送的包括三值本征 `88f861a3`、`__tint` `f296b758`、LW4/SW4 `cdb11a68`、
@@ -147,7 +147,8 @@
   提交版 `HEAD:tri-isa.h` 里 `TRI_FENCE_I_*` 宏 0 个、CSR 高区 `_H_OP` 宏 0 个，工作树分别
   4 个和 6 个【亲核】。批次 1 的 1.7、1.9 写的是「tri-isa.h 重生成（102→103→109，守卫逐字一致）」，
   再生结果没有进 tinycc 的提交。
-- 采集时 trirv 工作树另有未提交改动：` M cc/trirv_cc.c`、` M tests/trirv_tdd_contract.py`【亲核】。
+- 采集期间 trirv 工作树多次出现未提交改动（先后见到 `cc/trirv_cc.c`、`tests/trirv_tdd_contract.py`、
+  `debugger/trirv_dbg.py`）【亲核】。
 
 **后果** 按快照检出两仓，得到的不是被测的那棵树；`gen_tri_isa_h.py --check` 的「绿」依赖一个
 未提交文件。
@@ -165,7 +166,7 @@
   「tri-tcc 未构建（…/tests/tinycc/trirv-tcc 不存在）—— 全部 SKIP /
   tri-musl 契约：0 PASS / 0 FAIL / 3 组 SKIP」，退出码 0【亲核，已执行】。
   脚本里 `TCC` 指向 `tests/tinycc/trirv-tcc`，第二道守卫指向 `tests/musl/src/string`
-  （`tests/trirv_tri_musl_e2e.py:24, 28, 197-202`），两处都不存在；真实二进制在
+  （`tests/trirv_tri_musl_e2e.py:24, 28, 198-205`），两处都不存在；真实二进制在
   `tinycc/trirv-tcc`，musl 在 `third_party/musl`。该文件最后一次改动是目录重组 `f941adb`
   （2026-11-22）【亲核】。此后每一次「全绿」里这一套都是 0 断言。
   `docs/PROJECT_AUDIT_BRIEF.md:109-110` 的「musl 多 TU 30 断言」以此为据。
@@ -196,25 +197,26 @@
 
 ### A4 [P1] 验收口径与实际检查不一致
 
-每条都是「文档说查了 X，代码查的是 Y」。前四条都在同一个文件里。
+每条都是「文档说查了 X，代码查的是 Y」。第 2–6 条都在同一个文件里。
 
 | # | 文档/名称说的 | 代码实际做的 | 锚点 |
 |---|---|---|---|
-| 1 | 「四路一致」（双工具链 × 双 VM） | `run_vm` 只要 CVM 输出含 `exit=` 就返回 CVM 的退出码；`/CVM` 与 `/PyVM` 两列调用同一个函数、同一参数，PyVM 只是 CVM 无输出时的后备 | `tests/trirv_difftest_tcc.py:80-85, 115-116`；`run_all_tests.py:151`；`TASKS.md:101` 附近的 2.8 记录；`PROJECT_AUDIT_BRIEF.md:110`【亲核】 |
-| 2 | 文件差分「比较退出码、输出、步数」 | 只取 stderr 里 `exit=` 一个词 | `tests/trirv_dual_fuzz.py:149-153`；`TASKS.md:245`【亲核】 |
+| 1 | 「四路一致」（双工具链 × 双 VM） | `run_vm` 只要 CVM 输出含 `exit=` 就返回 CVM 的退出码；`/CVM` 与 `/PyVM` 两列调用同一个函数、同一参数，PyVM 只是 CVM 无输出时的后备 | `tests/trirv_difftest_tcc.py:80-85, 115-116`；`run_all_tests.py:151`；`TASKS.md` 2.8；`PROJECT_AUDIT_BRIEF.md:109-110`【亲核】 |
+| 2 | 文件差分「比较退出码、输出、步数」 | 只取 stderr 里 `exit=` 一个词 | `tests/trirv_dual_fuzz.py:149-153`；`TASKS.md` 2.5【亲核】 |
 | 3 | 引擎差分的终态比对 | 只比 `(exit_code, halted, steps)`，寄存器与内存不在内 | `tests/trirv_dual_fuzz.py:96`【亲核】 |
-| 4 | 「变异自检（7/30 检出率证明能红）」 | 通过条件是 `detected != 0`，30 例里 1 例即过；实测 7 例，另 23 例变异未被检出 | `tests/trirv_dual_fuzz.py:117`；`TASKS.md:101`【亲核】 |
+| 4 | 「变异自检（7/30 检出率证明能红）」 | 通过条件是 `detected != 0`，30 例里 1 例即过；实测 7 例，另 23 例变异未被检出 | `tests/trirv_dual_fuzz.py:117`；`TASKS.md` 2.4–2.5【亲核】 |
 | 5 | 生成器护栏 | 越窗程序被 `continue` 跳过，`agree` 没有下限 | `tests/trirv_dual_fuzz.py:90-93, 102`【亲核】 |
 | 6 | 生成器声称覆盖 TC | 词表只有 C-ADDI、向前 C-BEQ/C-BNE、link=0 固定 −4 的 C-J；全宽只有 ADDI/ADD/SUB/SLTU/XOR/SLLI；寄存器只有 5–12。帧相对访存、C-JAL、向后条件分支、JALR、访存、乘除都不在随机差分里 | `tests/trirv_dual_fuzz.py:22-61`【亲核】 |
 | 7 | ADR-31「每档 5 次取中位数」、基准集「fib、qsort、串操作、memcpy」 | 取最小（打印也是「取最小」，docstring 写中位数）；实际基准是 fib/sumloop/axpy | `tests/run_perf.py:2, 23, 40`；`DECISIONS.md:290-291`；`PERF_REPORT.md:483`【亲核】 |
-| 8 | 「全部 docs 首部加状态行」，验收是「前 10 行含『状态：』」 | 11 份文档的状态行是同一句模板「进行中（ADR-32 批次 2.15 统一补标——该文档未逐份定稿，收官时更新）」；`README.md`、`cc/CC_寄存器式编译器说明.md`、`docs/PROJECT_AUDIT_BRIEF.md` 没有状态行 | `TASKS.md:260`；`grep -l "统一补标" docs/*.md` → 11【亲核】 |
+| 8 | 「全部 docs 首部加状态行」，验收是「前 10 行含『状态：』」 | 11 份文档的状态行是同一句模板「进行中（ADR-32 批次 2.15 统一补标——该文档未逐份定稿，收官时更新）」；`README.md`、`cc/CC_寄存器式编译器说明.md`、`docs/PROJECT_AUDIT_BRIEF.md` 没有状态行 | `TASKS.md` 2.15；`grep -l "统一补标" docs/*.md` → 11【亲核】 |
 
 另有一处覆盖面未声明：`--san` 只把 ASan/UBSan 版写到 `cc/bin/trirv_cc` 与 `vm/bin/trirv_vm`
-（`tests/run_all_tests.py:83-92`）【亲核】，而 21 个测试文件经 `trirv_cc_backend` 使用未插桩的
-`cc/trirv_cc`【取证】。「首次全量 60 套零 sanitizer 报错」不覆盖这 21 套里的编译器调用。
+（`tests/run_all_tests.py:80-92`）【亲核】，而 21 个测试文件经 `trirv_cc_backend` 使用未插桩的
+`cc/trirv_cc`【亲核：按 import 检索计数】。「首次全量 60 套零 sanitizer 报错」不覆盖这 21 套里的
+编译器调用。
 
 **参照** §1.2 第三条（判据被改宽）；负控制要看判别内容而不只看是否变红
-（数学库 `AGENTS.md:101-103`）；sov-math 的变异必须全中（`negative_controls.py:44-66`）。
+（数学库 `AGENTS.md:7`）；sov-math 的变异必须全中（`negative_controls.py:44-66`）。
 
 **建议** 1 改成 PyVM 列真走 PyVM；2、3 改成终态全量（32 个寄存器 + halted + steps +
 被写内存摘要）；4、5 设阈值（见 B2）；7、8 把文档改成与实现一致或反之；`--san` 的覆盖面
@@ -228,7 +230,7 @@
 |---|---|---|---|
 | 译不出的 20-trit 指令字 | `_take_trap(isa.CAUSE_ILLEGAL, …)` | 译成 `OP_NOP`，两条引擎都当空操作执行；`CAUSE_ILLEGAL` 在 C 文件里只有定义、没有使用 | `vm/trirv_vm.py:538-541`；`vm/trirv_vm.c:57, 188, 269, 1079` |
 | TC 词的寄存器号 ≥ 8（字段 3 trit，窗口 8 个，27 个取值里 19 个未定义） | 落到 x0 | `cregs[rd & 7]` 回绕到窗口内某个真实寄存器 | `vm/trirv_vm.py:233, 235`；`vm/trirv_vm.c:983-985, 1212-1214` |
-| `read(0, buf, 负数)` | 返回负数并改动 stdin | 转成 `size_t` 后读满剩余 | `vm/trirv_vm.py:324-331`；`vm/trirv_vm.c:717-722` |
+| `read(0, buf, 负数)` | `n` 取负值后 `mem[a1:a1+n] = chunk` 成了插入：在 `a1` 处插入数据并使 `mem` 变长，其上地址整体后移；同时返回负数、消耗 stdin（Python 切片赋值语义已单独验证，VM 未执行） | `a2` 转成 `size_t` 后读满剩余，返回非负 | `vm/trirv_vm.py:324-331`；`vm/trirv_vm.c:717-722` |
 | 停机后仍有挂起的定时器中断 | — | `step()` 先查 `!v->halted`，`NEXT()` 宏不查；两条 C 引擎在 exit 之后的 CSR 终态可能不同（可观测性未验证） | `vm/trirv_vm.c:1016, 1094-1097` |
 
 现有测试没有一处触达这些角落：随机生成器只用 `isa.encode` 产生的合法编码，TC 寄存器号只取
@@ -240,7 +242,7 @@ ADR-01 要求扩展落地四件套里有「规范条目」，TC 的这一条不�
 
 **建议（拍板）** 定一条统一规则：未定义编码一律非法指令陷入；TC 越窗寄存器号、未定义子格式
 同此。CVM 补非法指令陷入（批次 5 的 5.5「非法指令路径可恢复」在 CVM 上目前无法触发）。
-负长度按 ADR-09「语义照 Linux」返回 −EINVAL。
+负长度按 ADR-09「语义照 Linux」返回 −EINVAL；PyVM 那一处是参考实现自身的内存破坏，建议先修。
 
 ### A6 [P1] 权威文档内部的矛盾
 
@@ -256,8 +258,8 @@ ADR-01 要求扩展落地四件套里有「规范条目」，TC 的这一条不�
 | 同上 `:912-913` 对 `docs/TC_COMPRESSION_DESIGN.md:20` | 「立即数单位保持『槽』而非改为『tryte』」 | TRV2 流制：跳转目标是 tryte 偏移 |
 | `docs/TC_COMPRESSION_DESIGN.md:68-70` 对 ADR-03/04 | 「opcode 24 = TC 组 2（预留：C-JAL…留待 B1 拍板）」 | 已定：走 sf5、不开 opcode 24 |
 | `docs/COVERAGE_MATRIX.md:2` 对 `:10-12, 29` | 「快照（批次 1.11 补缺前）」 | 表里已有 `trirv_golden_e2e.py` 的命中；「→ 1.12 手算补缺」一节是空的 |
-| `docs/TASKS.md:206` 起、`:458-463`、`:466` 起 | 批次 1 的原始未勾清单、B4a–d、C1–C5 全是 `[ ]` | 对应事项均已决定或完成 |
-| `docs/TASKS.md:503` 对 `:508` | 归档表两行都叫「trirv_cc 内建」，提交号不同（`0ed086e` / `0fa2417`） | — |
+| `docs/TASKS.md` 批次 1 的原始清单、B4a–d、C1–C5 | 全是 `[ ]` | 对应事项均已决定或完成 |
+| `docs/TASKS.md` 归档表 | 两行都叫「trirv_cc 内建」，提交号不同（`0ed086e` / `0fa2417`） | — |
 | `README.md` | `:4` 最后核对 11-19；`:111-112`「C 的 `& \| ^`…编译器现在明确报错」；`:121-122`「无 FENCE.I、TC 压缩未实现、无 F/D/V」；`:137`「LLVM…已搁置」；`:163`、`:177`、`:181` 三个套数 | `:267-272`（位运算直发）；FENCE.I/TC/F 均已落地；ADR-18 批次 10；实际 62 套 |
 | `docs/DECISIONS.md:17`（ADR-01）、`:147`（ADR-15） | 「102 条」「58 套」；「当前 28.0% / 6.7%」 | 109 条、62 套；35.2% / 8.5% |
 
@@ -267,7 +269,7 @@ fn-ptr 缺口未关（§7.3），并在 `:33-34, :178, :231-232` 引用 `~/.zcod
 C 方言限制的诚实清单。
 
 **参照** 承诺类/快照类二分（数学库 `memory/doc-code-drift-scan.md:19-30`）；文档与源逐名逐
-计数对账（sov-math `doc_drift_check.py`）；「未做」列表不是可靠事实源（`lessons-agda-traps-2026-10.md:78-83`）。
+计数对账（sov-math `doc_drift_check.py`）；「未做」列表不是可靠事实源（`lessons-agda-traps-2026-10.md:79-83`）。
 
 **建议**
 1. 文档二分。承诺类（`README.md`、`ternary-isa-design.md`、`ternary-abi-minimal.md`、
@@ -295,7 +297,7 @@ C 方言限制的诚实清单。
 ### A8 [P2] 长期知识存在仓库之外
 
 `docs/TASKS.md:5-6`：「历史决策与坑实录以 ~/.zcode 记忆 + 各 PLAN 文档为准」；
-`:514`：「更早里程碑：见 ~/.zcode 记忆」。悬垂指针、oracle 口径、exit 约定、双点白名单
+归档节末：「更早里程碑：见 ~/.zcode 记忆」。悬垂指针、oracle 口径、exit 约定、双点白名单
 这些教训目前只存在于工具的私有目录。
 
 **参照** 数学库把 `memory/` 与 `PROJECT_MEMORY.md` 放在仓内；而它的门禁实现与台账放在仓外，
@@ -350,8 +352,8 @@ C 方言限制的诚实清单。
 - ADR-28② 要求「每条指令和扩展都要有不靠运行 VM 得出的期望值」。落地情况：专门套件
   `tests/trirv_golden_e2e.py` 是 26 项、覆盖 18 条指令【取证】；指令总数 109。
 - 黄金与实现出现分歧的记录共 7 次，全部以修正期望值收场：1.12「三次自摆乌龙……全部由
-  『实现与模型自洽性检查』定位后修正期望」（`docs/TASKS.md:154-156`）；1.10「黄金断言三次
-  自摆乌龙」（`:167`）；1.5「oracle 手算错 9→12 由双档一致定位」（`:183`）。记录里没有一次
+  『实现与模型自洽性检查』定位后修正期望」；1.10「黄金断言三次自摆乌龙」；1.5「oracle 手算错
+  9→12 由双档一致定位」（均见 `docs/TASKS.md` 批次 1 的完成记录）。记录里没有一次
   是黄金用例抓到实现缺陷。这不说明期望值改错了，但说明这套黄金至今没有展示过检出力。
 - A4 的 2–6 条是差分侧的同一问题：观测面三项、变异检出 7/30、通过阈值 ≥1、无下限。
 
@@ -438,7 +440,7 @@ qemu-riscv32 跑同一批程序对拍；位运算、移位、回绕域明确排�
 
 **事实**
 - B0 把 syscall 表定为「虚拟设备接口」（`docs/TASKS.md` B0 节），但它手维护在 4 处：
-  `vm/trirv_vm.c:690-700`、`vm/trirv_vm.py:22-61`、`cc/trirv_cc.c:1769-1771`、
+  `vm/trirv_vm.c:690-700`、`vm/trirv_vm.py:22-73`、`cc/trirv_cc.c:1769-1771`、
   `libc-musl/musl_tri/arch_tri/syscall_tri.h`，另有 3 份文档。记忆里两次踩到「白名单双点」
   就是这种结构的症状。
 - 容器的版本字段读入后从不比较（`vm/trirv_vm.c:1243-1244, 1275`）【亲核】。
@@ -476,7 +478,7 @@ SIGPROCMASK、SIGRETURN、GETCWD、READV、WRITEV 一律 `ret=0`；OPENAT 返回
 结构体、不移动文件位置，libc 层得到的是「成功」的假象。6.2 的验收只覆盖 pthread 桩清单。
 
 **参照** 「不可达分支……不许静默返回默认值——默认值会让错值伪装成正确」
-（数学库 `docs/principles.md:63-64` 及 `:78` 的判例）。
+（数学库 `docs/principles.md:66` 及 `:73` 的判例）。
 
 **建议** 桩分三级并登记在 C2 的表里：真实 / 桩（写明可观测行为）/ −ENOSYS。调用方依赖
 输出结构体的号（fstat、lseek、readv、writev、getcwd）默认改 −ENOSYS，批次 6 逐个转真实。
@@ -503,7 +505,7 @@ musl 对这些号的 ENOSYS 降级路径需要逐个核对【未验证】。PyVM
   4.2 对 5.5 ms；axpy 3.8 对 3.2 ms；码长 600 B → 562 B（6.3%）。原因是「packed 取指 hint
   对递归回跳二分回退」，并注明「ADR-17 准入为行为一致」。
 - ADR-17 的四条准入都是功能与等价项（`docs/DECISIONS.md:162-165`）。
-- 进度游标已到 3.4，3.10 是切默认。
+- 采集时进度游标到 3.5，3.10 是切默认。
 - 8.5% 的节省是弛豫落地之前对 28 个文件测的（`docs/TC_COMPRESSION_DESIGN.md:114-121`）；
   TRV2 的分支窗是 ±273 槽，弛豫的触发面更广，对码长与步数的影响还没有在全集上重测。
 
@@ -527,8 +529,8 @@ ADR-31 自己规定性能主张必须出自固定微基准。
   （`docs/trirv-firmware-architecture.md:48`）。
 - `tests/run_all_tests.py` 不引用它【亲核】；它的实测结论只有 bench 脚本为据。
 - ADR-24 写「在已有框架上推进……建 ISR 向量表」（`docs/DECISIONS.md:236-238`）；5.4 的验收是
-  「既有 RMS、PIP、看门狗实测结果不变」（`docs/TASKS.md:298`），5.6 才把固件契约套件入册
-  （`:300`）；5.3、5.5 的任务（trap 入口上下文保存、按 mcause 分发的向量表）在 guest 内。
+  「既有 RMS、PIP、看门狗实测结果不变」（`docs/TASKS.md` 5.4），5.6 才把固件契约套件入册；
+  5.3、5.5 的任务（trap 入口上下文保存、按 mcause 分发的向量表）在 guest 内。
 
 **含义** 「固件」至少有三种所指：宿主侧调度器（现状）、guest 内的 RTOS、UBIOS 规范下的
 平台固件。若要把 RMS/PIP 移进 guest，现有代码用到的位图、ctz、十六进制魔数都要按三值本征
@@ -610,8 +612,8 @@ ADR-01..33 同日提出、同日整批确认（`docs/DECISIONS.md:10`）。
 
 ### D6 [P3] 部分验收条目不可判定
 
-例：3.6「可执行用例抽样 ≥ 30」没有种子与抽样框（`docs/TASKS.md:271`）；3.8「全过」没有列
-busybox 的 applet 与输入集（`:273`）；6.8「结论记录」（`TASKS.md` 批次 6 节）。
+例：3.6「可执行用例抽样 ≥ 30」没有种子与抽样框；3.8「全过」没有列 busybox 的 applet 与
+输入集；6.8「结论记录」（均见 `docs/TASKS.md` 对应条目）。
 
 **参照** 「过」的判据必须是命令 + 期望输出（数学库 `docs/plans/m3c-atomic-plan.md:30`）。
 
@@ -623,11 +625,11 @@ busybox 的 applet 与输入集（`:273`）；6.8「结论记录」（`TASKS.md`
 
 `cc/trirv_cc_backend.py:105, 116-129`：默认模式 `c`，C 后端抛任何异常即回退 Python，
 只有设置了 `TRV_CC_STRICT` 才抛出；捕获的是 `except Exception`，内部错误与「不支持」一并回退；
-失败路径的 stdout 被丢弃，只在 stderr 保留每个原因的第一行。8 个测试文件设置了 STRICT，
-`run_all_tests.py` 默认设置（`:219-220`）；`tools/export_trv.py`、`bench/*.py` 的直接使用者
-拿到的是回退路径。同文件 `:102` 引用的 `CC_覆盖率.md` 不存在【亲核】。
+失败路径的 stdout 被丢弃，只在 stderr 保留每个原因的第一行。7 个测试文件（含运行器）设置了
+STRICT，运行器默认设置（`tests/run_all_tests.py:220`）；`tools/export_trv.py:16, 22` 的直接
+使用者拿到的是回退路径。同文件 `:102` 引用的 `CC_覆盖率.md` 不存在【亲核】。
 
-**参照** 不许静默返回默认值（数学库 `docs/principles.md:63-64`）；本项目 wasm 路线自己的规矩
+**参照** 不许静默返回默认值（数学库 `docs/principles.md:66`）；本项目 wasm 路线自己的规矩
 是「都是显式 `UNSUPPORTED`，绝不静默出错」（`docs/WASM_ROUTE_A.md:152`）。
 
 **建议** 回退改为显式开启（如 `TRV_CC_FALLBACK=1`），默认 STRICT。
@@ -737,5 +739,6 @@ python3 tests/trirv_tri_musl_e2e.py; echo $?           # A3：0 PASS / exit 0
 ls -la /tmp/trirv_vm_test                              # A3：11-18 的旧二进制
 grep -n "cregs\[rd&7\]" vm/trirv_vm.c                  # A5
 grep -n "CAUSE_ILLEGAL" vm/trirv_vm.c                  # A5：只有定义
-grep -l "统一补标——该文档未逐份定稿" docs/*.md | wc -l   # A4：11
+grep -l "统一补标——该文档未逐份定稿" docs/*.md | wc -l        # A4：12（11 份模板 + 本文的引文）
+grep -L "^状态：" docs/*.md README.md cc/CC_寄存器式编译器说明.md  # A4：无状态行的 3 份
 ```

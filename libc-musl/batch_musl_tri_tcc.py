@@ -16,15 +16,15 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)                      # 仓库根
 PP = os.path.join(HERE, "preprocess_musl.py")
-TCC = os.path.join(os.path.dirname(HERE), "tinycc", "trirv-tcc")
-CVM = os.path.join(HERE, "trirv_vm")
-OUTDIR = "/tmp/musl_tri_tcc"
+TCC = os.path.join(ROOT, "tinycc", "trirv-tcc")
+CVM = os.path.join(ROOT, "vm", "bin", "trirv_vm")
+# 产物目录：默认落仓库根 tmp/（.gitignore 已忽略）——/tmp 重启即清，不放项目产物。
+OUTDIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "tmp", "musl_tri_tcc")
 os.makedirs(OUTDIR, exist_ok=True)
 
-DIRS = ["/Users/zesheng/ai-lab/trirv/third_party/musl/src/string",
-        "/Users/zesheng/ai-lab/trirv/third_party/musl/src/ctype",
-        "/Users/zesheng/ai-lab/trirv/third_party/musl/src/stdlib"]
+DIRS = [os.path.join(ROOT, "third_party", "musl", "src", d) for d in ("string", "ctype", "stdlib")]
 
 # 三进制原生重写表（与 batch_musl_compile.py 同一份语义）
 TRI_REWRITE = {

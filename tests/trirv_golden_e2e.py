@@ -47,7 +47,7 @@ def run_py(prog, steps=2000):
 
 
 def run_cvm(prog):
-    path = "/tmp/golden_%d.trv" % abs(hash(tuple(prog)))
+    path = _bootstrap.scratch("golden_%d.trv" % abs(hash(tuple(prog))))
     with open(path, "wb") as f:
         f.write(b"TRV1")
         f.write(struct.pack("<III", 1, len(prog), 0))
