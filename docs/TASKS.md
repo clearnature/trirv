@@ -7,7 +7,9 @@
 ## 基线快照（2026-11-23 最新）
 
 - 回归：python3 tests/run_all_tests.py → PASS 55 / FAIL 0（连续 30+ 次全绿）
-- HEAD：trirv bb19bcc / tinycc 21410af4
+- HEAD：trirv bb19bcc+TC v2 / tinycc 21410af4
+- TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
+  C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
   __tint / __tint2 / __tbool / __builtin_tri_lit / LW4-SW4 / LIT0-2
 - ISA 总量：102 条（含 LW4/SW4 4-tryte 档 + LIT0/1/2 文字运算）
@@ -37,9 +39,12 @@
       系测试 syscall 号设错——ADDI x17,x11,93 设 a7=100 非 93=exit）
 - [x] T10d TC 压缩发射（5412ae9 基础设施 → 9d5074a 文本层 peephole 原型 →
       bb19bcc 编码期选取收官：asm_line 五类选取点取代文本层改写，OUT 文本
-      保持规范全宽；契约 42 项三票——语义等价/压缩确实发生/门控干净）
-- [ ] T10e 码长对比（musl_tri 热点函数 TC 占比测算——窗口对齐度评估：
-      代码生成热点寄存器是 t 系临时（TC 窗口外），窗口命中率待量化）
+      保持规范全宽；契约三票——语义等价/压缩确实发生/门控干净）
+- [x] T10e 码长对比 + TC v2 数据拍板（musl string+stdlib 28 文件 7844 槽：
+      v1 ABI 窗口命中 0.8% → v2 重映射窗口 {t0-t2,s0,s1,a0-a2} + ADDI2
+      双寄存器 + 帧窗 C-LWs/C-SWs → **28.0% TC 率 / TRV2 打包节省 7.0%**；
+      四类子格式全发射；15% 目标在 15-trit 预算下不可达——结构边界记账
+      于 TC_COMPRESSION_DESIGN.md §8，C-JAL 等扩展留 B1 拍板）
 - [ ] T11 AMP 先行（mailbox syscall + 共享页，多实例双 VM）
 - [ ] T7b py fn-ptr 声明符与间接调用（py 无 fn-ptr 解析基础）
 - [ ] T9b TRVO 多单元直链自旋 bug（取证：符号解析/布局全对，
@@ -59,8 +64,13 @@
 纯虚拟硬件+软件栈先行；硬件直通后置（行业默认不暴露底层硬件）。
 syscall 表 = 虚拟设备接口（virtio 半虚拟化同构）。
 
-### B1. TC 压缩扩展（进行中，见执行队列 T10）
+### B1. TC 压缩扩展（机器全链路就绪，增益扩展待拍板）
 
+TC v2 已收官（T10d/T10e）：五类子格式 + 窗口 {t0-t2,s0,s1,a0-a2}，
+musl 语料 28.0% TC 率 / TRV2 打包节省 7.0%（实测）。
+待拍板扩展：3-trit 子格式重编（9 槽，imm 降至 6 trit）→ 可开 C-JAL
+（+7.5% 槽覆盖）与更多访存变体，但与 sf0 双寄存器布局互斥（payload
+预算），需在「调用密集 vs 指针运算」两类负载间取舍。
 参照：RISC-V RVC / Thumb-2 / MIPS16e；Termite / REBEL-6 / alopx.li wiki
 
 ### B2. 二进制兼容白名单——直通期后置

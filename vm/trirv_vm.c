@@ -255,11 +255,19 @@ static Inst decode_one(uint32_t raw) {
         if (e->fmt=='R' && e->funct2!=f2) continue;
         d=e; break;
     }
-    if (opc == 23) {  /* TC 压缩（T10c）：子格式在 rd 低 2 trit，reg_s 在 rd 高 2+funct，imm7 跨 funct/rs1/rs2 */
+    if (opc == 23) {  /* TC 压缩（T10c 立基，T10e v2 语义）：
+                         sf0 双寄存器（t5-7=rd_s, t8-10=rs1_s, t11-14=imm4），
+                         其余子格式（t5-7=r_s, t8-14=imm7）。 */
         in.op = OP_TC;
         in.funct2 = (uint8_t)field(raw, 3, 4);  /* 子格式 */
-        in.rd = field(raw, 5, 7);               /* reg_s */
-        in.imm_s = sx(field(raw, 8, 14), 7);   /* imm7 */
+        in.rd = field(raw, 5, 7);               /* rd_s / r_s */
+        if (in.funct2 == 0) {                   /* C-ADDI v2：rs1_s 进 rs1 槽，imm4 进 imm */
+            in.rs1 = (uint8_t)field(raw, 8, 10);     /* rs1_s（窗口索引） */
+            in.imm_s = sx(field(raw, 11, 14), 4);    /* imm4 ±40 */
+        } else {
+            in.rs1 = 0;
+            in.imm_s = sx(field(raw, 8, 14), 7);     /* off7 / delta7 */
+        }
         in.imm_u = in.imm_s;
         return in;
     }
@@ -874,12 +882,13 @@ static inline void step(VM *v){
         case OP_LIT0:v->reg[rd]=tritwise(2,v->reg[rs1],0);break;  /* x^0 ≡ TNOT 词级 */
         case OP_LIT1:v->reg[rd]=tritwise(4,v->reg[rs1],0);break;  /* x^1 循环后继 */
         case OP_LIT2:v->reg[rd]=tritwise(5,v->reg[rs1],0);break;  /* x^2 循环前驱 */
-        case OP_TC:{  /* T10c：TC 压缩执行（子格式在 funct2，reg_s 在 rd） */
-            static const int cregs[8]={10,11,12,13,8,9,14,15};
+        case OP_TC:{  /* TC v2（T10e 数据拍板）：窗口 t0-t2/s0/s1/a0-a2，
+                         sf0 双寄存器 ADDI（rs1_s 在 funct），sf1/2 帧相对（基址 s0） */
+            static const int cregs[8]={5,6,7,8,9,10,11,12};
             int r=cregs[rd&7], sf=in->funct2;
-            if(sf==0) v->reg[r]=u(s(v->reg[r])+imm);
-            else if(sf==1) v->reg[r]=load_word(v,s(v->reg[r])+imm);
-            else if(sf==2) store_word(v,s(v->reg[r])+imm,v->reg[r]);
+            if(sf==0){int r2=cregs[in->rs1&7]; v->reg[r]=u(s(v->reg[r2])+imm);}
+            else if(sf==1) v->reg[r]=load_word(v,s(v->reg[8])+imm);
+            else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
             else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+4*imm;}
             else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+4*imm;}
             break;}
@@ -1070,12 +1079,12 @@ L_TUNPACK:{__int128_t byte=v->reg[rs1]%256,res=0;for(int i=0;i<5;i++){byte*=3;in
 L_LIT0:  v->reg[rd]=tritwise(2,v->reg[rs1],0); NEXT();   /* x^0 ≡ TNOT 词级 */
 L_LIT1:  v->reg[rd]=tritwise(4,v->reg[rs1],0); NEXT();   /* x^1 循环后继 */
 L_LIT2:  v->reg[rd]=tritwise(5,v->reg[rs1],0); NEXT();   /* x^2 循环前驱 */
-L_TC:    {  /* T10c：TC 压缩执行（computed-goto 路径） */
-             static const int cregs[8]={10,11,12,13,8,9,14,15};
+L_TC:    {  /* TC v2：与 switch 路径同语义（窗口/帧相对口径见 switch 注释） */
+             static const int cregs[8]={5,6,7,8,9,10,11,12};
              int r=cregs[in->rd&7], sf=in->funct2;
-             if(sf==0) v->reg[r]=u(s(v->reg[r])+imm);
-             else if(sf==1) v->reg[r]=load_word(v,s(v->reg[r])+imm);
-             else if(sf==2) store_word(v,s(v->reg[r])+imm,v->reg[r]);
+             if(sf==0){int r2=cregs[in->rs1&7]; v->reg[r]=u(s(v->reg[r2])+imm);}
+             else if(sf==1) v->reg[r]=load_word(v,s(v->reg[8])+imm);
+             else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
              else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+4*imm;}
              else if(sf==4){if(s(v->reg[r])!=0)v->pc_=oldpc+4*imm;}
          } NEXT();

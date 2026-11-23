@@ -201,19 +201,23 @@ class VM:
         self.trap_log.append((s(u(cause)), from_pc, self.pc))
 
     def _exec_c(self, cd, old_pc):
-        """TC 压缩格式执行（T10c-1）：slot 内嵌 C 语义。
+        """TC 压缩格式执行（T10c-1 立基，T10e 数据拍板 v2 语义）。
         C 指令占满 4-tryte slot，但只用低 15 trit 编码。寄存器窗口 =
-        静态子集映射表 _C_REGS。分支跳转基于 old_pc（与全宽口径一致）。"""
+        isa.C_REGS（v2：t0-t2/s0/s1/a0-a2——代码生成热点寄存器对齐）。
+        分支跳转基于 old_pc（与全宽口径一致）。"""
         sf = cd["subformat"]; rs = cd["reg_s"]; imm = cd["imm7"]
-        _C_REGS = (10, 11, 12, 13, 8, 9, 14, 15)  # t0-t3, s0-s1, a0-a1
+        _C_REGS = isa.C_REGS                     # v2 窗口 t0 t1 t2 s0 s1 a0 a1 a2
         rd = _C_REGS[rs % 8] if rs < 8 else 0
-        if sf == 0:      # C-ADDI rd, imm7
-            self.regs[rd] = u(s(self.regs[rd]) + isa.sign_extend_imm(imm))
-        elif sf == 1:    # C-LW rd, imm7(base=rd 自身)
-            addr = s(self.regs[rd]) + isa.sign_extend_imm(imm)
+        if sf == 0:      # C-ADDI rd_s, rs1_s, imm4（t8-t10=rs1_s, t11-t14=imm4）
+            r1 = _C_REGS[(imm % 27) % 8] if (imm % 27) < 8 else 0
+            imm4 = (imm // 27) % 81
+            if imm4 > 40: imm4 -= 81             # 4-trit 3 补码 ±40
+            self.regs[rd] = u(s(self.regs[r1]) + imm4)
+        elif sf == 1:    # C-LWs r_s, off7（基址隐含 s0=帧指针，帧相对装载）
+            addr = s(self.regs[8]) + isa.sign_extend_imm(imm)
             self.regs[rd] = self._load_word(addr)
-        elif sf == 2:    # C-SW src, imm7(base=rd 自身)
-            addr = s(self.regs[rd]) + isa.sign_extend_imm(imm)
+        elif sf == 2:    # C-SWs r_s, off7（基址隐含 s0，帧相对存储）
+            addr = s(self.regs[8]) + isa.sign_extend_imm(imm)
             self._store_word(addr, self.regs[rd])
         elif sf == 3:    # C-BEQ rs, imm7 → BEQ rs, zero, imm7（old_pc 相对）
             if s(self.regs[rd]) == 0:

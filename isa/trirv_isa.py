@@ -286,7 +286,18 @@ def decode(inst):
 # ---------------------------------------------------------------------------
 
 TC_OPCODE = 23
-C_SUBFORMATS = {"C-ADDI": 0, "C-LW": 1, "C-SW": 2, "C-BEQ": 3, "C-BNE": 4}
+# TC v2 子格式（2026-11-23 T10e 数据拍板，覆盖 musl 语料 30.4% 槽）：
+#   sf0 C-ADDI rd_s, rs1_s, imm4 —— 双寄存器窗内 ADDI（rd==rs1 即自增形态），±40
+#   sf1 C-LWs  r_s, off7 —— 帧相对装载（基址隐含 s0），±1093
+#   sf2 C-SWs  r_s, off7 —— 帧相对存储（基址隐含 s0）
+#   sf3 C-BEQ  r_s, delta7 —— vs zero 分支，步距槽位 ×4 tryte，±1093
+#   sf4 C-BNE  r_s, delta7
+C_SUBFORMATS = {"C-ADDI": 0, "C-LWs": 1, "C-SWs": 2, "C-BEQ": 3, "C-BNE": 4}
+# TC 寄存器窗口（canonical 映射，双 VM 与编译器一致遵照本表）。
+# T10e 实测：本代码生成的热点寄存器是 t 系临时（5,6,7）+ s0 帧指针（8）+
+# s1 持久局部（9）+ a 系（10-12）；原 ABI 窗口 {a0-a3,s0,s1,x14,x15} 对 musl
+# 语料命中率仅 0.8%，重映射后分支/ADDI 类命中 9.3%。
+C_REGS = (5, 6, 7, 8, 9, 10, 11, 12)   # t0 t1 t2 s0 s1 a0 a1 a2
 
 def is_c_format(first_tryte):
     """首 tryte 判宽：%27 == 23 → C 格式（3 tryte）；否则全宽（4 tryte）。"""
@@ -295,6 +306,7 @@ def is_c_format(first_tryte):
 def encode_c(subformat, reg_s, imm7):
     """编码 15-trit C 格式 → 3 tryte（每 tryte 5 trit，值 0..242）。
     trit 布局：t0-t2=opcode 23(固定), t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7
+    （imm7 的有效宽度随子格式：帧窗/分支用全 7 trit）
     """
     trits = [0] * 15
     trits[0] = 2; trits[1] = 1; trits[2] = 2       # opcode 23
@@ -310,6 +322,11 @@ def encode_c(subformat, reg_s, imm7):
     # 打包为 3 tryte（每 tryte 5 trit，权重 3^0..3^4）
     return [sum(trits[i*5+j] * (3**j) for j in range(5) if i*5+j < 15)
             for i in range(3)]
+
+def encode_c_addi(rd_s, rs1_s, imm4):
+    """C-ADDI v2（sf0）专用：双窗口寄存器 + 4-trit 立即数。
+    t5-t7=rd_s, t8-t10=rs1_s, t11-t14=imm4（3 补码 ±40）。"""
+    return encode_c(0, rd_s, (rs1_s % 27) + (imm4 % 81) * 27)
 
 def decode_c(trytes):
     """解码 3 tryte（每 tryte 5 trit）→ C 格式字典。"""
