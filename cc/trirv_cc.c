@@ -597,15 +597,17 @@ static Node* parse_postfix(void){
     Node*n=parse_primary();
     for(;;){
         if(accept("[")){ Node*i=parse_expr(); expect("]"); Node*x=nnew(N_INDEX); x->l=n; x->r=i; n=x; }
-        else if(at("(")&&(n->k==N_DEREF||(n->k==N_CAST&&n->s&&strchr(n->s,'*')))){
-            /* 间接调用两种形态：
+        else if(at("(")&&(n->k==N_DEREF||n->k==N_VAR
+                          ||(n->k==N_CAST&&n->s&&strchr(n->s,'*')))){
+            /* 间接调用三形态（批次 2.6 加裸变量形态）：
              *   (*fp)(...)          —— 解引用调用
+             *   (fp)(...)           —— 裸括号（括号表达式产出 N_VAR）
              *   ((cmpfun)cmp)(...)  —— 函数指针类型 cast 后调用（qsort_nr）
              * 目标挂 n->e，s 标记 "(*target)"。 */
             take();                               /* ( */
             Node*call=nnew(N_CALL);
             call->s=strdup("(*target)");
-            call->e=n->e;
+            call->e=(n->k==N_DEREF)?n->e:n;       /* N_VAR 目标=自身（n->e 为空） */
             int cap=0;
             if(!at(")")){
                 do { call->args=grow(call->args,&cap,call->nargs,sizeof(Node*));
@@ -743,9 +745,13 @@ static Node* parse_decl(void){
                 do{ if(at("("))dp++; else if(at(")"))dp--;
                     else if(atk(TK_EOF)) break; take(); }while(dp>0);
             }
+            /* 批次 2.7：声明带初始化 int (*fp)(int) = inc; —— 原先在此
+               直接 expect(";")，= 初始化式无法解析（回退 py 实证）。 */
+            Node*finit=NULL;
+            if(accept("=")) finit=parse_initval();
             if(!DECL_KEEP_SEMI) expect(";");
             n->dnames[n->ndecls]=fname; n->dtypes[n->ndecls]=strdup("int*");
-            n->dinit [n->ndecls]=NULL; n->ndecls++;
+            n->dinit [n->ndecls]=finit; n->ndecls++;
             return n;
         }
         char*name=take()->s;

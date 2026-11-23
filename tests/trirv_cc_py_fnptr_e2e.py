@@ -51,8 +51,6 @@ def run_c(src):
     return cpu.exit_code
 
 
-# （记账：C 后端间接调用只认 (*fp)(x) 形态，裸 (fp)(x) 括号形态回退
-#   py 已实证——py-only 用例区不进同构契约。）
 CASES = [
     ("声明+赋值+(*fp) 调用",
      "int inc(int x){ return x+1; } "
@@ -67,6 +65,9 @@ CASES = [
      "fp=b; s=s+(*fp)(10); return s; }", 11 + 20),
     # （记账：声明带初始化 `int (*fp)(int) = f;` C 后端 declarator 尚不支持
     #   ——回退路径已实证；契约用声明后赋值形态锁双后端同构。）
+    ("声明带初始化（2.7 关账）",
+     "int inc(int x){ return x+1; } "
+     "int main(){ int (*fp)(int) = inc; return (*fp)(9); }", 10),
     ("赋值后切换+多参传递",
      "int add(int a,int b){ return a+b; } int mul(int a,int b){ return a*b; } "
      "int main(){ int (*fp)(int,int); fp=add; int s=(*fp)(3,4); "
@@ -77,19 +78,10 @@ CASES = [
 ]
 
 
-PY_ONLY = [
-    ("(fp)(x) 括号形态（C 后端暂不支持）",
-     "int inc(int x){ return x+1; } "
-     "int main(){ int (*fp)(int); fp = inc; return (fp)(41); }", 42),
-]
-
-
 def main():
     for name, src, want in CASES:
         check(name + "·py", run_py(src), want)
         check(name + "·C 同构", run_c(src), want)
-    for name, src, want in PY_ONLY:
-        check(name + "·py-only", run_py(src), want)
     print("\npy fn-ptr 契约：%d PASS / %d FAIL" % (passed, failed))
     sys.exit(1 if failed else 0)
 
