@@ -325,7 +325,10 @@ LLVM 放最后并设 GO/NO-GO。每个批次仍按 TDD → 全量回归 → 提�
 ### ADR-36 仓库远端 ✅
 - tinycc trirv 分支：已推送 github.com/clearnature/tinycc（3fdd47a8..c77e0661，
   21 提交含三值本征全量）；本地代理 127.0.0.1:10808 已写入两仓 git config。
-- trirv 主仓：**待用户提供远端 URL**（现无 remote；评审建议私有仓）。
+- trirv 主仓：✅ 已推送 github.com/clearnature/trirv（2026-11-24，190 提交
+  rebase 到远端 LICENSE 初始提交之上；pre-commit 钩子与 ci.yml 随仓生效；
+  本地代理 127.0.0.1:10808 已持久化）。注意：另存在 trirv-（带连字符）
+  仓库属其他会话，勿混用。
 - .gitmodules 已登记 tinycc 子模块（此前为无 .gitmodules 的 gitlink）。
 
 ### ADR-17 修订：性能准入 ✅（批准 2）
