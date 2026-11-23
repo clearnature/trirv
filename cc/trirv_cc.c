@@ -3235,7 +3235,10 @@ static uint32_t asm_line(const char*line,int idx){
     if(d->fmt==3){ /* U/J */
         int rd=find_reg(ops[0]);
         if(!strcmp(op,"JAL")){
-            int lt=find_label(ops[1]); int imm=(lt>=0)?(lt-idx):atoi(ops[1]);
+            int lt=find_label(ops[1]);
+            if(getenv("TRV_LABEL_DEBUG") && !strcmp(ops[1],"ecvt"))
+              fprintf(stderr,"[ecvt-call] idx=%d lt=%d\n",idx,lt);
+            int imm=(lt>=0)?(lt-idx):atoi(ops[1]);
             if(lt<0 && getenv("TRV_ASM_DEBUG"))
               fprintf(stderr,"[asm-debug] idx=%d JAL %s 未命中（imm 落 atoi=%d）；LABS=%d 项\n",idx,ops[1],imm,NLAB);
             return encU(O_JAL,imm,rd);
@@ -3576,6 +3579,11 @@ static uint32_t* assemble_all(int*pn){
         }
     }
     *pn=idx;
+    if(getenv("TRV_LABEL_DEBUG")){
+        FILE*lf=fopen("/tmp/labs.dump","w");
+        for(int i=0;i<NLAB;i++) fprintf(lf,"%s %d\n",LABS[i].name,LABS[i].idx);
+        fclose(lf);
+    }
     uint32_t*prog=calloc(idx?idx:1,sizeof(uint32_t));
     idx=0;
     for(int i=0;i<NOUT;i++){

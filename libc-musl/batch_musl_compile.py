@@ -31,8 +31,8 @@ TRI_REWRITE = {
     "strtod.c": f"{_SCRIPT}/musl_tri/strtod_tri.c",
     "atof.c": f"{_SCRIPT}/musl_tri/strtod_tri.c",
     "ecvt.c": f"{_SCRIPT}/musl_tri/ecvt_tri.c",
-    "fcvt.c": f"{_SCRIPT}/musl_tri/ecvt_tri.c",
-    "gcvt.c": f"{_SCRIPT}/musl_tri/ecvt_tri.c",
+    "fcvt.c": f"{_SCRIPT}/musl_tri/ecvt_mono_tri.c",
+    "gcvt.c": f"{_SCRIPT}/musl_tri/ecvt_mono_tri.c",
 }
 
 ok, fail, skip = [], [], []

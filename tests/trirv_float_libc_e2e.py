@@ -487,7 +487,9 @@ def suite_ecvt_fcvt_gcvt():
             sp = os.path.join(tempfile.mkdtemp(prefix="ec_e2e_"), fn_name + "_main.c")
             with open(sp, 'w') as f:
                 f.write(srcg)
-            py_out, c_out, exitc, err = run_guest(sp, [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libc-musl", "musl_tri", "ecvt_tri.c")])
+            MT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libc-musl", "musl_tri")
+            py_out, c_out, exitc, err = run_guest(sp, [os.path.join(MT, f) for f in
+                ("ec_core_tri.c", "ecvt_tri.c", "fcvt_tri.c", "gcvt_tri.c")])
             if err:
                 check("%s#%d 编译/运行" % (fn_name, k), err, None)
                 continue
