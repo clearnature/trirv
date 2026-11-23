@@ -293,11 +293,8 @@ def is_c_format(first_tryte):
     return (first_tryte % 27) == TC_OPCODE
 
 def encode_c(subformat, reg_s, imm7):
-    """编码 15-trit C 格式指令 → 3 tryte 列表（每元素 0..242）。
-    subformat: 0=C-ADDI, 1=C-LW, 2=C-SW, 3=C-BEQ, 4=C-BNE
-    reg_s: 0-7 静态寄存器子集索引
-    imm7: 7-trit 立即数
-    trit 布局：t0-t2=23(固定), t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7
+    """编码 15-trit C 格式 → 3 tryte（每 tryte 5 trit，值 0..242）。
+    trit 布局：t0-t2=opcode 23(固定), t3-t4=subformat, t5-t7=reg_s, t8-t14=imm7
     """
     trits = [0] * 15
     trits[0] = 2; trits[1] = 1; trits[2] = 2       # opcode 23
@@ -310,15 +307,15 @@ def encode_c(subformat, reg_s, imm7):
     for i in range(7):
         trits[8 + i] = im % 3
         im //= 3
-    # 打包为 5 tryte（每 tryte 3 trit × 5 = 15 trit）
-    return [sum(trits[i*3+j] * (3**j) for j in range(3) if i*3+j < 15)
-            for i in range(5)]
+    # 打包为 3 tryte（每 tryte 5 trit，权重 3^0..3^4）
+    return [sum(trits[i*5+j] * (3**j) for j in range(5) if i*5+j < 15)
+            for i in range(3)]
 
 def decode_c(trytes):
-    """解码 3 tryte → C 格式字典。"""
+    """解码 3 tryte（每 tryte 5 trit）→ C 格式字典。"""
     trits = []
     for t in trytes:
-        for _ in range(3):
+        for _ in range(5):
             trits.append(t % 3)
             t //= 3
     opcode = trits[0] + trits[1]*3 + trits[2]*9

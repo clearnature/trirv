@@ -200,6 +200,28 @@ class VM:
             self.halted = True                  # 未设置有效 trap 向量 -> 停机
         self.trap_log.append((s(u(cause)), from_pc, self.pc))
 
+    def _exec_c(self, cd, old_pc):
+        """TC 压缩格式执行（T10c-1）：slot 内嵌 C 语义。
+        C 指令占满 4-tryte slot，但只用低 15 trit 编码。寄存器窗口 =
+        静态子集映射表 _C_REGS。分支跳转基于 old_pc（与全宽口径一致）。"""
+        sf = cd["subformat"]; rs = cd["reg_s"]; imm = cd["imm7"]
+        _C_REGS = (10, 11, 12, 13, 8, 9, 14, 15)  # t0-t3, s0-s1, a0-a1
+        rd = _C_REGS[rs % 8] if rs < 8 else 0
+        if sf == 0:      # C-ADDI rd, imm7
+            self.regs[rd] = u(s(self.regs[rd]) + isa.sign_extend_imm(imm))
+        elif sf == 1:    # C-LW rd, imm7(base=rd 自身)
+            addr = s(self.regs[rd]) + isa.sign_extend_imm(imm)
+            self.regs[rd] = self._load_word(addr)
+        elif sf == 2:    # C-SW src, imm7(base=rd 自身)
+            addr = s(self.regs[rd]) + isa.sign_extend_imm(imm)
+            self._store_word(addr, self.regs[rd])
+        elif sf == 3:    # C-BEQ rs, imm7 → BEQ rs, zero, imm7（old_pc 相对）
+            if s(self.regs[rd]) == 0:
+                self.pc = old_pc + 4 * isa.sign_extend_imm(imm)
+        elif sf == 4:    # C-BNE rs, imm7
+            if s(self.regs[rd]) != 0:
+                self.pc = old_pc + 4 * isa.sign_extend_imm(imm)
+
     def _mret(self):
         """从 M 态 trap 返回：pc<-mepc, priv<-MPP, MIE<-MPIE, MPIE<-1, MPP<-U。"""
         mstatus = self.csr[isa.CSR["mstatus"]]
@@ -380,12 +402,19 @@ class VM:
             self.halted = True
             return
         inst = self.imem[self.pc // 4]
+        old_pc = self.pc
+        self.pc += 4                            # PC 前进（TC/全宽统一——TC 分支内跳转用 old_pc）
+        # ---- TC 压缩格式识别（T10c-1）：opcode 23 保留 → slot 内嵌 C 语义 ----
+        if (inst % 27) == isa.TC_OPCODE:
+            ctry = [(inst // (243 ** i)) % 243 for i in range(3)]
+            cd = isa.decode_c(ctry)
+            self._exec_c(cd, old_pc)
+            self.steps += 1
+            return
         d = isa.decode(inst)
         name = d["inst"]
         rd, rs1, rs2 = d["rd"], d["rs1"], d["rs2"]
         imm = d.get("imm", 0)
-        old_pc = self.pc
-        self.pc += 4                            # 下一条指令 = 下一个 tryte 字（4 tryte）
 
         if name is None:
             self._take_trap(isa.CAUSE_ILLEGAL, inst, old_pc)
