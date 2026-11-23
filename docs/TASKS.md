@@ -25,7 +25,7 @@
 - [x] **T5** A1.6 `(type)` 强转（ptr↔int 同宽无操作；窄化目标 in-register
       mod-3^k+符号扩展；tint 系强转门控同 tri-tcc 口径）
 - [x] **T6** A1.1 `switch/case/default/break`
-- [ ] **T7** A1.2 `typedef`（基础别名先落；fn-ptr 别名视 py 声明符
+- [x] **T7** A1.2 `typedef`（基础别名先落；fn-ptr 别名视 py 声明符
       基础而定，缺则记账）
 - [ ] **T8** A3 文档陈旧修正（README 完善度节 + 指令计数 102）
 - [ ] **T9** A2 ecvt_tri 符号改名/拆共享核心（去测试侧符号感知去重）
