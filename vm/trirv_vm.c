@@ -187,7 +187,9 @@ typedef enum {
     OP_FEQ, OP_FLT, OP_FLE,
     OP_NOP,
     OP_LIT0, OP_LIT1, OP_LIT2,     /* T-LIT（opcode 22）：Post 文字运算，§6.1 */
-    OP_TC                          /* TC 压缩（opcode 23）：15-trit 短格式执行 */
+    OP_TC,                         /* TC 压缩（opcode 23）：15-trit 短格式执行 */
+    /* CSR 高区（ADR-06）：地址=imm7+2187，执行时归一化为低区枚举 */
+    OP_CSRRW_H, OP_CSRRS_H, OP_CSRRC_H, OP_CSRRWI_H, OP_CSRRSI_H, OP_CSRRCI_H
 } Op;
 
 typedef struct { uint8_t op, funct, funct2; char fmt; Op code; } InstDef;
@@ -210,6 +212,9 @@ static const InstDef IDEFS[] = {
     {5,0,0,'J',OP_JAL},{6,0,0,'I',OP_JALR},{7,0,0,'U',OP_LUI},
     {8,0,0,'U',OP_AUIPC},{9,0,0,'I',OP_ECALL},{9,1,0,'I',OP_EBREAK},
     {10,0,0,'I',OP_FENCE},{10,1,0,'I',OP_FENCE},   /* FENCE.I（ADR-05）：空操作 */
+    /* CSR 高区（ADR-06） */
+    {9,2,0,'I',OP_CSRRW_H},{9,3,0,'I',OP_CSRRS_H},{9,4,0,'I',OP_CSRRC_H},
+    {9,5,0,'I',OP_CSRRWI_H},{9,6,0,'I',OP_CSRRSI_H},{9,7,0,'I',OP_CSRRCI_H},
     {11,0,0,'R',OP_TMIN},{11,0,1,'R',OP_TMAX},{11,0,2,'R',OP_TNOT},
     {11,1,0,'R',OP_TAND},{11,1,1,'R',OP_TOR},{11,1,2,'R',OP_TNEG},
     {11,2,0,'R',OP_TSEXT},
@@ -410,6 +415,10 @@ static void mret(VM *v){
     else if(tgt>=0&&tgt%4==0&&tgt/4<v->nprog)v->pc_=(int)tgt; else v->halted=1;  /* tryte 地址 */
 }
 static inline void csr_op(VM *v,Op op,int rd,int rs1,__uint128_t csr_addr){
+    if(op>=OP_CSRRW_H&&op<=OP_CSRRCI_H){          /* 高区归一化（ADR-06） */
+        static const Op hmap[6]={OP_CSRRW,OP_CSRRS,OP_CSRRC,OP_CSRRWI,OP_CSRRSI,OP_CSRRCI};
+        csr_addr+=2187; op=hmap[op-OP_CSRRW_H];
+    }
     /* csr_addr 来自 7-trit 字段(0..2186)，可能超出 csr[NCSR=900] 范围：
      * 越界按未实现 CSR 处理——读 0、写忽略，与 Python VM 的 dict.get 行为一致，
      * 杜绝数组越界读/写。 */
@@ -993,6 +1002,8 @@ static inline void step(VM *v){
         case OP_EBREAK:take_trap(v,CAUSE_BREAKPOINT,0,oldpc);break;
         case OP_CSRRW:case OP_CSRRS:case OP_CSRRC:
         case OP_CSRRWI:case OP_CSRRSI:case OP_CSRRCI:
+        case OP_CSRRW_H:case OP_CSRRS_H:case OP_CSRRC_H:
+        case OP_CSRRWI_H:case OP_CSRRSI_H:case OP_CSRRCI_H:
             csr_op(v,in->op,rd,rs1,immraw);                     /* immraw = CSR 地址 */
             break;
         case OP_MRET:mret(v);break;
@@ -1054,6 +1065,8 @@ static void vm_run_cg(VM *v, long max_steps){
         [OP_LIT0]=&&L_LIT0,[OP_LIT1]=&&L_LIT1,[OP_LIT2]=&&L_LIT2,
         [OP_TC]=&&L_TC,
         [OP_CSRRW]=&&L_CSRRW,[OP_CSRRS]=&&L_CSRRS,[OP_CSRRC]=&&L_CSRRC,
+        [OP_CSRRW_H]=&&L_CSRRW,[OP_CSRRS_H]=&&L_CSRRS,[OP_CSRRC_H]=&&L_CSRRC,
+        [OP_CSRRWI_H]=&&L_CSRRWI,[OP_CSRRSI_H]=&&L_CSRRSI,[OP_CSRRCI_H]=&&L_CSRRCI,
         [OP_CSRRWI]=&&L_CSRRWI,[OP_CSRRSI]=&&L_CSRRSI,[OP_CSRRCI]=&&L_CSRRCI,
         [OP_MRET]=&&L_MRET,[OP_WFI]=&&L_WFI,
         [OP_LRW]=&&L_LRW,[OP_SCw]=&&L_SCw,[OP_AMOADD]=&&L_AMOADD,

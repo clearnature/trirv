@@ -70,7 +70,20 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 1 / 任务 1.9**
+**进度游标：批次 1 / 任务 1.11**
+
+- [x] 1.9 CSR 高区登记：INST 六条 .H（opcode9 funct2–7）+ tri-isa.h 重生成
+      （109 条，守卫一致）+ trirv_asm 自动选区（<2187 低区 op16 / 2187–4373
+      高区 op9 imm=addr−2187 / ≥4374 报错；地址按 13-trit 解析——7-trit
+      位模式上限 2186 会拦住高区地址）+ trirv_cc ITAB 12 条 + asm_line
+      CSR 特判（strcmp 表驱动，语法 CSRRW rd,rs1,csr / CSRRWI rd,uimm,csr）
+- [x] 1.10 高区双 VM：PyVM 高区六名 + imm+2187 偏移；CVM 六枚举 + IDEFS +
+      csr_op 归一化（hmap 表）+ switch/goto 两路；未实现高区读 0 写忽略
+      双 VM 一致（黄金 PyVM=0/CVM=0）；低区 CSRRS 置位往返双 VM=7。
+      黄金断言三次自摆乌龙（imm=地址本身、exit 取 a0 口径、CSRRWI 第二
+      操作数是 uimm）——期望值必须从编码规格推导而非凭印象
+      工程教训：多锚点批量替换三连败后 checkout HEAD 重做，比缝补快一个
+      数量级；锚文本必须先抓真实字节再构造
 
 - [x] 1.7 FENCE.I 登记：INST(10,1,0,I) + trirv_asm 无操作数清单 + trirv_cc ITAB/
       asm_line 特判 + tri-isa.h 重生成（102→103，守卫逐字一致）

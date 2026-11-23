@@ -813,6 +813,10 @@ class VM:
             self._take_trap(3, 0, old_pc)      # 断点异常
         elif name in ("CSRRW", "CSRRS", "CSRRC", "CSRRWI", "CSRRSI", "CSRRCI"):
             self._csr_op(name, rd, rs1, imm)   # imm = CSR 地址
+        elif name.endswith(".H") and name[:-2] in ("CSRRW", "CSRRS", "CSRRC",
+                                                   "CSRRWI", "CSRRSI", "CSRRCI"):
+            # CSR 高区（ADR-06）：地址 = imm7 + 2187；未实现 CSR 读 0 写忽略（dict.get 语义）
+            self._csr_op(name[:-2], rd, rs1, imm + 2187)
         elif name == "MRET":
             self._mret()
         elif name == "WFI":

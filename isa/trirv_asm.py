@@ -128,6 +128,18 @@ def assemble(src):
             if t not in REG: raise ValueError(f"未知寄存器: {t}")
             return REG[t]
 
+        H_MAP = {"CSRRW":"CSRRW.H","CSRRS":"CSRRS.H","CSRRC":"CSRRC.H",
+                 "CSRRWI":"CSRRWI.H","CSRRSI":"CSRRSI.H","CSRRCI":"CSRRCI.H"}
+        # CSR 地址自动选区（ADR-06）：<2187 低区 opcode16；2187–4373 高区 opcode9
+        # （imm=地址-2187）；≥4374 报错。imm 操作数可能是 ops[-1]（CSR 号在末位）。
+        if mn in H_MAP:
+            csr = parse_int(ops[-1], 13)   # CSR 地址跨两区（上限 4373 > 7-trit 位模式），按 13-trit 解析
+            if csr >= 4374:
+                raise ValueError(f"{idx}: CSR 地址 {csr} 超出高区上限 4373（ADR-06）")
+            if csr >= 2187 and not mn.endswith(".H"):
+                mn = H_MAP[mn]
+                ops[-1] = str(csr - 2187)
+
         if fmt == "R":
             if mn in ("TNEG","TNOT","TPACK","TUNPACK","FSQRT","FSQRT.S",
                       "FCVT.W","FCVT.F","FCVT.W.T"):
@@ -139,11 +151,11 @@ def assemble(src):
         elif fmt == "I":
             if mn in ("ECALL","EBREAK","FENCE","FENCE.I","MRET","WFI"):
                 v = isa.encode(mn)
-            elif mn in ("CSRRWI","CSRRSI","CSRRCI"):
+            elif mn in ("CSRRWI","CSRRSI","CSRRCI","CSRRWI.H","CSRRSI.H","CSRRCI.H"):
                 # CSRRWI rd, uimm, csr  ->  uimm 放 rs1 字段, csr 放 imm 字段
                 rd = reg(ops[0]); uimm = parse_int(ops[1]); csr = parse_int(ops[2])
                 v = isa.encode(mn, rd=rd, rs1=uimm, imm=csr)
-            elif mn in ("CSRRW","CSRRS","CSRRC"):
+            elif mn in ("CSRRW","CSRRS","CSRRC","CSRRW.H","CSRRS.H","CSRRC.H"):
                 rd = reg(ops[0]); rs1v = reg(ops[1]); csr = parse_int(ops[2])
                 v = isa.encode(mn, rd=rd, rs1=rs1v, imm=csr)
             elif mn in ("LW","LH","LB","LBU","LHU","LW4","JALR","FLW","FLW.S"):

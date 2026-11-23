@@ -145,7 +145,9 @@ INST = {
     "CSRRW":(16,0,0,"I"), "CSRRS":(16,1,0,"I"), "CSRRC":(16,2,0,"I"),
     "CSRRWI":(16,3,0,"I"), "CSRRSI":(16,4,0,"I"), "CSRRCI":(16,5,0,"I"),
     # PRIV: I-type，无有效操作数（编码占位），trap 返回与等待中断
-    "MRET":(17,0,0,"I"), "WFI":(17,1,0,"I"),
+    "MRET":(17,0,0,"I"), "WFI":(17,1,0,"I"),    # CSR 高区（ADR-06）：地址 2187–4373 = imm7+2187，funct 2–7 同六条 Zicsr 语义
+    "CSRRW.H":(9,2,0,"I"), "CSRRS.H":(9,3,0,"I"), "CSRRC.H":(9,4,0,"I"),
+    "CSRRWI.H":(9,5,0,"I"), "CSRRSI.H":(9,6,0,"I"), "CSRRCI.H":(9,7,0,"I"),
     # A 扩展 (R-type)：rs1=地址，rs2=源值，rd=旧值（LR 的 rs2 忽略，SC 的 rd=成功标志）
     # funct=0: 保留集指令；funct=1: AMO 读改写
     "LRW":(18,0,0,"R"), "SCW":(18,0,1,"R"),

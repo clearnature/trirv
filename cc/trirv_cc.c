@@ -200,6 +200,10 @@ static InstDef ITAB[] = {
     /* T-LIT 文字运算（opcode 22，§6.1）：R 型单操作数，funct=a */
     {"LIT0",O_TLIT,0,0,0},{"LIT1",O_TLIT,1,0,0},{"LIT2",O_TLIT,2,0,0},
     {"ECALL",O_SYSTEM,0,0,1},{"FENCE.I",O_FENCE,1,0,1},
+    {"CSRRW",O_ZICSR,0,0,1},{"CSRRS",O_ZICSR,1,0,1},{"CSRRC",O_ZICSR,2,0,1},
+    {"CSRRWI",O_ZICSR,3,0,1},{"CSRRSI",O_ZICSR,4,0,1},{"CSRRCI",O_ZICSR,5,0,1},
+    {"CSRRW.H",O_SYSTEM,2,0,1},{"CSRRS.H",O_SYSTEM,3,0,1},{"CSRRC.H",O_SYSTEM,4,0,1},
+    {"CSRRWI.H",O_SYSTEM,5,0,1},{"CSRRSI.H",O_SYSTEM,6,0,1},{"CSRRCI.H",O_SYSTEM,7,0,1},
     /* TC 压缩助记符（T10d：fmt=5 标识 TC 格式——15-trit / 3-tryte 对齐） */
     {"C-ADDI",O_TC,0,0,5},{"C-LWs",O_TC,1,0,5},{"C-SWs",O_TC,2,0,5},
     {"C-BEQ",O_TC,3,0,5},{"C-BNE",O_TC,4,0,5},{"C-J",O_TC,5,0,5},{"C-JAL",O_TC,5,0,5},
@@ -3284,6 +3288,19 @@ static uint32_t asm_line(const char*line,int idx){
     if(!strcmp(op,"ECALL")) return encI(O_SYSTEM,0,0,0,0);
     if(!strcmp(op,"FENCE.I")) return encI(O_FENCE,1,0,0,0);   /* ADR-05 */
     if(!strcmp(op,"FENCE")) return encI(O_FENCE,0,0,0,0);
+    /* CSR（ADR-06 自动选区）：语法 CSRRW rd, rs1, csr / CSRRWI rd, uimm, csr */
+    if(!strncmp(op,"CSRR",4)){
+        static const char *cn[6]={"CSRRW","CSRRS","CSRRC","CSRRWI","CSRRSI","CSRRCI"};
+        int k=-1; for(int q=0;q<6;q++) if(!strcmp(op,cn[q])){k=q;break;}
+        if(k>=0){
+            long csr=atol(ops[2]);
+            if(csr>=4374){ fprintf(stderr,"CSR 地址 %ld 超出高区上限 4373（ADR-06）\n",csr); return 0; }
+            int rd=find_reg(ops[0]);
+            int srcv=(k>=3)?(int)atol(ops[1]):find_reg(ops[1]);
+            if(csr>=2187) return encI(O_SYSTEM,(int)csr-2187,srcv,2+k,rd);   /* 高区 */
+            return encI(O_ZICSR,(int)csr,srcv,k,rd);                         /* 低区 */
+        }
+    }
     if(!strcmp(op,"EBREAK")) return encI(O_SYSTEM,0,0,1,0);
 
     if(d->fmt==0){ /* R: op rd, rs1, rs2 */
