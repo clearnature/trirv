@@ -57,6 +57,7 @@
 #define O_TLOGIC 11
 #define O_TPACK 12
 #define O_TLIT 22
+#define O_TC 23
 #define O_ZICSR 16
 #define O_PRIV 17
 #define O_MEXT 13
@@ -147,8 +148,8 @@ static InstDef ITAB[] = {
     {"LIT0",O_TLIT,0,0,0},{"LIT1",O_TLIT,1,0,0},{"LIT2",O_TLIT,2,0,0},
     {"ECALL",O_SYSTEM,0,0,1},
     /* TC 压缩助记符（T10d：fmt=5 标识 TC 格式——15-trit / 3-tryte 对齐） */
-    {"C-ADDI",O_TLIT,0,0,5},{"C-LW",O_TLIT,1,0,5},{"C-SW",O_TLIT,2,0,5},
-    {"C-BEQ",O_TLIT,3,0,5},{"C-BNE",O_TLIT,4,0,5},
+    {"C-ADDI",O_TC,0,0,5},{"C-LW",O_TC,1,0,5},{"C-SW",O_TC,2,0,5},
+    {"C-BEQ",O_TC,3,0,5},{"C-BNE",O_TC,4,0,5},
     {NULL,0,0,0,0}
 };
 static InstDef* find_inst(const char*n){
@@ -3254,7 +3255,7 @@ static uint32_t asm_line(const char*line,int idx){
         int reg_s = atoi(ops[0]);
         int imm = imm7ok(atoi(ops[1]));
         uint32_t v = 0;
-        v = putf(v, 0, 2, O_TLIT);        /* opcode 23 */
+        v = putf(v, 0, 2, O_TC);          /* opcode 23 */
         v = putf(v, 3, 4, d->fu);         /* subformat */
         v = putf(v, 5, 7, reg_s);
         v = putf(v, 8, 14, imm);
@@ -3828,6 +3829,26 @@ int main(int argc,char**argv){
         }
     }
     drop_jump_to_next();
+    /* ---- T10d TC 压缩 peephole（TRV_COMPACT=1 启用）----
+     * ADDI rd, rd, imm（rd ∈ {x10,x11,x12,x13,x8,x9,x14,x15}，|imm|≤1093）
+     * → C-ADDI <subset_idx>, <imm>——语义等价，码长 4→3 tryte。
+     * 其他四类（LW/SW/BEQ/BNE）后续补齐。 */
+    if(getenv("TRV_COMPACT")){
+        /* TC 子集 ABI 名 ↔ 子集索引 + 寄存器号（与 trirv_vm.c _exec_c 的
+           _C_REGS 映射一致：0→x10/a0, 1→x11/a1, 2→x12/a2, 3→x13/a3,
+           4→x8/s0, 5→x9/s1, 6→x14, 7→x15） */
+        static const char*tc_names[]={"a0","a1","a2","a3","s0","s1","x14","x15"};
+        for(int i=0;i<NOUT;i++){
+            char rdbuf[16],rsbuf[16];int imm;
+            if(sscanf(OUT[i],"ADDI %15[^,], %15[^,], %d",rdbuf,rsbuf,&imm)!=3)continue;
+            int tidx=-1;
+            for(int k=0;k<8;k++) if(!strcmp(rdbuf,tc_names[k])){tidx=k;break;}
+            if(tidx<0||strcmp(rdbuf,rsbuf))continue;   /* C-ADDI 要求 rd==rs1 */
+            if(imm<-1093||imm>1093)continue;
+            char buf[64];snprintf(buf,sizeof(buf),"C-ADDI %d, %d",tidx,imm);
+            OUT[i]=strdup(buf);
+        }
+    }
     /* TRVO 导入的汇编体：两遍 gen 已定稿，append 到 OUT 末尾
      * （assemble_all 的标签扫描会自动解析它们之间的引用）。
      * 必须在 asm dump / peephole / assemble_all 之前。 */
