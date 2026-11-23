@@ -1,6 +1,6 @@
 # TriRV —— 三进制 RISC-V 风格软核全栈
 
-45-trit 三进制 ISA（99 条指令）+ 双模拟器（PyVM 参考 / C VM 性能）+ 自研 C 编译器
+45-trit 三进制 ISA（102 条指令）+ 双模拟器（PyVM 参考 / C VM 性能）+ 自研 C 编译器
 （trirv_cc，寄存器式，~95%）+ TinyCC 移植（tri-tcc，正式工具链路线）+ musl 移植 +
 wasm 前端 + 三进制浮点（TF45/TF20）。
 
@@ -31,12 +31,18 @@ bash tools/build.sh                      # 构建全部二进制（vm/bin、cc/b
 python3 tests/run_all_tests.py --fast    # 全量回归（43 套）
 ```
 
-## 模块完善度（2026-11-22）
+## 模块完善度（2026-11-23）
 
-- 模拟器 / 汇编器：✅（99 条指令、双 VM 差分、CSR/原子/浮点全）
-- 自研编译器：🟡 ~95%（musl 65/66；未声明标识符 XFAIL 待 fn-as-value 设计）
-- tri-tcc（TinyCC 移植）：🟡 主体完成（T-1 全条目；for+指针元素写 bug 待修；__tint 批次 C1 进行中）
-- 链接器：🟡 ~60%（TRVO 导入可用但依赖分配顺序；符号化引用待做）
-- 调试器：🔴 空白（PyVM trace 为内置功能；独立调试器待建）
+- 模拟器 / 汇编器：✅（102 条指令、双 VM 差分、CSR/原子/浮点/LW4-SW4/LIT 系全）
+- 自研编译器 trirv_cc（C 双后端）：🟢（musl 65/66；未声明标识符诚实报错；
+  __tint/__tint2/__tbool/__builtin_tri_lit/switch/typedef/goto/do-while/
+  三目/强转/const 全落地；fn-ptr 局部/全局/传参）
+- tri-tcc（TinyCC 移植）：🟢（T-1 全条目；for+指针写已销案；TINT C1/C2
+  收官——__tint/__tint2/__tbool 全量；__tri_syscall 对接面；typedef 数组别名）
+- 链接器：🟢 主体完成（TRVO 导入、61 单元去重增量链接、数据/字符串地址
+  符号化、弱符号别名、TRVO 闭包转发导出、内存映射纪律检查）
+- 调试器：🟡 MVP（debugger/trirv_dbg.py 契约 18 项入册；独立 GUI 待建）
+- 任务队列：docs/TASKS.md（动态台账）
 
-详见 `docs/TINYCC_PORT_PLAN.md`（工具链路线）与 `docs/TERNARY_COMPAT_PLAN.md`（多进制兼容）。
+详见 `docs/TINYCC_PORT_PLAN.md`（工具链路线）、`docs/TERNARY_COMPAT_PLAN.md`
+（多进制兼容）与 `docs/TASKS.md`（任务台账）。
