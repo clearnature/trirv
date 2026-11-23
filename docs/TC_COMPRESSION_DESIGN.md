@@ -65,3 +65,12 @@ TriRV 指令流按 **tryte（5-trit）编址**，每条 20-trit 指令占 4 tryt
 | T10c | PyVM/CVM 变长取指 | 双 VM 差分 |
 | T10d | trirv_cc `-mcompact` 发射 | 产物含 C 指令 |
 | T10e | 码长对比 | musl_tri 热点 ≥ 20% 缩减 |
+
+## 7. TRV2 打包格式原型验证（2026-11-23）
+
+- TRV2 头：`TRV2` magic + n_trytes + n_seg（兼容 TRV1 三字段布局）
+- 体：tryte 流（C 指令 3 tryte / 全宽 4 tryte，首 tryte 判宽）
+- 原型：4 指令程序 TRV1=32B → TRV2=31B（1/4 C 指令比 → +3% 节省）；
+  30% C 占比 → ~10% 节省；热点函数 C 占比 ~50% → ~15% 节省
+- 解包器：tryte 流 → word[] imem（C→低 15 trit payload + 高 5 零填充）
+  word 级一致 ✓；PyVM 可执行 ✓（C-ADDI 寄存器值调试 T10c-2 继续）
