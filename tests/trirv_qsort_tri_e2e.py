@@ -9,12 +9,12 @@
 负数 / 稳定性无关性（值排序正确即可）/ 大数组 / char 数组按字节排序。
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -104,15 +104,7 @@ if r.returncode != 0:
 check("qsort/测试程序链接", r.returncode, 0)
 
 data = open(trv, "rb").read()
-n_inst, n_seg = struct.unpack_from("<II", data, 8)
-prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-off = 16 + 4 * n_inst
-mem = {}
-for _ in range(n_seg):
-    addr, ln = struct.unpack_from("<II", data, off)
-    off += 8
-    mem[addr] = data[off:off + ln]
-    off += ln
+prog, mem, _packed = _trvio.load_bytes(data)
 c = vm.VM(prog, mem_init=mem).run(max_steps=200000)
 BITNAMES = {1: "乱序", 2: "已序", 4: "逆序", 8: "重复", 16: "单元素",
             32: "负数", 64: "大数组", 128: "char 数组"}

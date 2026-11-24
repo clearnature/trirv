@@ -22,12 +22,12 @@
   5. 双 VM 一致（PyVM / C VM 同一 .trv）
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -56,15 +56,7 @@ with open(cf, "w") as f:
 subprocess.run([CC, cf, tf], check=True, capture_output=True)
 
 data = open(tf, "rb").read()
-n_inst, n_seg = struct.unpack_from("<II", data, 8)
-prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-off = 16 + 4 * n_inst
-mem = {}
-for _ in range(n_seg):
-    addr, ln = struct.unpack_from("<II", data, off)
-    off += 8
-    mem[addr] = data[off:off + ln]
-    off += ln
+prog, mem, _packed = _trvio.load_bytes(data)
 
 
 def cvm(stdin_bytes):

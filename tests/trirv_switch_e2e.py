@@ -15,12 +15,12 @@ N_SWITCH 扁平收集 case/default/语句，gen 期 BEQ 分发链 + 顺序 case 
   7. case 顺序乱序（case 3 在 case 1 之前声明）
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,15 +50,7 @@ def run_py(src, max_steps=5000):
     if r.returncode != 0:
         return ("COMPILE_ERR", r.stderr.strip()[:100])
     data = open(tf, "rb").read()
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from("<II", data, off)
-        off += 8
-        mem[addr] = data[off:off + ln]
-        off += ln
+    prog, mem, _packed = _trvio.load_bytes(data)
     c = vm.VM(prog, mem_init=mem).run(max_steps=max_steps)
     return c.exit_code
 

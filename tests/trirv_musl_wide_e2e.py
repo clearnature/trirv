@@ -24,12 +24,12 @@ memmove 重叠拷贝 / strcasecmp 大小写 / memccpy 停止指针。
   (void) 空形参守卫修正（void* 形参被误判空表吞掉）
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -100,15 +100,7 @@ r = subprocess.run(args, capture_output=True, text=True)
 check("功能/测试程序链接", r.returncode, 0)
 
 data = open(trv, "rb").read()
-n_inst, n_seg = struct.unpack_from("<II", data, 8)
-prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-off = 16 + 4 * n_inst
-mem = {}
-for _ in range(n_seg):
-    addr, ln = struct.unpack_from("<II", data, off)
-    off += 8
-    mem[addr] = data[off:off + ln]
-    off += ln
+prog, mem, _packed = _trvio.load_bytes(data)
 c = vm.VM(prog, mem_init=mem).run(max_steps=10000)
 check("功能/位图(PyVM)", c.exit_code, 0)
 

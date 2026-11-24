@@ -14,12 +14,12 @@
 C 后端能力，Python 参考后端不支持全局变量/函数指针。
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_cc_backend as cc
 import trirv_vm as vm
 
@@ -42,15 +42,7 @@ def compile_trv(src):
     if export_r.returncode != 0:
         raise RuntimeError(f"compile fail: {export_r.stderr.strip()[:200]}")
     data = open(tf, "rb").read()
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from("<II", data, off)
-        off += 8
-        mem[addr] = data[off:off + ln]
-        off += ln
+    prog, mem, _packed = _trvio.load_bytes(data)
     os.unlink(cf)
     os.unlink(tf)
     return prog, mem

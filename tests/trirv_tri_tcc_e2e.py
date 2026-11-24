@@ -22,11 +22,11 @@
 缺失时全部 SKIP（不阻断全量回归）。
 """
 import os
-import struct
 import subprocess
 import sys
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -392,15 +392,7 @@ NEG_CASES = [
 
 def load_trv(path):
     data = open(path, "rb").read()
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from("<%dI" % n_inst, data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from("<II", data, off)
-        off += 8
-        mem[addr] = list(data[off:off + ln])
-        off += ln
+    prog, mem, _packed = _trvio.load_bytes(data)
     return prog, mem
 
 

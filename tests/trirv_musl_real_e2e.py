@@ -24,12 +24,12 @@
   声明符基类型隔离（int a,*b 的 b 是 int* 不是 int**）/ N_CAST 类型传播
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,15 +76,7 @@ def compile_trvo(c_src, trvo_out):
 
 def load_trv(path):
     data = open(path, "rb").read()
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from("<II", data, off)
-        off += 8
-        mem[addr] = data[off:off + ln]
-        off += ln
+    prog, mem, _packed = _trvio.load_bytes(data)
     return prog, mem
 
 

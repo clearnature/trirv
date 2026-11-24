@@ -11,7 +11,12 @@ import trirv_vm as vm
 
 def load_any(path):
     """容器文件 → (prog, mem, packed)。TRV2 的 prog 为流序词。"""
-    data = open(path, "rb").read()
+    return load_bytes(open(path, "rb").read())
+
+
+def load_bytes(data):
+    """容器字节 → (prog, mem, packed)。load_any 的字节入口（3b.1b：各套件
+    手写 TRV1 头解析统一收编到此——读入 bytes 的调用方免二次开文件）。"""
     magic = data[:4]
     n_seg = struct.unpack_from("<I", data, 12)[0]
     mem = {}

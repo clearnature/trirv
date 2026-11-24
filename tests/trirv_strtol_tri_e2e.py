@@ -7,12 +7,12 @@
 映射后 LONG_MAX/MIN 语义）；无有效数字返回 0 且 end=nptr。
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,15 +76,7 @@ if r.returncode != 0:
 check("strtol/测试程序链接", r.returncode, 0)
 
 data = open(trv, "rb").read()
-n_inst, n_seg = struct.unpack_from("<II", data, 8)
-prog = list(struct.unpack_from(f"<{n_inst}I", data, 16))
-off = 16 + 4 * n_inst
-mem = {}
-for _ in range(n_seg):
-    addr, ln = struct.unpack_from("<II", data, off)
-    off += 8
-    mem[addr] = data[off:off + ln]
-    off += ln
+prog, mem, _packed = _trvio.load_bytes(data)
 c = vm.VM(prog, mem_init=mem).run(max_steps=100000)
 BITNAMES = {1: "base10", 2: "end NUL", 4: "负数+空白", 8: "end x",
             16: "正号", 32: "base16", 64: "0x前缀", 128: "end 空格",

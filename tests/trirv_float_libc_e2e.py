@@ -20,13 +20,13 @@ trirv_float.encode 逐位一致（见 §0）。
 """
 import os
 import random
-import struct
 import subprocess
 import sys
 import tempfile
 from fractions import Fraction
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_float as tf
 import trirv_vm as vm
 
@@ -338,15 +338,7 @@ def run_guest(src_path, link_paths, pyvm=None):
         return None, c_out, 0, None
     # PyVM
     data = open(trv, 'rb').read()
-    n_inst, n_seg = struct.unpack_from('<II', data, 8)
-    prog = list(struct.unpack_from('<%dI' % n_inst, data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from('<II', data, off)
-        off += 8
-        mem[addr] = list(data[off:off + ln])
-        off += ln
+    prog, mem, _packed = _trvio.load_bytes(data)
     c = vm.VM(prog, mem_init=mem).run(max_steps=2000000000)
     py_out = bytes(c.output)[:G_OUT_BYTES]
     return py_out, c_out, c.exit_code, None

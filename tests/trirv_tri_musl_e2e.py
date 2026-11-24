@@ -12,12 +12,12 @@ tri-tcc 已能编译并正确运行的 musl 行为集；失败位图给出诚实
 等跨 TU 引用全部经 tri-tcc 进程内符号解析——T-2.1 多 TU 能力）。
 """
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 
 import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
+import _trvio
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -44,15 +44,7 @@ def check(name, got, want):
 
 def load_trv(path):
     data = open(path, "rb").read()
-    n_inst, n_seg = struct.unpack_from("<II", data, 8)
-    prog = list(struct.unpack_from("<%dI" % n_inst, data, 16))
-    off = 16 + 4 * n_inst
-    mem = {}
-    for _ in range(n_seg):
-        addr, ln = struct.unpack_from("<II", data, off)
-        off += 8
-        mem[addr] = list(data[off:off + ln])
-        off += ln
+    prog, mem, _packed = _trvio.load_bytes(data)
     return prog, mem
 
 
