@@ -16,6 +16,16 @@
   （trirv-vendor=本地快照）；子模块 .gitmodules 两项已登记；
   本地代理 127.0.0.1:10808 已持久化两仓 git config
 - 评审处置：ARCH_PLAN_REVIEW 25 条 → docs/ADR-34-review-disposition.md
+- 六仓生态（2026-11-24 定型）：
+  ```
+  clearnature/trirv      ISA 真相源 + 双 VM + trirv_cc + 链接器（主仓）
+  ├── clearnature/tinycc    tri-tcc 编译器（trirv 分支）
+  ├── clearnature/musl      musl vendor（trirv-vendor 分支）
+  ├── clearnature/udk       ubios 引导固件（trirv 分支）
+  ├── clearnature/rustsbi   SBI 运行时参照（fork）
+  └── triqchem-lab/TernixOS 微内核验证平台（main/freertos/liteos-m）
+  ```
+  TernixOS 任务清单在自己的 docs/TASKS.md；跨仓依赖与本表执行序同步
   （纯修复组已修：difftest 真双路/SYS_READ 负 count/文档矛盾；
   e 条复核不成立如实标注；tri_musl 深修回滚登记 3b.1a）
 - ADR-17 准入进度：①弛豫 ✓（批次 3.1–3.4）；②调试器流制 PC ✓（3.5）；
@@ -113,6 +123,26 @@
 - [ ] 3b.3 ADR-17 准入记录 + README 构建说明 + 批次 3b 收官
 - [ ] 3b.4 TRV2 流制引擎性能优化：hint 缓存强化（fib 2.3×→≤1.3× 目标，
       见上方任务条目；PERF_REPORT 更新）
+- [ ] 3b.5 规范函数 + 编码空间全枚举 + ADR-35 未定义角落定死
+      （非法指令统一陷入、TC reg_s≥8 统一口径——批准 4：ADR-28 修订提前）
+- [ ] 批次 4+ AMP：mrecvw 5013 + mipi 5014 + mhartid + 4 核契约 +
+      tri-tcc 用例（ADR-23）→ **解锁 TernixOS T0.2/T3 中断面**
+- [ ] 批次 5+ 固件：mtimer CSR/注入 API + ISR 向量表（ADR-24）→
+      **解锁 TernixOS T3 Tick 面**；同步产出 **TSBI-RT 规范草案**
+      （boot/rustsbi 结构范本 + boot/udk ubios 引导面——boot 三仓收敛）
+- [ ] 批次 6–8 musl：stdio → multibyte → time（ADR-25）→ **解锁
+      TernixOS 用户态 libc（静态 musl 链接进 liteOS 用户程序）**
+- [ ] 批次 9 wasm 补全，官方 spec testsuite 计数（ADR-21）
+- [ ] 批次 10 LLVM P-0 spike，GO/NO-GO（ADR-18）
+- [ ] M1 math 226 SKIP 规则解除（TF45 路径直通，ADR-38 M1 快赢）
+- [ ] M5 TF45 libm（ADR-26，musl math 算法移植）
+- [ ] TernixOS T-arch（HAL 接口定义/VM 后端/port 重接线，插在 T1 前；
+      依赖 trirv 3b）→ T1 内核编译过链（依赖 3b+T-arch）→ T2 单任务
+      （依赖批次 5 mtimer）→ T3 双任务 Tick（依赖批次 4+5）→ T4 多任务
+      IPC → T5 LiteOS-M 对照
+- [ ] 终态远期：Type-1 Hypervisor HAL 全量（ADR-003 E4，大工程立项）+
+      TSBI-Boot/TSBI-RT 规范定稿 + ISO/UEFI 引导链（ADR-002 分发链路）
+- 之后按需：RTL（ADR-07）；Post 代数暂不立项（ADR-27）
 
 - [x] 3.5 调试器流制 PC ✓ f59d4aa（read_trv 双格式+packed 接线+
       _slot_of bisect+四视图双模式；TRV1 slot5 / TRV2 off5 同语义；
