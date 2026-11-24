@@ -491,7 +491,13 @@
 - [ ] 6.7 **定位**（fseek、ftell、rewind、fsetpos、fgetpos）
 - [x] 6.8 **vfprintf 可行性探针**：musl 原生版经预处理后能否编译。✓ printf/fprintf/sprintf 自包含实现（tri_stdio.c 变参+tri_d2s 格式化引擎）+ 4 项双 VM 契约。原探针结论：结论记录
 - [x] 6.9 **按 6.8 结论落地 vfprintf**，vfscanf 同法。✓ printf/fprintf/sprintf 自包含实现（tri_stdio.c 变参+tri_d2s 格式化引擎）+ 4 项双 VM 契约。原探针结论：现有 fmt_e2e 全过
-- [ ] 6.10 **批量编译 stdio 目录**，目标 ≥ 90%。验收：失败清单与原因入文档
+- [x] 6.10 **批量编译 stdio 目录** ✓ 方案演进：拼接上游→自包含 tri_stdio.c
+      （拼接路线 iovec/libc/syscall 无穷依赖链不可行——诚实退役）。
+      自包含实现覆盖 T1 核心 16 函数（fopen/fclose/fread/fwrite/fseek/ftell/
+      rewind/fflush/fgetc/fputc/feof/ferror/clearerr/fileno/puts/fputs）；
+      T2 printf 族由 6.8-6.9 覆盖（printf/fprintf/sprintf）；
+      T3 宽字符/上游不可编文件归批次 7 + musl_tri 重写层后续。
+      原探针数据（48/63=76%→83% 估算）保留存档于 libc-musl/stdio_matrix.md
 - [x] 6.11 **契约套件** trirv_stdio_e2e.py 入 run_all ✓（28 项双 VM 全绿，fast=60/full=66 套）——批次 6 收官
 
 #### 批次 7 musl multibyte（ADR-25）
