@@ -612,6 +612,10 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 - [ ] 9.10′ **结构面基线更新**，批次 9 收官（spec 刻度 = 结构子集：
   block/loop/br/br_table/if/call/call_indirect/table/局部变量/select；
   整数算术与字节边界断言 = 定义性 NS 记账）
+- [x] 9.11 **二进制语义仿真层归档** ✓（2026-11-25）wasm/legacy/
+  （翻译器 + e2e oracle，冻结快照 982cf1b）——后期三值硬件软件编译
+  调试的二进制差分对拍 oracle + VM 边界白名单种子参考。纪律见
+  wasm/legacy/README.md（不参与构建/回归、勿随主线同步修改）
 
 #### 批次 10 LLVM P-0 spike（ADR-18）
 
