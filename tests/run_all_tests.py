@@ -250,8 +250,20 @@ def main():
     ap.add_argument("--san", action="store_true",
                     help="ASan/UBSan 构建编译器与 CVM 后跑全量（ADR-29 门禁），跑完恢复 O2")
     ap.add_argument("--fuzz-seed", default="0",
-                    help="fuzz 套件种子：数字或 random（ADR-29：默认 0 可复现，提交门禁抽随机）")
+                    help="fuzz 套件种子：数字、random（CSPRNG 展开并追加到 "
+                         "tmp/fuzz-seeds.log 供精确回放，ADR-29）")
     args = ap.parse_args()
+    if args.fuzz_seed == "random":
+        import secrets
+        args.fuzz_seed = str(secrets.randbelow(1000000))
+        os.makedirs(os.path.join(ROOT, "tmp"), exist_ok=True)
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True,
+                              cwd=ROOT).stdout.strip()
+        with open(os.path.join(ROOT, "tmp", "fuzz-seeds.log"), "a") as sf:
+            sf.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} "
+                     f"seed={args.fuzz_seed} head={head or '?'}\n")
+        print(f"  · fuzz 种子（CSPRNG，已存档 tmp/fuzz-seeds.log）：{args.fuzz_seed} @ {head or '?'}")
 
     # 去重（占位项 name=None 直接丢）
     seen, suites = set(), []
