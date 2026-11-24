@@ -120,6 +120,8 @@ TriRV 是三进制 ISA，硬件位宽本就不是 2 的幂，宿主 LP64 惯例�
 
 > 现状 29 个 Linux 号 + 5000 族（read8/write8）+ 5010 族（AMP coreid/msend/mrecv/
 > mrecvw/mipi——mrecvw 5013 阻塞收、mipi 5014 核间中断，2026-11-24 批次 4 落地）。
+> 6.3b 虚拟磁盘：unlink 87 / rename 82 / unlinkat 35 / renameat 38
+> （宿主沙箱目录透传，2026-11-24 批次 6.3b 落地）。
 
 ## 6.1 内存对齐（校准为 tryte 口径）
 

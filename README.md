@@ -170,8 +170,8 @@ python3 -c "import trirv_base12 as b; print(b.to12(20), b.from12('18'), b.frac_t
 python3 trirv_tritlogic_e2e.py                 # AND/OR/XOR 逐 trit 语义锁定（两套 VM 差分）
 python3 trirv_tritref_test.py                  # tryte 数组参考实现：46164 项差分 + trit 级成本表
 python3 trirv_tdd_contract.py                  # 契约测试（TDD，83 项：字段/执行/立即数/STRICT/代数律/struct ABI/移位）
-python3 run_all_tests.py                       # 全量：一条命令跑完 43 套（34 快 + 9 慢），输出汇总表
-python3 run_all_tests.py --fast                # 只跑快套件（跳过 fuzz / wasm / 46164 差分）
+python3 run_all_tests.py                       # 全量：一条命令跑完 65 套（59 快 + 6 慢），输出汇总表
+python3 run_all_tests.py --fast                # 只跑快套件（59 套）
 ```
 
 实测一条完整链路（2026-11-19 验证）：
@@ -184,7 +184,7 @@ $ ./trirv_vm /tmp/t.trv
   [TriRV C VM] 指令=12 步数=609 exit=186 halted=1
 ```
 
-## 五、当前状态（2026-11-20 全量复测：`run_all_tests.py` 44 套全 PASS；真 musl string+stdlib 双目录 65/66 编译、1 项 SKIP（inline asm）、0 失败）
+## 五、当前状态（2026-11-24 全量复测：`run_all_tests.py` **65 套全 PASS**（59 快 + 6 慢）；TRV2 已切默认；虚拟磁盘透传已落地；musl stdio 探针 28/30；0 失败）
 
 | 套件 | 结果 |
 | --- | --- |
