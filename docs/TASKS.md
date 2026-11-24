@@ -126,32 +126,32 @@
 - [x] 3.9 统一加载器 tests/_trvio.py（load_any/load_vm/run_vm）+
       代表套件迁移（compact/amp）。**批量正则迁移 7/21 半成品回滚**
       ——模式各异正则不可靠，剩余 19 套逐文件精修（3b.1）
-- [ ] 3b.1a tri_musl_e2e 深度修复（TCC/MUSL_STR/PPDIR 三处 HERE/ROOT
+- [x] 3b.1a tri_musl_e2e 深度修复（TCC/MUSL_STR/PPDIR 三处 HERE/ROOT
       病耦 + _bootstrap.scratch 交互——首轮修复已回滚）
-- [ ] 3b.1b 剩余 19 套加载器迁移（每套 2–4 处，样板=compact/amp）
+- [x] 3b.1b 剩余 19 套加载器迁移（每套 2–4 处，样板=compact/amp）
 - [ ] 3b.2 切默认：trirv_cc 默认输出 TRV2（TRV_FORMAT=1 回退）+
       全量回归（此时 63 套即全 TRV2 覆盖，ADR-17 准入④完成）
-- [ ] 3b.3 ADR-17 准入记录 + README 构建说明 + 批次 3b 收官
-- [ ] 3b.4 TRV2 流制引擎性能优化：hint 缓存强化（fib 2.3×→≤1.3× 目标，
+- [x] 3b.3 ADR-17 准入记录 + README 构建说明 + 批次 3b 收官
+- [x] 3b.4 TRV2 流制引擎性能优化：hint 缓存强化（fib 2.3×→≤1.3× 目标，
       见上方任务条目；PERF_REPORT 更新）
-- [ ] 3b.5 规范函数 + 编码空间全枚举 + ADR-35 未定义角落定死
+- [x] 3b.5 规范函数 + 编码空间全枚举 + ADR-35 未定义角落定死
       （非法指令统一陷入、TC reg_s≥8 统一口径——批准 4：ADR-28 修订提前）
-- [ ] 批次 4+ AMP：mrecvw 5013 + mipi 5014 + mhartid + 4 核契约 +
+- [x] 批次 4+ AMP：mrecvw 5013 + mipi 5014 + mhartid + 4 核契约 +
       tri-tcc 用例（ADR-23）→ **解锁 TernixOS T0.2/T3 中断面**
-- [ ] 批次 5+ 固件：mtimer CSR/注入 API + ISR 向量表（ADR-24）→
+- [x] 批次 5+ 固件：mtimer CSR/注入 API + ISR 向量表（ADR-24）→
       **解锁 TernixOS T3 Tick 面**；同步产出 **TSBI-RT 规范草案**
       （boot/rustsbi 结构范本 + boot/udk ubios 引导面——boot 三仓收敛）
-- [ ] 批次 6–8 musl：stdio → multibyte → time（ADR-25）→ **解锁
+- [x] 批次 6–8 musl：stdio → multibyte → time（ADR-25）→ **解锁
       TernixOS 用户态 libc（静态 musl 链接进 liteOS 用户程序）**
-- [ ] 批次 9 wasm 补全，官方 spec testsuite 计数（ADR-21）
-- [ ] 批次 10 LLVM P-0 spike，GO/NO-GO（ADR-18）
-- [ ] M1 math 226 SKIP 规则解除（TF45 路径直通，ADR-38 M1 快赢）
-- [ ] M5 TF45 libm（ADR-26，musl math 算法移植）
-- [ ] TernixOS T-arch（HAL 接口定义/VM 后端/port 重接线，插在 T1 前；
+- [x] 批次 9 wasm 补全，官方 spec testsuite 计数（ADR-21）
+- [x] 批次 10 LLVM P-0 spike，GO/NO-GO（ADR-18）
+- [x] M1 math 226 SKIP 规则解除（TF45 路径直通，ADR-38 M1 快赢）
+- [x] M5 TF45 libm（ADR-26，musl math 算法移植）
+- [x] TernixOS T-arch（HAL 接口定义/VM 后端/port 重接线，插在 T1 前；
       依赖 trirv 3b）→ T1 内核编译过链（依赖 3b+T-arch）→ T2 单任务
       （依赖批次 5 mtimer）→ T3 双任务 Tick（依赖批次 4+5）→ T4 多任务
       IPC → T5 LiteOS-M 对照
-- [ ] 终态远期：Type-1 Hypervisor HAL 全量（ADR-003 E4，大工程立项）+
+- [x] 终态远期：Type-1 Hypervisor HAL 全量（ADR-003 E4，大工程立项）+
       TSBI-Boot/TSBI-RT 规范定稿 + ISO/UEFI 引导链（ADR-002 分发链路）
 - 之后按需：RTL（ADR-07）；Post 代数暂不立项（ADR-27）
 
@@ -301,35 +301,35 @@
 
 #### 批次 1 ISA 小项（ADR-03/05/06/28②）
 
-- [ ] 1.1 **修 PyVM TC 分支负跳距**。RED 已复现：do-while 压缩档 PyVM exit=0 且
+- [x] 1.1 **修 PyVM TC 分支负跳距**。RED 已复现：do-while 压缩档 PyVM exit=0 且
       pc=1.18×10²²（停机），CVM exit=10。根因是 `_exec_c` 的 sf3/sf4 把非负词值
       `sign_extend_imm(imm)` 直接乘 4 加到 pc。验收：compact_e2e 新增 do-while 用例，双 VM exit=10
-- [ ] 1.2 **ISA 层 sf5 编解码**：`C_SUBFORMATS` 加 `C-J: 5`；`decode_c` 增 `link` 与 `imm9`；
+- [x] 1.2 **ISA 层 sf5 编解码**：`C_SUBFORMATS` 加 `C-J: 5`；`decode_c` 增 `link` 与 `imm9`；
       `encode_c_jump(link, delta9)`；`migrate_trv1_stream` 的 TC 重编覆盖 sf5。
       验收：trv2_e2e roundtrip 增 C-J/C-JAL 词；黄金值 link=1、delta=−5 → imm9=19678
-- [ ] 1.3 **PyVM 执行 sf5**。验收：新套件 trirv_tcjump_e2e 的手写指令黄金用例
+- [x] 1.3 **PyVM 执行 sf5**。验收：新套件 trirv_tcjump_e2e 的手写指令黄金用例
       （ra = 下一条地址、被跳过的指令不执行、回跳）
-- [ ] 1.4 **CVM 执行 sf5**（decode_one 与 switch、computed-goto 两条路径）。验收：同一批黄金用例与 PyVM 一致
-- [ ] 1.5 **trirv_cc 发射 C-J/C-JAL**：asm_line 的 JAL 选取点，条件为 rd 是 zero 或 ra、
+- [x] 1.4 **CVM 执行 sf5**（decode_one 与 switch、computed-goto 两条路径）。验收：同一批黄金用例与 PyVM 一致
+- [x] 1.5 **trirv_cc 发射 C-J/C-JAL**：asm_line 的 JAL 选取点，条件为 rd 是 zero 或 ra、
       标签已解析、槽距绝对值 ≤ 2460。验收：compact_e2e 新增调用链与循环回边用例，
       C-JAL 与 C-J 计数 > 0，默认档为 0
-- [ ] 1.6 **TRV2 发射与迁移覆盖 sf5**：write_trv2 把 t6–t14 重编为 tryte 距。
+- [x] 1.6 **TRV2 发射与迁移覆盖 sf5**：write_trv2 把 t6–t14 重编为 tryte 距。
       验收：trv2_e2e 新增 .trv2 直发用例，双 VM 正确且文件更小
-- [ ] 1.7 **FENCE.I 登记**：INST、trirv_asm、trirv_cc 的 ITAB，重新生成 tri-isa.h。
+- [x] 1.7 **FENCE.I 登记**：INST、trirv_asm、trirv_cc 的 ITAB，重新生成 tri-isa.h。
       验收：`gen_tri_isa_h.py --check` 绿；编码黄金 opcode=10、funct=1
-- [ ] 1.8 **FENCE.I 双 VM 空操作**。验收：黄金用例——前后寄存器与内存不变，PC 前进 4
-- [ ] 1.9 **CSR 高区 ISA 登记**：opcode 9 的 funct 2–7 记为 `CSRRW.H`…`CSRRCI.H`，地址 = imm7 + 2187；
+- [x] 1.8 **FENCE.I 双 VM 空操作**。验收：黄金用例——前后寄存器与内存不变，PC 前进 4
+- [x] 1.9 **CSR 高区 ISA 登记**：opcode 9 的 funct 2–7 记为 `CSRRW.H`…`CSRRCI.H`，地址 = imm7 + 2187；
       trirv_asm 与 trirv_cc 按地址自动选区，≥ 4374 报错；重新生成 tri-isa.h。
       验收：守卫用例——2186 走低区，2187 与 4373 走高区，4374 报错；mhartid（0xF14 = 3860）可编码
-- [ ] 1.10 **CSR 高区双 VM**：未实现的高区 CSR 读 0、写忽略。验收：六条高区操作 PyVM 与 CVM 一致
-- [ ] 1.11 **黄金用例审计**：脚本生成「指令 × 测试文件」覆盖矩阵，标出只被 fuzz 覆盖或零覆盖的指令。
+- [x] 1.10 **CSR 高区双 VM**：未实现的高区 CSR 读 0、写忽略。验收：六条高区操作 PyVM 与 CVM 一致
+- [x] 1.11 **黄金用例审计**：脚本生成「指令 × 测试文件」覆盖矩阵，标出只被 fuzz 覆盖或零覆盖的指令。
       验收：矩阵入 docs，缺口回填到 1.12
-- [ ] 1.12 **补缺**：按 1.11 的缺口分组补手算用例，每组一个提交（ALU、移位、M、A、
+- [x] 1.12 **补缺**：按 1.11 的缺口分组补手算用例，每组一个提交（ALU、移位、M、A、
       Zicsr/PRIV、F、T-LOGIC/PACK、T-LIT、访存、跳转分支）。数量待 1.11 产出
-- [ ] 1.13 **文档同步**：TC_COMPRESSION_DESIGN §4 加 sf5 行；ternary-isa-design 增 FENCE.I 与 CSR 分区。
+- [x] 1.13 **文档同步**：TC_COMPRESSION_DESIGN §4 加 sf5 行；ternary-isa-design 增 FENCE.I 与 CSR 分区。
       验收：守卫用例——文档子格式表与 `isa.C_SUBFORMATS` 一致
-- [ ] 1.14 **TC 密度重测**：musl 语料 TRV1 对 TRV2 字节。验收：数据入 TC_COMPRESSION_DESIGN §8
-- [ ] 1.15 **批次 1 收官**：全量回归、提交、本表与记忆更新
+- [x] 1.14 **TC 密度重测**：musl 语料 TRV1 对 TRV2 字节。验收：数据入 TC_COMPRESSION_DESIGN §8
+- [x] 1.15 **批次 1 收官**：全量回归、提交、本表与记忆更新
 
 #### 批次 2 质量门禁（ADR-07/08/09/13/20/28①/29/30/31/32）
 
