@@ -7,9 +7,10 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 63 / FAIL 0（连续 39 次全绿）
+- 回归：python3 tests/run_all_tests.py → PASS 63 / FAIL 0（连续 40 次全绿）
+  门禁：--san 首证 60 套零 sanitizer 报错（ADR-29）；--fuzz-seed random 可透传
   门禁：--san 首证 60 套零 sanitizer 报错（ADR-29）；--fuzz-seed 可透传
-- HEAD：trirv 5448ed2 / tinycc c77e0661（trirv 分支已推送）
+- HEAD：trirv adb57d8 / tinycc c77e0661（trirv 分支已推送）
 - TC v2+sf5：35.2% TC 率 / TRV2 节省 8.5%；ISA 109 条（102 全宽+FENCE.I+CSR.H×6）
 - 仓库远端（ADR-36）：主仓 clearnature/trirv（hooks/CI 随仓生效）+
   tinycc trirv 分支 21 提交已推 + musl fork clearnature/musl
@@ -94,7 +95,17 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 3b / 任务 3b.1a（tri_musl 深度修复）**
+**进度游标：批次 3b / 任务 3b.1b（加载器迁移，推迟至切默认前）**
+
+#### 批次 3b.1a + 3b.4 + 3b.5 审计——已收官（2026-11-24 晚）
+
+- [x] 3b.1a tri_musl 深修 ✓ 00b841f（三处路径病耦+scratch 重建→30/30 真跑）
+- [x] 3b.4 解码缓存 ✓ f35d4ab（cProfile 定位 decode 53%→_dcache dict
+      消除逐步重复解码，fib TRV2 PyVM 2.76× 提速；63 套全量+57 钩子绿）
+- [x] 3b.5 编码空间审计 ✓ adb57d8（6561 组合→2083 defined/4478 undefined；
+      PyVM 非法词 take_trap vs CVM NOP 不一致实证；ADR-35 统一口径待
+      批次 3b.5 实现）+ 评审修正采纳（ISA 守卫仲裁更正/scratch Windows
+      安全探测/equiv 期望规范化）
 
 #### 批次 3 前半——已收官（2026-11-24，63 套全绿连续 39 次）
 
