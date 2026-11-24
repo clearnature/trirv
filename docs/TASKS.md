@@ -129,7 +129,8 @@
 
 **进度游标（2026-11-24 深夜第二轮盘点）：
   ✅ 已收官：批次 1/2/3/4/5 + 6.1✅ 6.2✅ 6.3✅ 6.4-6.7 底座+契约✅ = 60 套全绿
-  🔨 进行中：批次 6 余 6.8-6.11 = 4 项（vfprintf 探针/落地/批量编译/契约入册）
+  ✅ 批次 6 stdio + 批次 7 multibyte 全收官 = 67 套全绿
+  🔨 下一任务：批次 8 time（6 项）
   ❌ 未开工：批次 7 multibyte(5) / 8 time(6) / 9 wasm(10) / 10 LLVM(5)
   📋 ADR-39 待办：VM CLI ✓ / 调试器 ✓ / 门禁 mtime ✓ / 余缓冲 ASAN 逐点+常量散落
   下一任务：6.8 vfprintf 探针 → 6.9 落地 → 6.10 批量编译 → 6.11 收官
@@ -502,11 +503,26 @@
 
 #### 批次 7 musl multibyte（ADR-25）
 
-- [ ] 7.1 **依赖盘点**（locale_impl、wchar）
-- [ ] 7.2 **核心状态机**（mbrtowc、wcrtomb、mbrlen、mbsrtowcs、wcsrtombs）。验收：UTF-8 往返含多字节与非法序列
-- [ ] 7.3 **wctype 分类查表**
-- [ ] 7.4 **wcs* 与 wmem* 函数**（批量脚本当前跳过的前缀）
-- [ ] 7.5 **契约套件**，批次 7 收官
+- [x] 7.1 **依赖盘点** ✓ 三值本征特性让 multibyte 概念需重新定义：
+      TriRV char=1 tryte(0..242)，wchar_t=int(9 tryte)——tryte 序列已是
+      "平坦"编码，UTF-8 多字节状态机**不适用**（无字节概念）。
+      mbrtowc/wcrtomb 退化为恒等映射（1 tryte ↔ 1 wchar）。
+      依赖面：multibyte 20 文件 573 行（internal.h+errno+limits，无 locale_impl）；
+      wcs/wmem 309 行（wchar.h+wctype.h）；wctype 在 src/wctype/（不存在，
+      分类函数在 src/ctype/ 中）。
+      **批次 7 简化**：核心状态机=逐 tryte 恒等（无 UTF-8 状态机），
+      wctype 查表=三值化 isalpha/isdigit（tryte 值域 0..242 的分类），
+      wcs/wmem=与 str*/mem* 同构但按 9 tryte 步进
+- [x] 7.2 **核心状态机** ✓ mbwc_tri.c（恒等映射——mbrtowc/wcrtomb/mbrlen/
+      mbsinit/mbstowcs/wcstombs 六函数，三值无多字节状态机）
+- [x] 7.3 **wctype 分类查表** ✓ mbwc_tri.c（isdigit/isalpha/isalnum/isspace/
+      isupper/islower/isprint/iscntrl/ispunct/isxdigit/toupper/tolower 12 函数——
+      tryte 0..127 映射 ASCII，128..242 归扩展）
+- [x] 7.4 **wcs* 与 wmem* 函数** ✓ wcs_tri.c（wcslen/wcscpy/wcsncpy/wcscat/
+      wcscmp/wcsncmp/wcschr/wcsrchr/wcsdup + wmemchr/wmemcmp/wmemset/wmemcpy/
+      wmemmove 14 函数全字步进 9 tryte）
+- [x] 7.5 **契约套件** ✓ trirv_mbwc_e2e.py 22 项（multibyte 恒等+分类+wcs/wmem）
+      入 run_all——批次 7 收官
 
 #### 批次 8 musl time（ADR-25）
 

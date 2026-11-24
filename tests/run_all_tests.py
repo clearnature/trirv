@@ -170,6 +170,7 @@ SUITES = [
     ("trirv_fw_tick_e2e.py",       "固件定时器/ISR 向量 14 项",   False, None),
     ("trirv_vdisk_e2e.py",         "虚拟磁盘透传 20 项",        False, None),
     ("trirv_stdio_e2e.py",         "stdio 行为契约 24 项",      False, None),
+    ("trirv_mbwc_e2e.py",          "multibyte+wctype+wcs 22 项", False, None),
     ("trirv_cc_py_fnptr_e2e.py",  "py fn-ptr 双后端同构 12 项", False, None),
     ("trirv_trv2_e2e.py",         "TRV2 打包正式化 50 项",    False, None),
     ("trirv_tcjump_e2e.py",       "TC sf5 C-J/C-JAL 12 项",   False, None),
