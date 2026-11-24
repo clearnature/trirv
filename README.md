@@ -149,6 +149,16 @@ TRV_CC=py python3 export_trv.py foo.c foo.trv   # 强制 Python 参考后端做�
 ./trirv_vm -n 40 -t 1 foo.trv               # 多实例多线程压测
 ./trirv_vm -o 1000 foo.trv                  # dump 地址 1000 起的 9 tryte
 
+### 容器格式与双引擎（ADR-17，2026-11-24 起）
+
+- **trirv_cc 默认输出 TRV2 流制容器**（TC 压缩指令 3 tryte；musl 语料码长 -6.3%）；
+  `TRV_FORMAT=1` 显式回退 TRV1 槽制（4 tryte/指令，永久可读，不再加功能）。
+- **两个 VM 都按容器魔数自动选引擎**（TRV2=流制 PC 按 tryte 偏移；TRV1=槽制），
+  文件名后缀不参与判别——`.trv` 名字装 TRV2 内容同样正确加载。
+- 性能：fib(24) 分支密集口径 TRV2/TRV1 = 1.105×（pc→si 直接映射缓存后，
+  修复前 2.34×），`python3 tests/run_perf.py` 可复测（ADR-31 口径）。
+- tri-tcc 继续产出 TRV1；cc_backend（Python 参考栈）钉 TRV1（槽序词契约）。
+
 python3 trirv_wasm.py foo.wasm foo.trv foo.s   # Wasm 字节码 -> TRV（第 3 参数可选，输出汇编）
 python3 trirv_wasm_e2e.py                      # 112 例三路差分（含 P3 浮点 19 例；参考解释器 / PyVM / C VM）
 python3 trirv_float_libc_e2e.py                # P4 浮点 libc 五函数契约（Fraction oracle × 双 VM）
