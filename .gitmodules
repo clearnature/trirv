@@ -6,3 +6,6 @@
 	path = third_party/musl
 	url = https://github.com/clearnature/musl.git
 	branch = trirv-vendor
+[submodule "third_party/wasm-testsuite"]
+	path = third_party/wasm-testsuite
+	url = https://github.com/WebAssembly/testsuite

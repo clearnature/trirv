@@ -541,9 +541,19 @@
 
 #### 批次 9 wasm（ADR-21）
 
-- [ ] 9.1 **接入官方 spec testsuite**：vendor（Apache-2.0）、运行器、基线通过数。验收：基线入 WASM_ROUTE_A
-- [ ] 9.2 **call_indirect 与 table**
-- [ ] 9.3 **br_table**
+- [x] 9.1 **接入官方 spec testsuite** ✓（2026-11-24）WebAssembly/testsuite 子模块
+  （third_party/wasm-testsuite，Apache-2.0）+ wabt 1.0.42 wast2json（本地
+  tmp/wabt/，CI 包管理器各装）+ 运行器 wasm/spec_run.py（诚实四分计数）。
+  基线入 docs/WASM_ROUTE_A.md §七（收官时点 pass=791）。
+- [x] 9.2 **call_indirect 与 table** ✓ table/element 段真解析（多表顺序区域、
+  elemkind/elemexpr 形态、类型哨兵 typeidx+1/0=null）+ call_indirect 代码生成
+  （越界/失配 trap）+ 入口可达性裁剪（未触达 i64/f64 不毒化整模块）+
+  i32 结果内存通道 RESULT_ADDR=180。**破案三起**：br 携带值槽搬家、
+  pop 借位寄存器撞名、elemkind 字节——详见 WASM_ROUTE_A §七。
+- [x] 9.3 **br_table** ✓ 比较链 + 逐目标值槽搬家（异嵌套高度各自正确）；
+  br_table.wast 主模块为类型化引用形态（function-references 提案）诚实
+  tskip，语义由 br.wast as-br_table-* 断言覆盖。冒烟门禁
+  trirv_wasm_spec_smoke.py 6 文件入 fast。
 - [ ] 9.4 **浮点剩余运算**（min、max、neg、abs、ceil、floor、trunc、nearest、copysign）
 - [ ] 9.5 **convert/trunc**（int 与 float 互转）
 - [ ] 9.6 **多参与多返回**

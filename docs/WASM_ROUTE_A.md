@@ -247,3 +247,38 @@ mod 2^32 回绕到 `705082704`，C 的 `int` 是 45 trit 不截断，得 `500005
    同时给汇编器加了 B 型范围硬检查 —— 超 ±1093 条直接 `ValueError`，
    不再按 `% 3^7` 静默回绕（静默跳到错误位置比崩溃危险得多）。
    位运算让函数体长了 400 条，这个隐患已经会真实触发。
+
+## 七、官方 spec testsuite 基线（批次 9.1–9.3，2026-11-24）
+
+**vendor 与运行架构（ADR-21 拍板口径）**：WebAssembly/testsuite 子模块
+（third_party/wasm-testsuite，Apache-2.0，纯测试镜像仓）→ wabt 1.0.42
+wast2json（本地 tmp/wabt/，CI 用平台包管理器）→ trirv_wasm 翻译 → PyVM。
+运行器 `wasm/spec_run.py`（全量/子集两用），诚实四分计数：
+pass / fail（翻译成功语义不符）/ tskip（模块 Unsupported）/ vskip
+（无裁决权：invalid/malformed 需验证器、非 i32 参返、register 等）。
+
+| 指标 | 9.1 初始 | 9.3 收官时点 |
+|---|---|---|
+| pass | 0 | **791** |
+| fail | 0 | 576（= 9.4+ 工单面） |
+| tskip | 5 文件级 | 398 断言级 |
+| vskip | 58714 | 58714 |
+
+**本阶段解锁**：blocktype 全形态（参数/结果块 + s33 类型索引）、br/br_if
+携带值（值槽搬家）、br_table（比较链 + 逐目标搬家）、call_indirect +
+table/element（多表、类型哨兵 typeidx+1/0=null、越界/失配 trap）、
+入口可达性裁剪（未触达的 i64/f64 函数不再毒化整模块）、i32 结果内存
+通道 RESULT_ADDR=180（exit 通道 8 bit 保留历史契约）。
+
+**破案实录（防复发，详 wasm/trirv_wasm.py 注释）**：
+①br 携带值槽错位——携带值在当前栈顶槽，消费者按标签槽读，不重合必须
+  逐槽搬家（_br_copy）；
+②pop 借位寄存器撞名——pop("t0") 的 ADDI 覆写下层驻留值同名寄存器
+  （as-br_if-value 实证），pop 清点 vs 自动换安全借位并返回实际寄存器名；
+③elemkind 字节——element flags 1/2/3/5/6/7 在 offset 后有 0x00 字节，
+  flags 4/6 的 vec 是 expr 非裸 funcidx；类型化引用（0x63/0x64）诚实
+  tskip（br_table.wast 主模块即此形态，语义由 br.wast 的 as-br_table-*
+  断言覆盖）。
+
+**门禁**：trirv_wasm_spec_smoke.py 6 文件冒烟（fail 必须=0、pass ≥ 基线）
+入 fast 门禁；全量为手工报告工具。现有 trirv_wasm_e2e.py 112 项差分继续有效。

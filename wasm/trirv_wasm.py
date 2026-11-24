@@ -43,6 +43,13 @@ import sys
 import trirv_float as tf               # P3：编译期 IEEE→TF 穿透的真相源
 
 WASM_MEM_SIZE = 262144          # wasm 线性内存占 TriRV 地址 [0, 262144)
+TABLE_BASE     = 196608          # 函数指针表区（每表一段：基址顺序分配，每项
+                                 # 1 word=&函数地址；BOOT 装载）
+TYPE_BASE      = 229376          # 类型哨兵区基址（每表 TYPE_STRIDE 一段）
+TYPE_STRIDE    = 4096            # 类型哨兵区每表步长（1 tryte/项；0=null 哨兵，
+                                 # 真类型 = typeidx+1 存储——typeidx 0 合法不可作哨兵）
+RESULT_ADDR    = 180             # _start 把入口返回值 SW 到这里（9 tryte 全宽，
+                                 # 200 以下是自由区：0-26 零页保留、数据段 200 起）
 GLOBAL_BASE   = 262144          # 全局变量区
 STACK_BASE    = 270336          # 栈起点（向上增长）
 WORD          = 9               # 1 word = 9 tryte
@@ -157,8 +164,15 @@ def parse_module(data):
         elif sid == 3:
             m["funcs"], p = vec(data, p, lambda b, q: uleb(b, q))
 
-        elif sid == 4:                                   # table：本切片不用，但要吃掉
-            m["tables"], p = vec(data, p, lambda b, q: (None, q + 4))
+        elif sid == 4:                                   # table：elemtype + limits
+            def tb(b, q):
+                et = b[q]; q += 1                        # 0x70=funcref / 0x6F=externref
+                fl, q = uleb(b, q); mn, q = uleb(b, q)
+                mx = None
+                if fl & 1:
+                    mx, q = uleb(b, q)
+                return (et, mn, mx), q
+            m["tables"], p = vec(data, p, tb)
 
         elif sid == 5:
             def mem(b, q):
@@ -196,7 +210,67 @@ def parse_module(data):
             _, p = uleb(data, p)
 
         elif sid == 9:
-            raise Unsupported("不支持 table/element（无函数指针）")
+            # element 段（9.2 call_indirect/table）：active 段落到 TABLE_BASE，
+            # declarative(3) 跳过；elemexpr 形只认 ref.func / ref.null
+            elems = []
+            n_el, p = uleb(data, p)
+            for _ in range(n_el):
+                fl, p = uleb(data, p)
+                if fl in (0, 4):                          # 表 0：offset expr + funcidx 系
+                    tidx = 0
+                elif fl in (2, 6):                        # tableidx + offset + ...
+                    tidx, p = uleb(data, p)
+                elif fl in (1, 3, 5, 7):
+                    tidx = None                           # declarative/无 offset 形
+                else:
+                    raise Unsupported(f"element flags {fl} 未实现")
+                if fl in (0, 2, 4, 6):                    # offset expr（i32.const ... end）
+                    op = data[p]
+                    if op == 0x41:
+                        p += 1
+                        off, p = sleb(data, p)
+                    else:
+                        raise Unsupported("element offset 只支持 i32.const")
+                    op = data[p]; p += 1                  # end 0x0B
+                    if op != 0x0B:
+                        raise Unsupported("element offset expr 未闭合")
+                if fl in (1, 2, 3, 5, 6, 7):              # elemkind 字节（0x00=funcref）
+                    if data[p] != 0x00:
+                        raise Unsupported(f"element kind 0x{data[p]:02x} 未实现（只支持 funcref）")
+                    p += 1
+                if fl in (1, 3, 5, 7):                    # 无 offset：跳过 funcidx 表
+                    n, p = uleb(data, p)
+                    if fl in (5, 7):
+                        for _ in range(n):
+                            k = data[p]; p += 1
+                            if k == 0xD2:
+                                _, p = uleb(data, p)
+                            elif k != 0xD0:
+                                raise Unsupported("element expr 未实现")
+                            p += 1                        # end
+                    else:
+                        p += n
+                    continue
+                fis = []
+                if fl in (4, 6):                          # elemexpr 形：每条是一个 expr
+                    n, p = uleb(data, p)
+                    for _ in range(n):
+                        k = data[p]; p += 1
+                        if k == 0xD2:                     # ref.func idx end
+                            fi, p = uleb(data, p)
+                            fis.append(fi)
+                        elif k == 0xD0:                   # ref.null ht end
+                            p += 1
+                            fis.append(None)
+                        else:
+                            raise Unsupported("element expr 只支持 ref.func/ref.null")
+                        if data[p] != 0x0B:
+                            raise Unsupported("element expr 未闭合")
+                        p += 1
+                else:                                     # 0/2：裸 funcidx 表
+                    fis, p = vec(data, p, lambda b, q: uleb(b, q))
+                elems.append([tidx, off, fis])
+            m["elems"] = elems
 
         elif sid == 10:
             def co(b, q):
@@ -232,6 +306,10 @@ def parse_module(data):
 # ---------------------------------------------------------------- 代码生成
 # 叶子指令的立即数跳过表（用于死代码），返回新的 p
 def skip_imm(b, p, op):
+    if op == 0x11:
+        _, p = uleb(b, p)                     # typeidx
+        _, p = uleb(b, p)                     # tableidx
+        return p
     if op in (0x0C, 0x0D, 0x10, 0x20, 0x21, 0x22, 0x23, 0x24):
         _, p = uleb(b, p)
     elif op == 0x0E:
@@ -268,7 +346,7 @@ def walk_instrs(body):
 
 
 def has_call(body):
-    return any(op == 0x10 for op, _ in walk_instrs(body))
+    return any(op in (0x10, 0x11) for op, _ in walk_instrs(body))
 
 
 def pick_lreg(body, nlocals, lvtype=None):
@@ -298,6 +376,19 @@ class Gen:
         self.lines = []
         self.uid = 0
         self.frames = []                 # [(行号, 帧字节数)]
+        self.used_table = False          # 9.2：用到 element 初始化 -> BOOT 装 表+类型
+        # 多表（9.3 解堵）：每表 = 表区 [tbase, tbase+sz*9) + 类型区 TYPE_BASE+k*TYPE_STRIDE
+        # 表尺寸 = max(声明 min, elem 覆盖)；运行期越界界 = 该表尺寸
+        tabs = mod.get("tables") or []
+        self.tbases = []
+        self.tsizes = []
+        cur = TABLE_BASE
+        for (et, mn, mx) in tabs:
+            sz = max(mn, 1)
+            self.tbases.append(cur)
+            self.tsizes.append(sz)
+            cur = cur + sz * WORD
+        self.tab_max = self.tsizes[0] if self.tsizes else 0
         self.used_bits = False           # 用到二进制视图 -> 需要 2^k 表与 gp 初始化
         self.used_float = False          # P3：用到浮点 -> 需要浮点常量池段
         self.fconsts = []                # P3：[(addr, raw)] 编译期穿透的 TF 常量
@@ -449,18 +540,33 @@ class Gen:
         self.L(f"    SW {r}, {self.slot(i)}(s0)")
 
     def pop(self, rd):
+        """弹栈到 rd。坑实录（as-br_if-value 实证）：rd 若与下层驻留值的
+        寄存器同名，ADDI 复制会覆写它——借位自动换安全寄存器并返回实际
+        寄存器名（调用方按返回值发后续分支）。"""
         self.h -= 1
         if self.h < 0:
             raise Unsupported("操作数栈下溢（模块未通过校验？）")
         i = self.h
         r = self.vs.get(i)
+        live = [v for k, v in self.vs.items() if k != i and v]
         if r:
             self.vs.pop(i, None)
             if rd != r:
+                if rd in live:
+                    for cand in ("s3", "s4", "s5", "t0", "t1", "t2"):
+                        if cand not in live:
+                            rd = cand
+                            break
                 self.L(f"    ADDI {rd}, {r}, 0")
-            return
+            elif rd in live:
+                for cand in ("s3", "s4", "s5", "t0", "t1", "t2"):
+                    if cand not in live:
+                        self.L(f"    ADDI {cand}, {r}, 0")
+                        return cand
+            return rd
         self.L(f"    LW {rd}, {self.slot(i)}(s0)")
         self.vs.pop(i, None)
+        return rd
 
     def pop_val(self, spare="s5"):
         """弹栈并返回"值已在哪个寄存器里"，驻留或别名时零指令。"""
@@ -526,6 +632,26 @@ class Gen:
         self.L(f"{same}:")
         self.L(f"    SLT {rd}, {ra}, {rb}")
         self.L(f"{done}:")
+
+    def _br_copy(self, keep, newh):
+        """br 系携带值：当前栈顶 [h-keep, h) → 标签槽 [newh-keep, newh)。"""
+        for i in range(keep):
+            if self.slot(self.h - keep + i) != self.slot(newh - keep + i):
+                self.L(f"    LW t0, {self.slot(self.h - keep + i)}(s0)")
+                self.L(f"    SW t0, {self.slot(newh - keep + i)}(s0)")
+
+    def blocktype(self, b, p):
+        """blocktype → ((参数类型列), (结果类型列)), 新游标。0x40=空；
+        valtype 单结果；s33 正值=类型空间索引（multi-value 块，9.2 解堵面）。"""
+        bt = b[p]
+        if bt == 0x40:
+            return ((), ()), p + 1
+        if bt in (0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x70, 0x6F):
+            return ((), (bt,)), p + 1
+        tidx, p = sleb(b, p)
+        if tidx < 0 or tidx >= len(self.ftype):
+            raise ValueError(f"blocktype 类型索引越界 {tidx}")
+        return self.ftype[tidx], p
 
     def addr_off(self, r, offset):
         if offset == 0:
@@ -850,7 +976,7 @@ class Gen:
             if i in self.lreg:
                 self.L(f"    ADDI {self.lreg[i]}, zero, 0")
 
-        self.ctrl = [("func", None, None, 0)]
+        self.ctrl = [("func", None, None, 0, 0, 0)]
         p, n = 0, len(body)
         while p < n:
             p = self.gen_instr(body, p, fidx)
@@ -893,28 +1019,29 @@ class Gen:
         if self.dead and op not in (0x02, 0x03, 0x04, 0x05, 0x0B):
             return skip_imm(b, p, op)
 
-        # ---- 结构 ----
+        # ---- 结构（9.2 起支持带参/带结果的 blocktype——高度记账贯穿 end/br）----
         if op in (0x02, 0x03, 0x04):
-            bt = b[p]; p += 1
-            if bt != 0x40:
-                raise Unsupported("暂不支持带结果的 block/if（blocktype 非空）")
+            (bps, brs), p = self.blocktype(b, p)
             if op == 0x04:
-                self.pop("t0")                    # 条件先出栈
+                t0 = self.pop("t0")                    # 条件先出栈
                 self.spill_all()                  # 两条分支都以"全内存"状态开局
                 els = self.lab("else")
-                self.jnot("t0", els)
-                self.ctrl.append(("if", els, self.lab("end"), self.h))
+                self.jnot(t0, els)
+                self.ctrl.append(("if", els, self.lab("end"), self.h,
+                                  len(bps), len(brs)))
             elif op == 0x03:
                 self.spill_all()                  # 回边目标必须与入口同态
                 top = self.lab("top")
                 self.L(f"{top}:")
-                self.ctrl.append(("loop", top, self.lab("end"), self.h))
+                self.ctrl.append(("loop", top, self.lab("end"), self.h,
+                                  len(bps), len(brs)))
             else:
-                self.ctrl.append(("block", None, self.lab("end"), self.h))
+                self.ctrl.append(("block", None, self.lab("end"), self.h,
+                                  len(bps), len(brs)))
             return p
 
         if op == 0x05:                            # else
-            kind, els, end, h0 = self.ctrl[-1]
+            kind, els, end, h0, _np, _nr = self.ctrl[-1]
             if kind != "if":
                 raise Unsupported("else 不在 if 内")
             self.spill_all()
@@ -923,11 +1050,11 @@ class Gen:
             self.dead = False
             self.h = h0
             self.vs.clear()
-            self.ctrl[-1] = ("ifelse", None, end, h0)
+            self.ctrl[-1] = ("ifelse", None, end, h0, _np, _nr)
             return p
 
         if op == 0x0B:                            # end
-            kind, els, end, h0 = self.ctrl.pop()
+            kind, els, end, h0, np_, nr_ = self.ctrl.pop()
             if kind == "func":
                 self.dead = True
                 return p
@@ -935,7 +1062,7 @@ class Gen:
             if kind == "if":
                 self.L(f"{els}:")                 # 无 else：假分支直落 end
             self.L(f"{end}:")
-            self.h = h0
+            self.h = h0 - np_ + nr_               # 参数被块消费、结果替代之
             self.vs.clear()
             self.dead = False
             if not self.ctrl:
@@ -945,19 +1072,58 @@ class Gen:
         # ---- 控制流 ----
         if op in (0x0C, 0x0D):
             d, p = uleb(b, p)
-            kind, start, end, h0 = self.ctrl[-1 - d]
+            kind, start, end, h0, np_, nr_ = self.ctrl[-1 - d]
             tgt = start if kind == "loop" else end
             if tgt is None:
                 raise Unsupported("br 指向非 loop 的入口（不应发生）")
             if op == 0x0D:
-                self.pop("t0")
-                self.spill_all()
-                self.jif("t0", tgt)
+                t0 = self.pop("t0")
+            self.spill_all()
+            # 标签签名高度：loop 标签吃参数；其余 = 入口 - 参数 + 结果
+            keep = np_ if kind == "loop" else nr_
+            newh = h0 if kind == "loop" else h0 - np_ + nr_
+            self._br_copy(keep, newh)
+            self.h = newh
+            self.vs.clear()
+            if op == 0x0D:
+                self.jif(t0, tgt)
             else:
-                self.spill_all()
                 self.jmp(tgt)
-                self.vs.clear()
                 self.dead = True
+            return p
+
+        if op == 0x0E:                            # br_table（9.3）
+            nl, p = uleb(b, p)
+            lbls = []
+            for _ in range(nl + 1):
+                d, p = uleb(b, p)
+                kind, start, end, h0, np_, nr_ = self.ctrl[-1 - d]
+                tgt = start if kind == "loop" else end
+                if tgt is None:
+                    raise Unsupported("br_table 指向非 loop 入口（不应发生）")
+                keep = np_ if kind == "loop" else nr_
+                newh = h0 if kind == "loop" else h0 - np_ + nr_
+                lbls.append((tgt, keep, newh))
+            # 保守比较链发射：不同嵌套高度的目标各有值槽搬家（内存跳表
+            # 法对异高度目标不成立）。逐目标 = 匹配桩（copy + jmp）。
+            # 值槽搬家与 br(0x0C) 同口径（as-br_table-value-index 实证面）。
+            t0 = self.pop("t0")                   # 索引
+            self.spill_all()
+            stubs = []
+            for k, (tgt, keep, newh) in enumerate(lbls[:-1]):
+                stub = self.lab("bt")
+                stubs.append(stub)
+                self.L(f"    ADDI s1, zero, {k}")
+                self.L(f"    SUB s1, {t0}, s1")
+                self.jnot("s1", stub)             # idx == k → 匹配桩 k
+            for (tgt, keep, newh), stub in zip(lbls[:-1], stubs):
+                self.L(f"{stub}:")
+                self._br_copy(keep, newh)
+                self.jmp(tgt)
+            self._br_copy(lbls[-1][1], lbls[-1][2])   # default 桩
+            self.jmp(lbls[-1][0])
+            self.vs.clear()
+            self.dead = True
             return p
 
         if op == 0x0F:                            # return
@@ -978,6 +1144,45 @@ class Gen:
                 self.L(f"    LW a{i}, {self.slot(self.h + i)}(s0)")
             tgt = self.callee.get(fi) or f"wasm_f{fi}"
             self.L(f"    JAL ra, {tgt}")
+            if rs:
+                r = self.alloc()
+                if r != "a0":
+                    self.L(f"    ADDI {r}, a0, 0")
+                self.push(r)
+            return p
+
+        if op == 0x11:                            # call_indirect（9.2）
+            tidx, p = uleb(b, p)
+            tbl, p = uleb(b, p)
+            if tbl >= len(self.tbases):
+                raise Unsupported(f"call_indirect table {tbl} 未声明")
+            ps, rs = self.ftype[tidx]
+            if len(ps) > 8:
+                raise Unsupported("调用实参超过 8 个")
+            self.spill_all()
+            self.h -= 1                           # 弹出索引（实参之下）
+            idx = self.get(self.h, "s1")
+            # 越界（u32 口径）：idx >=u 该表尺寸 → trap
+            self.li("s2", self.tsizes[tbl])
+            self.lt_u("s3", idx, "s2")
+            self.jnot("s3", "__wasm_trap")
+            # 目标地址 = 表基址 + idx*9
+            self.li("s2", self.tbases[tbl])
+            self.L("    ADDI s3, zero, 9")
+            self.L(f"    MUL s4, {idx}, s3")
+            self.L("    ADD s2, s2, s4")
+            self.L("    LW s5, 0(s2)")
+            # 类型哨兵：类型区+idx 处字节 == typeidx+1 才匹配（0=null）
+            self.li("s6", TYPE_BASE + tbl * TYPE_STRIDE)
+            self.L(f"    ADD s6, s6, {idx}")
+            self.L("    LB s7, 0(s6)")
+            self.L(f"    ADDI s8, zero, {tidx + 1}")
+            self.L("    SUB s7, s7, s8")
+            self.jnot("s7", "__wasm_trap")
+            self.h -= len(ps)
+            for i in range(len(ps)):
+                self.L(f"    LW a{i}, {self.slot(self.h + i)}(s0)")
+            self.L("    JALR ra, 0(s5)")
             if rs:
                 r = self.alloc()
                 if r != "a0":
@@ -1338,7 +1543,37 @@ class Gen:
 
     # -- 收尾 ------------------------------------------------------
     def finish(self, entry):
-        for i in range(self.nimp, len(self.ftype)):
+        # 可达性裁剪（9.2）：只编 entry 的 call 闭包 ∪ element 引用面
+        # （call_indirect 动态目标 = elem 全量保守可达）。未触达的 i64/f64
+        # 函数不再毒化整模块——spec 模块常态是混合类型大杂烩。
+        reach = set()
+        work = [entry]
+        while work:
+            fi = work.pop()
+            if fi in reach or fi < self.nimp:
+                continue
+            reach.add(fi)
+            _, body = self.mod["codes"][fi - self.nimp]
+            for op, q in walk_instrs(body):
+                if op == 0x10:
+                    t, _ = uleb(body, q)
+                    work.append(t)
+        for tidx, off, fis in self.mod.get("elems", []):
+            for fi in fis:
+                if fi is not None:
+                    work.append(fi)
+        while work:
+            fi = work.pop()
+            if fi in reach or fi < self.nimp:
+                continue
+            reach.add(fi)
+            _, body = self.mod["codes"][fi - self.nimp]
+            for op, q in walk_instrs(body):
+                if op == 0x10:
+                    t, _ = uleb(body, q)
+                    work.append(t)
+        self.reach = reach
+        for i in sorted(reach):
             self.gen_func(i)
         lines = list(self.lines)
         for at, size in self.frames:
@@ -1358,7 +1593,9 @@ class Gen:
 RUNTIME = """\
 _start:
 {BOOT}
+{ARGS}
     JAL ra, wasm_f{ENTRY}
+    SW a0, {RESULT}(zero)
     ADDI a7, zero, 93
     ECALL
 __wasm_trap:
@@ -1396,8 +1633,12 @@ def li_lines(rd, v):
     return out
 
 
-def compile_wasm(data, entry=None):
-    """wasm 字节 → (汇编文本, 数据段 {地址: bytes}, 入口标签)。"""
+def compile_wasm(data, entry=None, args=None):
+    """wasm 字节 → (汇编文本, 数据段 {地址: bytes}, 入口标签)。
+
+    args：入口形参初值（i32，按 s32 语义转 45-trit 有符号），_start 物化到
+    a0..a7（≤8，与 gen_func 的形参 ABI 一致）；返回值经 RESULT_ADDR 内存
+    通道全宽写出（exit 通道 a0&0xFF 只有 8 bit，装不下 i32 结果）。"""
     mod = parse_module(data)
     g = Gen(mod)
     fns = mod["exports"].get(0, {})
@@ -1411,10 +1652,48 @@ def compile_wasm(data, entry=None):
         entry = fns[entry]
 
     body = g.finish(entry)
+    cur_table = (g.tbases[-1] + g.tsizes[-1] * WORD) if g.tbases else TABLE_BASE
+    # 9.2：element 段 → BOOT 装 函数地址表 + 类型哨兵表；表尺寸随 elem 覆盖增长
+    tabinit = []
+    for tidx, off, fis in g.mod.get("elems", []):
+        g.used_table = True
+        hi = off + len(fis)
+        if tidx >= len(g.tbases):                    # 声明外的表：顺序补一段
+            while len(g.tbases) <= tidx:
+                g.tbases.append(cur_table)
+                g.tsizes.append(max(hi, 1))
+                cur_table += max(hi, 1) * WORD
+        g.tsizes[tidx] = max(g.tsizes[tidx], hi)
+        tb = g.tbases[tidx]
+        tbase_type = TYPE_BASE + tidx * TYPE_STRIDE
+        tabinit += li_lines("s1", tb + off * WORD)
+        tabinit += li_lines("s2", tbase_type + off)
+        for fi in fis:
+            if fi is None:
+                tabinit += ["    ADDI s3, zero, 0", "    ADDI s4, zero, 0"]
+            else:
+                ty = g.mod["funcs"][fi - g.nimp] + 1
+                tabinit += ["    ADDI s3, zero, &wasm_f%d" % fi,
+                            "    ADDI s4, zero, %d" % ty]
+            tabinit += ["    SW s3, 0(s1)", "    SB s4, 0(s2)",
+                        "    ADDI s1, s1, 9", "    ADDI s2, s2, 1"]
+    if g.mod.get("tables"):
+        for k, (et, mn, mx) in enumerate(g.mod["tables"]):
+            if k < len(g.tsizes):
+                g.tsizes[k] = max(g.tsizes[k], mn)
+    g.tab_max = g.tsizes[0] if g.tsizes else 0
     boot = (li_lines("gp", P2_BASE) if g.used_bits else []) + \
         li_lines("sp", STACK_BASE) + li_lines("s9", NI31) + \
-        li_lines("s10", I32) + li_lines("s11", I31)
-    head = RUNTIME.replace("{BOOT}", "\n".join(boot)).replace("{ENTRY}", str(entry))
+        li_lines("s10", I32) + li_lines("s11", I31) + tabinit
+    arglines = []
+    if args:
+        for i, v in enumerate(args[:8]):
+            sv = v - (2 ** 32) if 2 ** 31 <= v < 2 ** 32 else v   # u32 → s32
+            arglines += li_lines(f"a{i}", sv)
+    head = RUNTIME.replace("{BOOT}", "\n".join(boot)) \
+                    .replace("{ARGS}", "\n".join(arglines)) \
+                    .replace("{ENTRY}", str(entry)) \
+                    .replace("{RESULT}", str(RESULT_ADDR))
     asm = head + body + "\n"
 
     segs = {}
