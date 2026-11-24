@@ -208,13 +208,137 @@ int puts(const char *s) {
     write(1, "\n", 1);
     return len + 1;
 }
+/* ---- int → 十进制串（返回长度，不含 NUL；picolibc 数字格式化模式）---- */
+int tri_d2s(int val, char *buf) {
+    int pos = 0;
+    int neg = 0;
+    int i, j;
+    char tmp[20];
+    if (val < 0) { neg = 1; val = -val; }
+    if (val == 0) { buf[0] = 48; buf[1] = 0; return 1; }
+    while (val > 0) { tmp[pos] = 48 + val % 10; pos++; val = val / 10; }
+    if (neg) { tmp[pos] = 45; pos++; }
+    for (i = 0, j = pos - 1; i < pos; i++, j--) buf[i] = tmp[j];
+    buf[pos] = 0;
+    return pos;
+}
 
-int fputs(const char *s, TRI_FILE *f) {
-    int len = 0;
-    const char *p = s;
-    if (!f) return -1;
-    while (*p) { p++; len++; }
-    { int got = write(f->fd, s, len);
-      if (got != len) return -1; }
-    return len;
+/* ---- fprintf（变参格式化——%d %s %c %%; va_start 单参形式）---- */
+int fprintf(TRI_FILE *f, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap);
+    int total = 0;
+    const char *p = fmt;
+    char nbuf[20];
+    while (*p) {
+        if (*p == 37) {                              /* '%' */
+            p++;
+            if (*p == 100) {                         /* %d */
+                int v = va_arg(ap, int);
+                int n = tri_d2s(v, nbuf);
+                write(f->fd, nbuf, n);
+                total += n;
+            } else if (*p == 115) {                  /* %s */
+                char *sv = va_arg(ap, char *);
+                int n = 0;
+                { const char *q = sv;
+                  while (*q) { q++; n++; } }
+                write(f->fd, sv, n);
+                total += n;
+            } else if (*p == 99) {                   /* %c */
+                int cv = va_arg(ap, int);
+                unsigned char cc = cv;
+                write(f->fd, &cc, 1);
+                total += 1;
+            } else if (*p == 37) {                   /* %% → 字面 % */
+                write(f->fd, "%", 1);
+                total += 1;
+            }
+            p++;
+        } else {
+            write(f->fd, p, 1);
+            total += 1;
+            p++;
+        }
+    }
+    va_end(ap);
+    return total;
+}
+
+/* ---- printf（fprintf(fd=1) 等价——直写 stdout）---- */
+int printf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap);
+    int total = 0;
+    const char *p = fmt;
+    char nbuf[20];
+    while (*p) {
+        if (*p == 37) {
+            p++;
+            if (*p == 100) {
+                int v = va_arg(ap, int);
+                int n = tri_d2s(v, nbuf);
+                write(1, nbuf, n);
+                total += n;
+            } else if (*p == 115) {
+                char *sv = va_arg(ap, char *);
+                int n = 0;
+                { const char *q = sv;
+                  while (*q) { q++; n++; } }
+                write(1, sv, n);
+                total += n;
+            } else if (*p == 99) {
+                int cv = va_arg(ap, int);
+                unsigned char cc = cv;
+                write(1, &cc, 1);
+                total += 1;
+            } else if (*p == 37) {
+                write(1, "%", 1);
+                total += 1;
+            }
+            p++;
+        } else {
+            write(1, p, 1);
+            total += 1;
+            p++;
+        }
+    }
+    va_end(ap);
+    return total;
+}
+
+/* ---- sprintf（格式化到缓冲——无 FILE 依赖）---- */
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap);
+    int total = 0;
+    const char *p = fmt;
+    char nbuf[20];
+    while (*p) {
+        if (*p == 37) {
+            p++;
+            if (*p == 100) {
+                int v = va_arg(ap, int);
+                int n = tri_d2s(v, nbuf);
+                { int i;
+                  for (i = 0; i < n; i++) buf[total + i] = nbuf[i]; }
+                total += n;
+            } else if (*p == 115) {
+                char *sv = va_arg(ap, char *);
+                { const char *q = sv;
+                  while (*q) { buf[total] = *q; total++; q++; } }
+            } else if (*p == 99) {
+                int cv = va_arg(ap, int);
+                buf[total] = (char)cv; total += 1;
+            } else if (*p == 37) {
+                buf[total] = 37; total += 1;
+            }
+            p++;
+        } else {
+            buf[total] = *p; total += 1; p++;
+        }
+    }
+    buf[total] = 0;
+    va_end(ap);
+    return total;
 }

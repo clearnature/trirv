@@ -26,7 +26,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CC = os.path.join(ROOT, "cc", "bin", "trirv_cc")
 CVM = os.path.join(ROOT, "vm", "bin", "trirv_vm")
+
+# 6.8-6.9 printf/fprintf/sprintf guest 源
+
 STDIO_C = os.path.join(ROOT, "libc-musl", "musl_tri", "stdio_tri", "tri_stdio.c")
+STDIO_SRC = open(STDIO_C).read()
 
 passed = 0
 failed = 0
@@ -37,6 +41,18 @@ int close(int fd);
 int read(int fd, const void *buf, int n);
 int write(int fd, const void *buf, int n);
 int lseek(int fd, int off, int w);
+"""
+PF_SRC = PRELUDE + STDIO_SRC + """
+int main(){
+  printf("val=%d str=%s\\n", 42, "ok");
+  TRI_FILE *f = fopen("pf.txt", "w");
+  if (!f) return 1;
+  fprintf(f, "n=%d\\n", 99);
+  fclose(f);
+  char sb[32];
+  sprintf(sb, "x=%d", 7);
+  return sb[0]==120 && sb[2]==55 ? 42 : 1;
+}
 """
 
 
@@ -281,6 +297,38 @@ int main(){
     for tag, runner in (("CVM", run_guest), ("PyVM", run_py_guest)):
         res = runner(src_fileno, sandbox)
         check("6.x fileno·%s" % tag, res["exit"], 42)
+
+    # ---- 6.8-6.9 printf/fprintf/sprintf ----
+    # PF_SRC 已含 PRELUDE+STDIO_SRC——直接 subprocess 编译+跑（不用 run_guest 的
+    # prepend，否则重复定义 = 编译失败）
+    for tag, is_cvm in (("CVM", True), ("PyVM", False)):
+        cf8 = tempfile.mktemp(suffix=".c", dir=os.path.abspath(os.path.join(ROOT, "tmp")))
+        tf8 = tempfile.mktemp(suffix=".trv", dir=os.path.abspath(os.path.join(ROOT, "tmp")))
+        with open(cf8, "w") as fh:
+            fh.write(PF_SRC)
+        rc8 = subprocess.run([CC, cf8, tf8], capture_output=True)
+        if rc8.returncode != 0:
+            check("6.8 printf/fprintf/sprintf·%s 编译" % tag, "OK", "FAIL")
+            continue
+        sb8 = _bootstrap.scratch("stdio_pf_" + tag)
+        os.makedirs(sb8, exist_ok=True)
+        exit8 = None
+        if is_cvm:
+            r8 = subprocess.run([CVM, tf8], capture_output=True, cwd=sb8, timeout=60)
+            for line in r8.stderr.decode("utf-8", "replace").split():
+                if line.startswith("exit="):
+                    exit8 = int(line.split("=")[1])
+        else:
+            prog8, mem8, _ = _trvio.load_any(tf8)
+            v8 = vm.VM(prog8, mem_init=mem8)
+            cwd0 = os.getcwd(); os.chdir(sb8)
+            try: v8.run(max_steps=500000)
+            finally: os.chdir(cwd0)
+            exit8 = v8.exit_code
+        pf_path = os.path.join(sb8, "pf.txt")
+        pf_content = open(pf_path, "rb").read() if os.path.exists(pf_path) else None
+        check("6.8 printf/fprintf/sprintf·%s" % tag, exit8, 42)
+        check("6.8 fprintf 文件·%s" % tag, pf_content, b"n=99\n")
 
     print("\nstdio 行为契约：%d PASS / %d FAIL" % (passed, failed))
     sys.exit(1 if failed else 0)

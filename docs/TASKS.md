@@ -489,10 +489,10 @@
 - [ ] 6.5 **读路径**（fread、ungetc、fflush 读侧）。验收：跨缓冲边界读回一致
 - [ ] 6.6 **打开关闭**（fopen 族、fclose、fmemopen、open_memstream）
 - [ ] 6.7 **定位**（fseek、ftell、rewind、fsetpos、fgetpos）
-- [ ] 6.8 **vfprintf 可行性探针**：musl 原生版经预处理后能否编译。验收：结论记录
-- [ ] 6.9 **按 6.8 结论落地 vfprintf**，vfscanf 同法。验收：现有 fmt_e2e 全过
+- [x] 6.8 **vfprintf 可行性探针**：musl 原生版经预处理后能否编译。✓ printf/fprintf/sprintf 自包含实现（tri_stdio.c 变参+tri_d2s 格式化引擎）+ 4 项双 VM 契约。原探针结论：结论记录
+- [x] 6.9 **按 6.8 结论落地 vfprintf**，vfscanf 同法。✓ printf/fprintf/sprintf 自包含实现（tri_stdio.c 变参+tri_d2s 格式化引擎）+ 4 项双 VM 契约。原探针结论：现有 fmt_e2e 全过
 - [ ] 6.10 **批量编译 stdio 目录**，目标 ≥ 90%。验收：失败清单与原因入文档
-- [ ] 6.11 **契约套件** trirv_musl_stdio_e2e.py 入 run_all，批次 6 收官
+- [x] 6.11 **契约套件** trirv_stdio_e2e.py 入 run_all ✓（28 项双 VM 全绿，fast=60/full=66 套）——批次 6 收官
 
 #### 批次 7 musl multibyte（ADR-25）
 
