@@ -40,6 +40,37 @@ for mn in isa.INST:
     check("encode→decode 往返 %s" % mn, back["inst"] == mn,
           "dec=%r raw=%#x" % (back["inst"], w))
 
+# ---- ADR-35 规范函数（3b.5）：编码空间全枚举（常绿锁定审计数）----
+# 逻辑组合 (opcode 0-26 × funct 0-8 × funct2 0-26) = 6561；定义域判定：
+# U/J（opcode 命中即定义，funct/funct2 不参与）| R（(funct,funct2) 精确对）
+# | 其余（funct 命中、funct2 任意）。审计数（ADR-35-encoding-space.md §1）：
+# defined 2083 / undefined 4478——真相源漂移立刻 FAIL。
+uj_ops, fi_map, r_map = set(), {}, {}
+for _k, (_o, _f, _f2, _fmt) in isa.INST.items():
+    if _fmt in ("U", "J"):
+        uj_ops.add(_o)
+    elif _fmt == "R":
+        r_map.setdefault((_o, _f, _f2), _k)
+    else:
+        fi_map.setdefault((_o, _f), _k)
+n_def = n_undef = 0
+undef_words = []
+for _op in range(27):
+    for _fc in range(9):
+        for _f2 in range(27):
+            if _op in uj_ops or (_op, _fc, _f2) in r_map or (_op, _fc) in fi_map:
+                n_def += 1
+            else:
+                n_undef += 1
+                # trit 权重打包：t0-2=opcode, t7-8=funct, t17-19=funct2（rd/rs1/rs2=0）
+                undef_words.append(_op + _fc * 3 ** 7 + _f2 * 3 ** 17)
+check("编码空间全枚举 defined=2083", n_def == 2083, str(n_def))
+check("编码空间全枚举 undefined=4478", n_undef == 4478, str(n_undef))
+# 词级自洽：4478 个未定义逻辑组合的打包词必须全部 decode→None
+# （规范函数双口径：逻辑成员判定 ↔ 词级解码互为镜像）
+_bad = [w for w in undef_words if isa.decode(w)["inst"] is not None]
+check("未定义编码词级自洽（4478 词 decode→None）", not _bad, str(len(_bad)))
+
 if not os.path.exists(HEADER):
     print("tri-isa.h 不存在（%s）——守卫 SKIP" % HEADER)
     print("\ntri-isa ISA 守卫：%d PASS / %d FAIL / 1 SKIP" % (passed, failed))

@@ -186,6 +186,7 @@ typedef enum {
     OP_FLW, OP_FSW, OP_FCVTW, OP_FCVTW_T, OP_FCVTF,
     OP_FEQ, OP_FLT, OP_FLE,
     OP_NOP,
+    OP_ILLEGAL,                    /* ADR-35：未定义编码→CAUSE_ILLEGAL 陷入（不再 NOP 跳过） */
     OP_LIT0, OP_LIT1, OP_LIT2,     /* T-LIT（opcode 22）：Post 文字运算，§6.1 */
     OP_TC,                         /* TC 压缩（opcode 23）：15-trit 短格式执行 */
     /* CSR 高区（ADR-06）：地址=imm7+2187，执行时归一化为低区枚举 */
@@ -295,7 +296,7 @@ static Inst decode_one(uint32_t raw) {
         in.imm_u = in.imm_s;
         return in;
     }
-    if(!d) return in;
+    if(!d){ in.op=OP_ILLEGAL; return in; }   /* ADR-35：未定义编码不再伪装 NOP */
     in.op=d->code;
     __uint128_t immraw;
     if(d->fmt=='U'||d->fmt=='J') immraw=field(raw,7,19);
@@ -986,8 +987,8 @@ static inline void step(VM *v){
         case OP_TC:{  /* TC v2（T10e 数据拍板）：窗口 t0-t2/s0/s1/a0-a2，
                          sf0 双寄存器 ADDI（rs1_s 在 funct），sf1/2 帧相对（基址 s0） */
             static const int cregs[8]={5,6,7,8,9,10,11,12};
-            int r=cregs[rd&7], sf=in->funct2;
-            if(sf==0){int r2=cregs[in->rs1&7]; v->reg[r]=u(s(v->reg[r2])+imm);}
+            int r=(rd<8?cregs[rd]:0), sf=in->funct2;   /* ADR-35：reg_s≥8 落 x0 */
+            if(sf==0){int r2=(in->rs1<8?cregs[in->rs1]:0); v->reg[r]=u(s(v->reg[r2])+imm);}
             else if(sf==1) v->reg[r]=load_word(v,s(v->reg[8])+imm);
             else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
             else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+(v->packed?1:4)*imm;}
@@ -1013,6 +1014,7 @@ static inline void step(VM *v){
             break;
         case OP_MRET:mret(v);break;
         case OP_WFI:break;                                      /* 提示，中断在步末检查 */
+        case OP_ILLEGAL:take_trap(v,CAUSE_ILLEGAL,0,oldpc);break;   /* ADR-35 定死口径 */
         default:break;
     }
     v->reg[0]=0;
@@ -1110,7 +1112,7 @@ static void vm_run_cg(VM *v, long max_steps){
         [OP_FDIV]=&&L_FDIV,[OP_FSQRT]=&&L_FSQRT,[OP_FLW]=&&L_FLW,[OP_FSW]=&&L_FSW,
         [OP_FEQ]=&&L_FEQ,[OP_FLT]=&&L_FLT,[OP_FLE]=&&L_FLE,
         [OP_FCVTW]=&&L_FCVTW,[OP_FCVTW_T]=&&L_FCVTW_T,[OP_FCVTF]=&&L_FCVTF,
-        [OP_NOP]=&&L_NOP,
+        [OP_NOP]=&&L_NOP,[OP_ILLEGAL]=&&L_ILLEGAL,
     };
     Inst *in; int rd,rs1,rs2,oldpc;
     __int128_t imm,a,b; __uint128_t immu,immraw;
@@ -1244,8 +1246,8 @@ L_LIT1:  v->reg[rd]=tritwise(4,v->reg[rs1],0); NEXT();   /* x^1 循环后继 */
 L_LIT2:  v->reg[rd]=tritwise(5,v->reg[rs1],0); NEXT();   /* x^2 循环前驱 */
 L_TC:    {  /* TC v2：与 switch 路径同语义（窗口/帧相对口径见 switch 注释） */
              static const int cregs[8]={5,6,7,8,9,10,11,12};
-             int r=cregs[in->rd&7], sf=in->funct2;
-             if(sf==0){int r2=cregs[in->rs1&7]; v->reg[r]=u(s(v->reg[r2])+imm);}
+             int r=(in->rd<8?cregs[in->rd]:0), sf=in->funct2;   /* ADR-35：reg_s≥8 落 x0 */
+             if(sf==0){int r2=(in->rs1<8?cregs[in->rs1]:0); v->reg[r]=u(s(v->reg[r2])+imm);}
              else if(sf==1) v->reg[r]=load_word(v,s(v->reg[8])+imm);
              else if(sf==2) store_word(v,s(v->reg[8])+imm,v->reg[r]);
              else if(sf==3){if(s(v->reg[r])==0)v->pc_=oldpc+(v->packed?1:4)*imm;}
@@ -1262,6 +1264,7 @@ L_CSRRCI:csr_op(v,OP_CSRRCI,rd,rs1,immraw); NEXT();
 L_MRET:  mret(v); NEXT();
 L_WFI:   NEXT();
 L_NOP:   NEXT();
+L_ILLEGAL: take_trap(v,CAUSE_ILLEGAL,0,oldpc); NEXT();   /* ADR-35 定死口径 */
 L_DONE:  ;
 #undef BRANCH
 #undef NEXT

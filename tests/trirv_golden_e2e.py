@@ -192,5 +192,22 @@ prog_fle = [E("ADDI", rd=20, rs1=0, imm=100), E("ADDI", rd=21, rs1=0, imm=100),
 c = vm.VM(prog_fle, mem_init=mem).run(max_steps=500)
 check("FLE.S·1.0≤1.0 → 1（exit=a0）", (c.exit_code, c.regs[10]), (1, 1))
 
+# ================ §8 ADR-35 未定义编码统一口径：双 VM 陷入 ================
+# 未定义编码词（逻辑组合 (opcode=0,funct=0,funct2=2) 按 trit 权重打包；
+# 全零词是合法 ADD——ADR-35 §3 初稿口误已订正）。
+# 统一口径：take_trap(CAUSE_ILLEGAL) → mtvec=0（复位向量）→ 重启循环 →
+# 步耗尽。对照证据：任一 VM 若 NOP 落穿（CVM 3b.5 前的旧行为），将执行
+# 后续 ADDI a0=7 → exit=7——本用例即退路退役证明。
+UW1 = 0 * 3**7 + 2 * 3**17           # (0,0,2)
+UW2 = 0 * 3**7 + 3 * 3**17           # (0,0,3)
+assert isa.decode(UW1)["inst"] is None and isa.decode(UW2)["inst"] is None
+for _tag, _uw in (("fc0-f2=2", UW1), ("fc0-f2=3", UW2)):
+    prog_ill = [_uw, E("ADDI", rd=10, rs1=0, imm=7),
+                E("ADDI", rd=17, rs1=0, imm=93), EC]
+    c = run_py(prog_ill, steps=300)
+    check("ADR-35 未定义编码·PyVM 陷入重启（%s，非 NOP 落穿）" % _tag,
+          (c.exit_code, c.regs[10], c.halted), (0, 0, False))
+    check("ADR-35 未定义编码·CVM 同口径（%s）" % _tag, run_cvm(prog_ill), 0)
+
 print("\n手算黄金补缺：%d PASS / %d FAIL" % (passed, failed))
 sys.exit(1 if failed else 0)
