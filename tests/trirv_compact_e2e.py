@@ -19,6 +19,9 @@ TRV_COMPACT=1 时 trirv_cc 在编码期（asm_line fmt==1/2 检查点）把五�
 import os
 import struct
 import subprocess
+# 3b.2 切默认配套：本套件口径=槽制布局 TC 子格式统计（槽索引算术），
+# 显式钉 TRV1（TRV2 流制契约归 trv2_e2e）
+os.environ.setdefault("TRV_FORMAT", "1")
 import sys
 import tempfile
 

@@ -142,8 +142,11 @@ def _compile_c(src):
     try:
         with open(cpath, "w") as f:
             f.write(src)
+        # 3b.2：后端契约=槽序词 + 汇编行 1:1 对应——钉 TRV_FORMAT=1（TRV2
+        # 打包改变词序与条数，与 _parse_trv/_parse_asm 的槽制口径不兼容）
+        env = dict(os.environ, TRV_FORMAT="1")
         r = subprocess.run([binary, cpath, tpath, apath],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, env=env)
         if r.returncode != 0:
             raise ValueError(f"trirv_cc 编译失败: {r.stderr.strip() or r.returncode}")
         prog, strings = _parse_trv(tpath)

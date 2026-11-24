@@ -18,6 +18,9 @@ TRVO（TriRV Object，文本行式中间格式）：
 import os
 import struct
 import subprocess
+# 3b.2 切默认配套：本套件=TRVO 目标文件链接链路（词级取证读取），
+# 最终容器格式与被测对象无关——显式钉 TRV1 保持槽词口径
+os.environ.setdefault("TRV_FORMAT", "1")
 import sys
 import tempfile
 

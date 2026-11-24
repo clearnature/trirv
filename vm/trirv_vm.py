@@ -73,6 +73,12 @@ SYS_NAME = {
     215: "munmap", 222: "mmap", 226: "mprotect", 278: "getrandom",
 }
 
+class StreamProg(list):
+    """TRV2 容器加载器标记（3b.2 切默认配套）：流序指令词列表。
+    VM.__init__ 据此自动选流制引擎——所有既有的 VM(prog, mem_init=…)
+    构造点无需感知容器格式（对齐 CVM 侧 load_trv 由魔数定 packed）。"""
+
+
 class VM:
     WORD_TRYTES = 9                    # int = 45 trit = 9 tryte（每 tryte 5 trit）
 
@@ -83,7 +89,7 @@ class VM:
         self.amp = amp
         # --- TRV2 流制引擎（B1① 正式化）：packed=True 时 imem 为流序指令词
         #     数组，imem_offs 为各指令的 tryte 偏移表（PC→槽 bisect 解析）---
-        self.packed = False
+        self.packed = isinstance(program, StreamProg)   # 3b.2：容器标记自动选引擎
         self.imem_offs = None
         self._dcache = {}                # slot → decoded dict（decode 占 profile 53%）
         # F 扩展浮点寄存器堆：f0..f31，存 TF45 的 45-trit raw（= (sign,mant,exp3)
@@ -91,6 +97,10 @@ class VM:
         # raw 打包天然无损，算术时才 decompose → mant 进 FPU、exp3 走整数 → compose。
         self.freg = [0] * 32
         self.imem = list(program)             # 指令槽
+        if self.packed and self.imem_offs is None:
+            # StreamProg 容器标记 → 偏移表就地重建（from_stream 路径构造后显式
+            # 传入 trytes，不走这里——init 时 packed 仍为 False）
+            self.imem_offs = isa.stream_offsets(isa.pack_stream(self.imem))
         # 统一内存：tryte 编址，每格存 1 tryte(0..242)；bytearray 容量足够
         self.mem = bytearray(1 << 20)
         if mem_init:

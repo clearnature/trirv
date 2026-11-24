@@ -82,7 +82,7 @@ def compile_and_run(src, trv2):
     if trv2:
         env["TRV_FORMAT"] = "2"
     else:
-        env.pop("TRV_FORMAT", None)
+        env["TRV_FORMAT"] = "1"     # 3b.2：默认已切 TRV2，对照臂显式回退
     r = subprocess.run([CC, cf, tf], capture_output=True, text=True, env=env)
     if r.returncode != 0:
         return None, None, None

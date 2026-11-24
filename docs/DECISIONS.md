@@ -168,6 +168,11 @@
 - **参照**：RISC-V 在应用级 profile 里把 C 扩展列为必选，旧的非压缩代码仍然合法；
   Linux ABI 不破坏旧程序。
 - **出处**：PROJECT_AUDIT_BRIEF.md §9 问题 2、8。
+- **2026-11-24 执行（3b.2）**：trirv_cc 默认输出 TRV2（TRV_FORMAT=1 显式回退）。
+  配套：PyVM StreamProg 容器标记（VM 构造点自动选引擎，对齐 CVM 魔数口径）；
+  cc_backend 钉 TRV_FORMAT=1（契约=槽序词+汇编行 1:1）；槽布局取证套件
+  （compact/trvo/trv2_equiv 对照臂）显式钉 1。musl/busybox/crt 链即切换后
+  全量回归默认口径（准入③的执行时点证据）。
 
 ### ADR-18 LLVM 后端：现在不启动，并修正原计划的两处前提 ✅
 - **决策**：前置条件是批次 1–3 完成。P-0 spike 必须回答下面的三问后才判 GO/NO-GO。

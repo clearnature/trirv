@@ -24,7 +24,7 @@ def load_bytes(data):
         n_trytes = struct.unpack_from("<I", data, 8)[0]
         stream = list(data[16:16 + n_trytes])
         off = 16 + n_trytes
-        prog = isa.stream_to_words(stream)
+        prog = vm.StreamProg(isa.stream_to_words(stream))   # 3b.2：标记→VM 自动流制
         packed = True
     elif magic == b"TRV1":
         n_inst = struct.unpack_from("<I", data, 8)[0]

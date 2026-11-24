@@ -4224,12 +4224,12 @@ int main(int argc,char**argv){
         fprintf(stderr,"[trirv_cc.c] exported TRVO %s (fns=%d globs=%d strs=%d)\n",argv[2],NFN,NGLOB,NSTR);
         return 0;
     }
-    /* TRV2 输出：后缀 .trv2 或 TRV_FORMAT=2（B1① 正式化） */
+    /* TRV2 默认输出（ADR-17 切默认，3b.2，2026-11-24）；TRV_FORMAT=1 显式回退
+     * TRV1（ADR-17：TRV1 容器只读，不再加功能——编译器侧保留出口供差分对照）。 */
     {
-        size_t L=strlen(argv[2]);
-        int is_trv2=(L>=5&&!strcmp(argv[2]+L-5,".trv2"));
+        int is_trv2=1;
         const char*fmt=getenv("TRV_FORMAT");
-        if(!is_trv2&&fmt&&!strcmp(fmt,"2")) is_trv2=1;
+        if(fmt&&!strcmp(fmt,"1")) is_trv2=0;
         OUT_FMT_TRV2=is_trv2;                  /* 3.4：分支门收窄须在 assemble_all 前 */
         if(is_trv2){
             uint32_t*p2=assemble_all(&n);
