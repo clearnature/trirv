@@ -554,6 +554,13 @@
   br_table.wast 主模块为类型化引用形态（function-references 提案）诚实
   tskip，语义由 br.wast as-br_table-* 断言覆盖。冒烟门禁
   trirv_wasm_spec_smoke.py 6 文件入 fast。
+- [ ] 9.4 **浮点剩余运算** → **P4 soft-float 架构已裁定**（WASM_ROUTE_A §八，
+  提交 9f8b4e8）：定义层发现=浮点值是二进有理数、TF 不可精确表示、spec
+  断言要求 IEEE 位级精确 ⇒ soft-float（位模式作 i32 + 整数 ALU 模拟）。
+  分批：P4a 位操作九件（下一任务，Gen 浮点槽位改位模式的迁移点已标注）→
+  P4b softfp 加减乘除（musl soft-fp → trirv C 子集 → .trvo 运行时库）→
+  P4c sqrt/convert。e2e 现存 TF 算术差分用例在 P4a 切换时转 xfail（口径
+  =位精确），spec 基线计数自 P4 起只收 soft 路径。
 - [ ] 9.4 **浮点剩余运算**（min、max、neg、abs、ceil、floor、trunc、nearest、copysign）
 - [ ] 9.5 **convert/trunc**（int 与 float 互转）
 - [ ] 9.6 **多参与多返回**
