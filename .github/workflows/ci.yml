@@ -43,6 +43,8 @@ jobs:
 
       - name: Build TriRV core with LLVM (clang)
         run: |
+          # vm/bin/、cc/bin/ 不入库（.gitignore），新克隆里要先建目录，否则链接器打不开输出文件
+          mkdir -p vm/bin cc/bin
           clang -std=gnu11 -O2 -I. -o vm/bin/trirv_vm vm/trirv_vm.c -lm
           cd cc && clang -std=gnu11 -O2 -o bin/trirv_cc trirv_cc.c -lm
 
@@ -63,11 +65,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: recursive   # tinycc(trirv) + musl(trirv-vendor) }
+        with:
+          submodules: recursive   # tinycc(trirv) + musl(trirv-vendor)
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Build with LLVM
         run: |
+          mkdir -p vm/bin cc/bin
           clang -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o vm/bin/trirv_vm vm/trirv_vm.c -lm
           cd cc && clang -std=gnu11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o bin/trirv_cc trirv_cc.c -lm
       - name: Full regression under ASan/UBSan (ADR-29)
