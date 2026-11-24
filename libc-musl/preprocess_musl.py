@@ -15,11 +15,29 @@ def preprocess(text):
     # 剥 restrict / static / inline / signed char 修饰（TriRV 无内部链接语义）
     text = re.sub(r'\bstatic\s+', '', text)
     text = re.sub(r'\binline\s+', '', text)
+    text = re.sub(r'\bvolatile\s+', '', text)      # TriRV 方言无 volatile（批次 6 桥）
+    text = re.sub(r'\bhidden\s+', '', text)        # musl 可见性宏（libc.h 不参与拼接）
+    # 多 token 字型折算（TriRV 全字 9 tryte 等宽：unsigned long ≡ unsigned、
+    # long ≡ int——批次 6 stdio 的 `unsigned long strtoul` 面前提）
+    text = re.sub(r'\bunsigned\s+long\s+long\b', 'unsigned', text)
+    text = re.sub(r'\blong\s+long\b', 'int', text)
+    text = re.sub(r'\bunsigned\s+long\b', 'unsigned', text)
+    text = re.sub(r'\blong\b', 'int', text)
+    # stdio 头常量折叠（trirv_cc 无宏引擎，桥文本的 #define 是死文本——
+    # 值必须直接进源文本；stdio.h/stdio_impl.h 的 include 已被丢弃）
+    for _k, _v in (("EOF","(-1)"),("SEEK_SET","0"),("SEEK_CUR","1"),("SEEK_END","2"),
+                   ("BUFSIZ","1024"),("_IOFBF","0"),("_IOLBF","1"),("_IONBF","2"),
+                   ("F_PERM","1"),("F_NORD","4"),("F_NOWR","8"),("F_EOF","16"),
+                   ("F_ERR","32"),("F_SVB","64"),("F_APP","128"),("F_BADJ","256"),
+                   ("UNGET","8")):
+        text = re.sub(r'\b' + _k + r'\b', _v, text)
     text = text.replace('restrict ', '').replace(' restrict', '')
     # __attribute__((...)) 丢弃
     text = re.sub(r'__attribute__\s*\(\(\s*[^)]*\)\)', '', text)
     # #include 全丢
     text = re.sub(r'#include\s*[<"].*[>"]\n?', '', text)
+    # musl 别名宏调用整行剥离（libc.h 的 #define 不参与拼接——批次 6 桥）
+    text = re.sub(r'^\s*(weak|strong)_alias\s*\([^)]*\)\s*;?\s*$', '', text, flags=re.M)
     # 对象式 #define NAME body 展开；函数式宏支持简单参数替换。
     # 续行（反斜杠结尾）先拼接。
     text = re.sub(r'\\\n', ' ', text)

@@ -449,7 +449,10 @@ static char* parse_type(void){
         const char*real=typedef_find(cur()->s);
         if(real){
             take();
-            char*ty=strdup(real);
+            /* 追加 `*` 必须留余量——strdup 精确分配再 ty[len]=0 会越界写 NUL
+             * （ASAN 实证：16 字节区尾写 0 → 邻堆损坏 → 下游类型串带 \n 幻影） */
+            char*ty=malloc(strlen(real)+256);
+            strcpy(ty,real);
             int len=strlen(ty);
             while(at("*")){ take(); ty[len++]='*'; ty[len]=0; }
             return ty;
@@ -963,18 +966,56 @@ static void struct_def_semi(const char*name,int semi){
     int pos=0, maxaln=9;                                /* 成员对齐最大值（__tint2=4 档时 4） */
     while(!at("}")){
         char*mty=parse_type();
-        char*mn=take()->s;
-        while(accept("[")){                            /* 成员数组 */
-            char buf[96]; snprintf(buf,sizeof(buf),"%s[%s]",mty,cur()->s);
-            mty=strdup(buf); take(); expect("]");
+        /* 成员多声明符（批次 6.3a：musl FILE 的 `*rpos, *rend;` 面）——
+         * 与局部多声明符同语义：后续声明符自带 `*`/数组维度逐个展开。
+         * 基础类型的星号已由 parse_type 吃掉，此处只补本声明符自带的。 */
+        for(;;){
+            if(at("(")&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,"*")){
+                /* 内联函数指针声明符（musl FILE 的 `size_t (*read)(…)` 面）：
+                 * 签名不参与布局——指针一律 9 tryte，调用走间接路径
+                 * （与顶层 fn-ptr 声明同口径），成员记 int* 型 */
+                take();                              /* ( */
+                expect("*");
+                char*fmn=take()->s;
+                expect(")");                         /* ) */
+                if(at("(")){                         /* 跳过 (参数表) */
+                    int d=0;
+                    do{
+                        if(at("(")) d++;
+                        else if(at(")")) d--;
+                        else if(atk(TK_EOF)) break;
+                        take();
+                    } while(d>0);
+                }
+                int aln=9;
+                int off=((pos+aln-1)/aln)*aln;
+                pos=off+9;
+                GROW(sd.m,sd.cap,sd.nm,Member);
+                sd.m[sd.nm].name=fmn; sd.m[sd.nm].ty=strdup("int*"); sd.m[sd.nm].off=off; sd.nm++;
+                if(!accept(",")) break;
+                continue;
+            }
+            int stars=0;
+            while(accept("*")) stars++;
+            char*mty2=mty;
+            for(int k=0;k<stars;k++){
+                char b2[256]; snprintf(b2,sizeof(b2),"%s*",mty2);
+                mty2=strdup(b2);
+            }
+            char*mn=take()->s;
+            while(accept("[")){                            /* 成员数组 */
+                char buf[96]; snprintf(buf,sizeof(buf),"%s[%s]",mty2,cur()->s);
+                mty2=strdup(buf); take(); expect("]");
+            }
+            int aln = !strcmp(mty2,"__tint2") ? 4 : 9;      /* __tint2 4-对齐档（C2 方案 A），
+                                                               其余成员仍 9-对齐（ABI §6） */
+            int off=((pos+aln-1)/aln)*aln;
+            if(aln>maxaln) maxaln=aln;
+            pos=off+ty_bytes(mty2);
+            GROW(sd.m,sd.cap,sd.nm,Member);
+            sd.m[sd.nm].name=mn; sd.m[sd.nm].ty=mty2; sd.m[sd.nm].off=off; sd.nm++;
+            if(!accept(",")) break;
         }
-        int aln = !strcmp(mty,"__tint2") ? 4 : 9;       /* __tint2 4-对齐档（C2 方案 A），
-                                                           其余成员仍 9-对齐（ABI §6） */
-        int off=((pos+aln-1)/aln)*aln;
-        if(aln>maxaln) maxaln=aln;
-        pos=off+ty_bytes(mty);
-        GROW(sd.m,sd.cap,sd.nm,Member);
-        sd.m[sd.nm].name=mn; sd.m[sd.nm].ty=mty; sd.m[sd.nm].off=off; sd.nm++;
         expect(";");
     }
     expect("}"); if(semi) expect(";");
@@ -983,8 +1024,11 @@ static void struct_def_semi(const char*name,int semi){
     GROW(STRUCTS,CAPSTRUCT,NSTRUCT,StructDef);
     STRUCTS[NSTRUCT++]=sd;
 }
+/* typedef 名解引用（批次 6.3a：musl FILE 经 `typedef struct _IO_FILE FILE;`
+ * 使用——成员访问按别名查不到结构体，先解一层 typedef） */
 static Member* member_find(const char*sty,const char*mn){
     StructDef*sd=struct_find(sty);
+    if(!sd){ const char*t2=typedef_find(sty); if(t2&&t2!=sty) sd=struct_find(t2); }
     if(!sd) return NULL;
     for(int i=0;i<sd->nm;i++) if(!strcmp(sd->m[i].name,mn)) return &sd->m[i];
     return NULL;
@@ -1351,7 +1395,21 @@ static void parse_program(void){
                         f->nparams++;
                         continue;                        /* 回 do-while 判定 "," */
                     }
-                    char*pn=take()->s;
+                    /* const 限定词剥离（批次 6.3a：musl 原型 `const char *` 面——
+                     * 参数语境 parse_type 不吃 const，先剥再解析） */
+                    while(accept("const")) { }
+                    /* 匿名形参（批次 6.3a：musl 头文件原型 `void *memcpy(void *, …)`
+                     * 面——parse_type 已吃掉 `*`，此处若当前 token 是 "," 或 ")"
+                     * 即无名形参，合成占位名；有名字（含定义）走原路径 */
+                    char*pn;
+                    if(at(",")||at(")")){
+                        char anbuf[32];                    /* 必须逐参 strdup——static 缓冲
+                                                              会被下一个匿名形参覆写（悬垂） */
+                        snprintf(anbuf,sizeof(anbuf),"_p%d",f->nparams);
+                        pn=strdup(anbuf);
+                    } else {
+                        pn=take()->s;
+                    }
                     /* 数组形参退化指针 */
                     {   /* 形参数组退化为指针：int a[5] -> int*；int m[][3] -> int[3]* */
                         char dims[128]=""; 

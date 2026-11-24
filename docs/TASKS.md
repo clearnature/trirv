@@ -418,8 +418,18 @@
       增补）；**6.3 虚拟磁盘面拍板=VM 宿主沙箱目录透传**（B0 虚拟化优先的
       平台面兑现——现 openat 假 fd 恒 EOF，升级为透传+越界诚实拒绝）；
       6.10 验收基数口径=T1+T2 可移植基数 100%
-- [ ] 6.2 **单线程桩层**：锁宏空操作、被引用的 pthread 函数桩。验收：桩清单与 6.1 一致
+- [x] 6.2 **单线程桩层** ✓ musl_tri/stdio_tri/lock_tri.c（__lockfile 恒 1/
+      __unlockfile 空/flockfile 三件套——与 6.1 §2.1 清单逐名一致）；
+      stdio_bridge.c 前导（FILE 原样结构+常量+原型）+ preprocess 增补
+      （volatile/hidden 剥离、weak_alias 整行、unsigned long/long 折算、
+      stdio 常量折叠 18 项——桥 #define 对无宏引擎的 trirv_cc 是死文本）
 - [ ] 6.3 **FILE 结构与底层 I/O**（__stdio_read、write、seek、close）。验收：写读回环（管道与内存流）
+      **6.3a 进行中（2026-11-24 深夜）**：trirv_cc 五项解析扩展落地
+      （成员多声明符/内联 fnptr 成员/匿名形参/const 形参/别名星号余量）——
+      ASAN 捕获 typedef+`*` 路径 strdup 精确分配越界写 NUL（邻堆损坏→
+      类型串 \n 幻影+段失类全部同根，潜伏至今首次触发）；探针 20 文件
+      9 OK，余三类：间接成员调用形（expect ';' got '(' ×6）/errno 面
+      （×2）/fmemopen 维度表达式——逐类收口中
 - [ ] 6.4 **写路径**（fwrite、fflush）。验收：缓冲写与直接写结果一致
 - [ ] 6.5 **读路径**（fread、ungetc、fflush 读侧）。验收：跨缓冲边界读回一致
 - [ ] 6.6 **打开关闭**（fopen 族、fclose、fmemopen、open_memstream）

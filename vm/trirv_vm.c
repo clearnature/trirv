@@ -403,7 +403,10 @@ static inline void csr_write(VM *v,__uint128_t addr,__uint128_t val){
         /* 必须先 u() 规整到 [0,MOD_X) 再 s()：CSRRS/CSRRC 的 old|src 可 >= MOD_X，
          * 直接 s(val) 只减一次 MOD_X 会算错 3 补码值（与 Python s(u(val)) 对齐）。 */
         val=u((__uint128_t)s(u(val)));
-        if(addr==CSR_MEPC) val=(__uint128_t)align_down4((__int128_t)val);   /* mepc 4 对齐 */
+        /* mepc 4 对齐必须在 3 补码符号域做（align_down4(s(val))）——
+         * 直接对 unsigned 规整值截断会算错负地址（CSR fuzz 21 word 实证）。
+         * mtvec 保留低 2 tryte 位作向量模式（ADR-24）——原样存、派发时拆。 */
+        if(addr==CSR_MEPC) val=u((__uint128_t)align_down4(s(val)));
         /* mtvec 保留低 2 tryte 位作向量模式（ADR-24：0=direct 1=vectored）——
          * 旧实现这里把模式位对齐抹掉，批次 5 起原样存、派发时再拆 */
     }
