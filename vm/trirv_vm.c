@@ -833,7 +833,7 @@ static inline void step(VM *v){
      *   ——AMP 调度器走本函数实证自旋，主路径 cg 引擎不受影响。） */
     int si=cvm_fetch_slot(v);
     if(v->halted||si<0){v->halted=1;return;}
-    v->slot_hint=si;
+    v->slot_hint=si+1;
     Inst *in=&v->prog[si];
     int rd=in->rd,rs1=in->rs1<32?in->rs1:0,rs2=in->rs2<32?in->rs2:0;
     __int128_t imm=in->imm_s;              /* 带符号：加法/跳转/地址 */
@@ -1083,7 +1083,7 @@ static void vm_run_cg(VM *v, long max_steps){
 
     { int si=cvm_fetch_slot(v);
       if(v->halted||si<0){v->halted=1;return;}          /* PC=tryte 地址（流制按偏移表解析） */
-      v->slot_hint=si;
+      v->slot_hint=si+1;
       in=&v->prog[si]; oldpc=v->pc_;
       v->pc_+= v->packed? (v->offs[si+1]-v->offs[si]) : 4; }
     rd=in->rd; rs1=in->rs1<32?in->rs1:0; rs2=in->rs2<32?in->rs2:0;
