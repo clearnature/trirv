@@ -310,3 +310,45 @@ trunc_sat → 与 9.5 convert/trunc 合流 → 9.6 多参与多返回 → 9.7 i6
 标准诚实做法（musl/SoftFloat 同源）。
 **How to apply:** 9.4 起浮点相关 spec 断言以 soft-float 位精确为准；
 TF 直算路径不再对 spec 基线计数。
+
+## 九、算术层拍板：纯三值无回绕（2026-11-25，取代 §八 的 int 部分）
+
+用户裁定：「三进制有自己的全套标准，32 位对我们是无效的」。
+wasm 方言整数类型 = **原生 45-trit word**，无回绕、无 32 位概念、无无符号视图。
+
+**删除面（仿真层整体退役）**：
+- `wrap`/`to_unsigned`/2^k 表（gp/P2）/32 轮拆位走查（gen_bitop 的
+  and/or/xor 各 ~380 条 → **1 条 TAND/TOR/XOR**）
+- i32.add/sub 各 2 条回绕修正 → **1 条 ADD/SUB**；mul 11 条 → **1 条 MUL**
+- 移位 ×/÷ 2^k 链 → **原生 SLL/SRA（×3^k 三进移位）**
+- lt_u/无符号比较族 → 原生 SLT 符号比较
+- clz/ctz/popcnt/rotl/rotr：二进制位概念 → 方言删（三元位运算 = 逐 trit）
+- **9.7 i64 / 9.8 i16 / 9.9 Barrett 全部溶解**：原生 word 天然覆盖 64 位
+  值域；小类型 = tryte；无回绕则 Barrett 无意义
+
+**内存层（§十 定版）**：cell = tryte（0..242）、word = 9 tryte 原生
+（= VM `_store_word` 口径）、地址 1:1 零翻译——i32.store/load 发射
+**1 条 SW/LW**、store8/load8 = **1 条 SB/LBU**（访存仿真层整体删除，
+旧 digit 拆装 ~34 条 → 1 条）。跨宽度别名 = 三元语义记档
+（store8 写的 tryte 是 word 的某位 digit）。
+
+**spec 刻度重定义**：结构面（block/loop/br/br_table/if/call/
+call_indirect/table/局部变量/select）为有效刻度；整数算术断言 =
+定义性 NS（2^32 回绕语义不在方言内）；字节边界断言（243..255）=
+定义性 NS。二进制 wasm 模块不可位级运行——本就在「二进制兼容
+另立项」账上。FNV/CRC 类二进制算法移植 = 改写为三值算法（如逐 trit
+FNV 变体），e2e 的 FNV 用例随本拍板改写。
+
+**浮点注记**：§八 soft-float 裁定的动因（IEEE 位级精确）与本次同源
+——纯三值口径下 f32/f64 算术 = **原生 TF 指令**（P3 面板回归），
+IEEE↔TF 转换只在数据边界（encode/decode 已有）；spec 浮点断言 =
+定义性 NS。§八的 soft-float 路线作废，9.4 的 min/max/abs/neg 在
+TF 格式上是 sign-trit 操作（比 IEEE 位技巧简单得多），
+ceil/floor/trunc = 基 3 阶码操作。
+
+**Why:** 5-trit/243 的选型本就为对齐宿主地址翻译；byte 是二进制产物，
+为其保真而把三元 ABI 永久变形（2-tryte 对）是付双重税（内存 ×2 +
+每访存 ~20 条指令）买「另立项才需要」的兼容。纯三值口径下访存从
+~34 条 → 1 条，算术从 ~380 条 → 1 条。
+**How to apply:** 翻译器重构按本节删除面执行；e2e/spec 基线按新刻度
+重 derive；TernixOS/上层软件以原生 word/tryte 语义编程。
