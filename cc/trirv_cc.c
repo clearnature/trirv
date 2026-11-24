@@ -612,7 +612,7 @@ static Node* parse_postfix(void){
     Node*n=parse_primary();
     for(;;){
         if(accept("[")){ Node*i=parse_expr(); expect("]"); Node*x=nnew(N_INDEX); x->l=n; x->r=i; n=x; }
-        else if(at("(")&&(n->k==N_DEREF||n->k==N_VAR
+        else if(at("(")&&(n->k==N_DEREF||n->k==N_VAR||n->k==N_MEMBER
                           ||(n->k==N_CAST&&n->s&&strchr(n->s,'*')))){
             /* 间接调用三形态（批次 2.6 加裸变量形态）：
              *   (*fp)(...)          —— 解引用调用
@@ -622,7 +622,10 @@ static Node* parse_postfix(void){
             take();                               /* ( */
             Node*call=nnew(N_CALL);
             call->s=strdup("(*target)");
-            call->e=(n->k==N_DEREF)?n->e:n;       /* N_VAR 目标=自身（n->e 为空） */
+            /* 成员目标（批次 6.3a：musl `f->write(f,…)` 面）——eval(N_MEMBER)
+             * 已是「地址→LW→函数词」值语义，直接传成员节点（再包 N_DEREF 会
+             * 双重解引用：第二层把函数词当地址再 LW，JALR 跳进数据段实证） */
+            call->e=(n->k==N_DEREF)?n->e:n;       /* N_VAR/N_MEMBER 目标=自身 */
             int cap=0;
             if(!at(")")){
                 do { call->args=grow(call->args,&cap,call->nargs,sizeof(Node*));

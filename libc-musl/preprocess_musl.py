@@ -27,9 +27,38 @@ def preprocess(text):
     # 值必须直接进源文本；stdio.h/stdio_impl.h 的 include 已被丢弃）
     for _k, _v in (("EOF","(-1)"),("SEEK_SET","0"),("SEEK_CUR","1"),("SEEK_END","2"),
                    ("BUFSIZ","1024"),("_IOFBF","0"),("_IOLBF","1"),("_IONBF","2"),
-                   ("F_PERM","1"),("F_NORD","4"),("F_NOWR","8"),("F_EOF","16"),
-                   ("F_ERR","32"),("F_SVB","64"),("F_APP","128"),("F_BADJ","256"),
-                   ("UNGET","8")):
+                   # F_* 旗标=3 的幂（trit 掩码）：musl 的位旗标惯用法在
+                   # 三值本征 &/|/~ 下按 3^k 单 trit 语义成立（每旗占一 trit）
+                   ("F_PERM","1"),("F_NORD","3"),("F_NOWR","9"),("F_EOF","27"),
+                   ("F_ERR","81"),("F_SVB","243"),("F_APP","729"),("F_BADJ","2187"),
+                   ("F_EOF_WIDE","6561"),("F_NAVAIL","19683"),("F_TMB","59049"),
+                   ("UNGET","8"),
+                   # O_* 系（musl fcntl.h 十进制——syscall 边界二进制口径，
+                   # VM 虚拟磁盘侧按 Linux 值消费，ADR-09 冻结号）
+                   ("O_RDONLY","0"),("O_WRONLY","1"),("O_RDWR","2"),
+                   ("O_CREAT","64"),("O_EXCL","128"),("O_TRUNC","512"),
+                   ("O_APPEND","1024"),("O_NONBLOCK","2048"),("O_CLOEXEC","524288"),
+                   # SYS_* 系（__stdio_read/write/close 直呼面——Linux 标准号）
+                   ("SYS_open","2"),("SYS_close","57"),("SYS_lseek","62"),
+                   ("SYS_read","63"),("SYS_write","64"),("SYS_unlink","87"),
+                   ("SYS_rename","82"),("SYS_ioctl","16"),("SYS_fcntl","25"),
+                   ("SYS_unlinkat","35"),("SYS_renameat","38"),("SYS_getpid","172"),
+                   ("SYS_rmdir","84"),("SYS_renameat2","276"),("SYS_openat","56"),
+                   ("SYS_fstat","80"),("SYS_exit_group","94"),("SYS_writev","66"),
+                   ("SYS_readv","65"),("SYS_brk","214"),("SYS_munmap","215"),
+                   # errno 常量（TriRV 数值=Linux riscv64 标准区）
+                   ("EOVERFLOW","75"),("EINVAL","22"),("ENOMEM","12"),("EBADF","9"),
+                   ("EIO","5"),("EACCES","13"),("ENOENT","2"),("ESPIPE","29"),
+                   # fcntl 面
+                   ("F_SETFD","2"),("F_GETFD","1"),("FD_CLOEXEC","1"),
+                   ("F_SETFL","4"),("F_GETFL","3"),("AT_FDCWD","-100"),
+                   ("AT_REMOVEDIR","2048"),("AT_EACCESS","512"),
+                   # limits（TriRV 全字等宽：MAX=(3^45-1)/2；MIN=-MAX-1）
+                   ("LONG_MAX","179055468165337236283"),
+                   ("LLONG_MAX","179055468165337236283"),
+                   ("INT_MAX","179055468165337236283"),
+                   ("SIZE_MAX","358110936330674472566"),
+                   ("UINT_MAX","358110936330674472566")):
         text = re.sub(r'\b' + _k + r'\b', _v, text)
     text = text.replace('restrict ', '').replace(' restrict', '')
     # __attribute__((...)) 丢弃
@@ -171,8 +200,9 @@ def preprocess(text):
     # （strtod_tri/ecvt_tri，TF45 raw ABI），此守卫仅拦未经重写的上游文件
     if re.search(r'\b(double|float)\b', text):
         text = '#error TRIRV_SKIP(DECISIONED: no FP on TriRV, see README section 6)\n' + text
-    # stdio 内部依赖（FILE/sh_fromstring/__intscan 系）
-    if re.search(r'\b(FILE|sh_fromstring|__intscan|shlim|shcnt)\b', text):
+    # stdio 内部依赖（vfprintf 内部 scan 系；FILE 已随批次 6 桥受支持——
+    # 桥+锁桩+虚拟磁盘面落地，本名单移除 FILE，2026-11-24）
+    if re.search(r'\b(sh_fromstring|__intscan|shlim|shcnt)\b', text):
         text = '#error TRIRV_SKIP: depends on musl stdio internals -> rewrite in musl_tri\n' + text
     # & 常量对齐掩码（&-4/&-3 等）依赖二进制位语义 —— musl_tri 重写
     # & 二进制掩码语义适配（纯三进制原则：重写而非跳过）：
@@ -183,18 +213,18 @@ def preprocess(text):
     for ln in text.split('\n'):
         # 对齐/掩码赋值行删除（& 常量、&= 复合赋值），控制流掩码行保留
         # （留给下方控制流掩码标记判断）
-        if re.search(r'&\s*-?\s*[0-9]', ln) and not re.search(r'\bif\b|\bwhile\b|\breturn\b', ln):
+        if re.search(r'&\s*-\s*[0-9]', ln) and not re.search(r'\bif\b|\bwhile\b|\breturn\b', ln):
             drop_lines.append(ln)
             continue
         # &= 复合赋值掩码行（n &= -4）—— 二进制语义，删除
-        if re.search(r'&=\s*-?\s*[0-9]', ln):
+        if re.search(r'&=\s*-\s*[0-9]', ln):
             drop_lines.append(ln)
             continue
         kept2.append(ln)
     text = '\n'.join(kept2)
     # b) 掩码判断行（if(n&8) 等——影响控制流，语义真不同）→ SKIP 标记，
     #    由 musl_tri 重写。
-    if re.search(r'\bif\s*\([^)]*&\s*-?\s*[0-9][^)]*\)', text):
+    if re.search(r'\bif\s*\([^)]*&\s*-\s*[0-9][^)]*\)', text):
         text = '#error TRIRV_SKIP: & mask in control flow -> rewrite in musl_tri\n' + text
     # 数组维度常量表达式折叠：[14 * 4 + 1] → [57]（纯数字与 + - * / ()）
     def fold_dim(m):

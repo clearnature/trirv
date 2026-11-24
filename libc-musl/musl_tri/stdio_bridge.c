@@ -120,5 +120,18 @@ int nanosleep(void *, void *);
 int isatty(int);
 unsigned strtoul(const char *, char **, int);
 
+/* —— 三条标准流（批次 6.3a）：定义在 musl_tri stdin/stdout/stderr 重写件
+ * （上游 stdin.c 用指定初始化器复合字面量，属重写层形态） */
+extern FILE *stdin;
+extern FILE *stdout;
+extern FILE *stderr;
+extern FILE *__stdin_used;      /* musl hidden 别名（stdin.c 重写件定义） */
+extern FILE *__stdout_used;
+extern FILE *__stderr_used;
+
+/* —— errno（批次 6.3a）：musl 的 errno 是线程局部宏（__errno_location），
+ * TriRV 单核协作调度 → 普通全局等价；批次 7 多线程时升级为核内偏移 */
+int errno;
+
 /* —— 三值本征面（方言口径：无 <stdarg>，变参由编译器内建路径处理；
  *    vfprintf 族按 6.8/6.9 探针另行落地，本桥不含 va_list）—— */

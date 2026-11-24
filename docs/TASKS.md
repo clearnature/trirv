@@ -424,12 +424,19 @@
       （volatile/hidden 剥离、weak_alias 整行、unsigned long/long 折算、
       stdio 常量折叠 18 项——桥 #define 对无宏引擎的 trirv_cc 是死文本）
 - [ ] 6.3 **FILE 结构与底层 I/O**（__stdio_read、write、seek、close）。验收：写读回环（管道与内存流）
-      **6.3a 进行中（2026-11-24 深夜）**：trirv_cc 五项解析扩展落地
-      （成员多声明符/内联 fnptr 成员/匿名形参/const 形参/别名星号余量）——
-      ASAN 捕获 typedef+`*` 路径 strdup 精确分配越界写 NUL（邻堆损坏→
-      类型串 \n 幻影+段失类全部同根，潜伏至今首次触发）；探针 20 文件
-      9 OK，余三类：间接成员调用形（expect ';' got '(' ×6）/errno 面
-      （×2）/fmemopen 维度表达式——逐类收口中
+      **6.3a 探针推进（2026-11-24 深夜，第 2 轮）**：T1 可编集 63 文件
+      **48 OK = 76% 编译通过**（上游锁 4 文件由 lock_tri.c 桩替代、
+      stdin/stdout/stderr+底座 6 文件归重写层，均不计入）。当日累计
+      trirv_cc 八项扩展：成员多声明符/内联 fnptr 成员/匿名形参/const 形参/
+      别名星号余量（ASAN）/间接成员调用 `f->write(...)`（eval(N_MEMBER)
+      值语义直传，双解引用 JALR 跳数据段实证）/双逻辑非已通/errno 全局。
+      preprocess 折算表扩至 ~50 项（F_*=3 的幂 trit 旗标编码——&=TAND
+      单 trit 测试语义成立/O_* 二进制边界口径/SYS_* Linux 标准号/
+      limits 全字 MAX/errno 常量）；& 掩码删除与控制流 SKIP 规则收窄为
+      负掩码（二进制对齐技巧行）；FILE 移出整文件 SKIP 名单（桥落地后
+      过时）。余 15 文件四类：sizeof 支持（×2 编译器特性）/复合字面量
+      数组（×4 重写层）/getc_unlocked 宏包含形（×2 重写层）/杂项调查
+      （×7：ofl prev、__stdout_write、fopencookie ret 等）
 - [ ] 6.4 **写路径**（fwrite、fflush）。验收：缓冲写与直接写结果一致
 - [ ] 6.5 **读路径**（fread、ungetc、fflush 读侧）。验收：跨缓冲边界读回一致
 - [ ] 6.6 **打开关闭**（fopen 族、fclose、fmemopen、open_memstream）
