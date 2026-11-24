@@ -100,6 +100,7 @@ MSTATUS_MPP_SHIFT = 11     # 中断前特权级 (bits 11-12)
 CAUSE_ILLEGAL = 2          # 非法指令
 CAUSE_ECALL_U = 11         # 来自 U 态的环境调用
 CAUSE_MTIMER  = (1 << 63) | 7   # 机器定时器中断（RISC-V 风格最高位置 1）
+CAUSE_MSI    = (1 << 63) | 3   # 机器软件中断（ADR-23①：mipi 5014 核间中断）
 OPCODE_NAME = {v: k for k, v in OPCODE.items()}
 
 # 指令 -> (opcode, funct, funct2, 格式)

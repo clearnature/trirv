@@ -1765,10 +1765,10 @@ static int syscall_no(const char*name){
         "lseek","readv","writev","newfstatat","fstat","exit_group","set_tid_address",
         "futex","clock_gettime","sched_yield","rt_sigaction","rt_sigprocmask",
         "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",
-        "coreid","msend","mrecv",NULL};
+        "coreid","msend","mrecv","mrecvw","mipi",NULL};
     static const int num[]={64,63,5000,5001,93,214,17,56,57,62,65,66,79,80,94,96,98,113,124,
         134,135,139,160,172,178,215,222,226,278,
-        5010,5011,5012};
+        5010,5011,5012,5013,5014};
     for(int i=0;sys[i];i++) if(!strcmp(name,sys[i])) return num[i];
     return -1;
 }
@@ -3038,7 +3038,7 @@ static int is_syscall_name(const char*s){
         "lseek","readv","writev","newfstatat","fstat","exit_group","set_tid_address",
         "futex","clock_gettime","sched_yield","rt_sigaction","rt_sigprocmask",
         "rt_sigreturn","uname","getpid","gettid","munmap","mmap","mprotect","getrandom",
-        "coreid","msend","mrecv",NULL};
+        "coreid","msend","mrecv","mrecvw","mipi",NULL};
     for(int i=0;sys[i];i++) if(!strcmp(s,sys[i])) return 1;
     return 0;
 }

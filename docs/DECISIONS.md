@@ -235,6 +235,12 @@
 - **参照**：OpenAMP 的 rpmsg 是中断驱动；RISC-V CLINT 的 MSIP；FreeRTOS 用任务通知
   替代轮询。
 - **取代**：TASKS.md B3 的三步顺序与 T11b。
+- **2026-11-24 批次 4 执行**：①②落地——mrecvw 5013（空匹配挂起：pc 回卷
+  重执行 + hub.blocked，msend 先入队后唤醒；全体挂起=死锁诚实停机）、
+  mipi 5014（CLINT MSIP 模型：置目标核 irq_mipi，MIE=1 步末陷入
+  CAUSE_MSI=(1<<63)|3，MIE=0 挂起待使能）、mhartid（CSR 0xF14 只读=核号，
+  高区低区同入口）、4 核契约（挂起核不拖累运行核+死锁收尾）、tri-tcc
+  __tri_syscall AMP 用例。契约 amp_e2e 10→22 项双 VM。③宿主多线程未动。
 - **落点**：批次 4。
 
 ### ADR-24 固件：在现有框架上接真实定时器，特权态止于 M/U ✅

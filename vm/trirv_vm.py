@@ -48,6 +48,8 @@ SYS_WRITE8       = 5001
 SYS_COREID       = 5010
 SYS_MSEND        = 5011
 SYS_MRECV        = 5012
+SYS_MRECVW       = 5013                # ADR-23①：阻塞收（空邮箱挂起，被 msend 唤醒）
+SYS_MIPI         = 5014                # ADR-23①：核间中断（CLINT MSIP 模型）
 # AMP 共享页窗口：地址空间顶部固定 64 tryte（与 C VM 逐常量一致）。
 # 调度 = 单步协作轮转 + 步间窗口同步（顺序一致性由调度器保证）。
 AMP_SHARED_BASE  = (1 << 20) - 64
@@ -132,6 +134,7 @@ class VM:
         self.csr = {addr: 0 for addr in isa.CSR.values()}   # CSR 寄存器文件
         self.csr[isa.CSR["mstatus"]] = 0
         self.irq_timer = False                # 定时器中断挂起位（供测试/固件注入）
+        self.irq_mipi = False                 # ADR-23①：核间软中断挂起位（mipi 5014 置位）
         # --- A 扩展：LR/SC 保留集（单线程 VM：记录地址 + 有效性）---
         self.lr_addr = -1
         self.lr_valid = False
@@ -196,6 +199,8 @@ class VM:
     # ---- Zicsr + 特权态辅助 ----
     def _csr_read(self, addr):
         """读 CSR：mtvec/mepc 等存的是 tryte 地址（指令 i 地址 = 4*i）；未知 CSR 返回 0。"""
+        if addr == 0xF14:                     # mhartid（ADR-23②）：本核号，只读
+            return self.core_id
         return self.csr.get(addr, 0)
 
     def _csr_write(self, addr, val):
@@ -388,6 +393,8 @@ class VM:
                 ret = -22               # buf 越界：不投递
             else:
                 hub.queues[a0].append((self.core_id, bytes(self.mem[a1:a1 + a2])))
+                if hub.blocked[a0]:
+                    hub.blocked[a0] = False       # 唤醒 mrecvw 挂起核（消息先入队，FIFO 必中）
                 ret = 0
         elif num == SYS_MRECV:
             # mrecv(src, buf, max) -> n | -2 空 | -22 畸形（src=-1 任意来源，
@@ -413,6 +420,42 @@ class VM:
                     n = min(len(data), a2)
                     self.mem[a1:a1 + n] = data[:n]
                     ret = n
+        elif num == SYS_MRECVW:
+            # mrecvw(src, buf, max)（ADR-23①）：mrecv 语义 + 空匹配挂起。
+            # 挂起 = pc 回卷到本 ECALL（重执行即重试）+ hub.blocked 登记，
+            # 返回 None → 本调用不写 a0（硬件阻塞 I/O 口径）。
+            hub = self.amp
+            if hub is None:
+                ret = -2               # 单实例无枢纽：无唤醒源，诚实即时返回
+            elif a2 < 0:
+                ret = -22
+            else:
+                pick = -1
+                for k, (srcid, data) in enumerate(hub.queues[self.core_id]):
+                    if a0 < 0 or srcid == a0:
+                        pick = k
+                        break
+                if pick < 0:
+                    hub.blocked[self.core_id] = True
+                    self.pc = self._ecall_pc      # 回卷：唤醒后重执行本 mrecvw
+                    ret = None
+                elif not (0 <= a1 and a1 + a2 <= len(self.mem)):
+                    ret = -22           # buf 越界：不消费消息（有消息也不阻塞）
+                else:
+                    srcid, data = hub.queues[self.core_id][pick]
+                    del hub.queues[self.core_id][pick]
+                    n = min(len(data), a2)
+                    self.mem[a1:a1 + n] = data[:n]
+                    ret = n
+        elif num == SYS_MIPI:
+            # mipi(dst)（ADR-23①）→ 0 | -3 无此核/无枢纽：置目标核软中断挂起位
+            # （CLINT MSIP 模型：MIE=1 时步末陷入 CAUSE_MSI，MIE=0 挂起待使能）
+            hub = self.amp
+            if hub is None or a0 < 0 or a0 >= hub.ncores:
+                ret = -3
+            else:
+                hub.cores[a0].irq_mipi = True
+                ret = 0
         elif num in (SYS_EXIT, SYS_EXIT_GROUP):
             # exit / exit_group：停机并记录退出码
             self.exit_code = a0 & 0xFF
@@ -500,7 +543,8 @@ class VM:
         else:
             ret = ENOSYS
         self.syscalls.append((num, a0, a1, a2))
-        self.regs[10] = u(ret)        # 返回值写回 a0
+        if ret is not None:
+            self.regs[10] = u(ret)    # 返回值写回 a0（None=mrecvw 挂起，不写）
 
     @classmethod
     def from_stream(cls, trytes, **kw):
@@ -828,6 +872,7 @@ class VM:
         elif name == "ECALL":
             # M 态 ECALL 直连 syscall（向后兼容）；U 态 ECALL 陷入 trap
             if self.priv == 3:
+                self._ecall_pc = old_pc          # mrecvw 挂起回卷锚点（ADR-23①）
                 self._syscall()
             else:
                 self._take_trap(isa.CAUSE_ECALL_U, 0, old_pc)
@@ -895,6 +940,10 @@ class VM:
         if (not self.halted) and self.irq_timer and (self.csr[isa.CSR["mstatus"]] & isa.MSTATUS_MIE):
             self.irq_timer = False
             self._take_trap(isa.CAUSE_MTIMER, 0, self.pc)
+        # ADR-23①：核间软中断（mipi）——同款步末检查；MIE=0 时挂起位保持
+        if (not self.halted) and self.irq_mipi and (self.csr[isa.CSR["mstatus"]] & isa.MSTATUS_MIE):
+            self.irq_mipi = False
+            self._take_trap(isa.CAUSE_MSI, 0, self.pc)
         # x0 硬连零：任何指令尝试写 x0 都不生效（RISC-V 语义）
         self.regs[0] = 0
         self.steps += 1
@@ -978,6 +1027,10 @@ class AmpHub:
         self.ncores = ncores
         self.queues = [deque() for _ in range(ncores)]
         self.shared = bytearray(AMP_SHARED_SZ)
+        # ADR-23①：mrecvw 挂起位（msend 唤醒）+ 核反引用（mipi 置位）+ 死锁旗
+        self.blocked = [False] * ncores
+        self.cores = None                    # run_amp 注入
+        self.deadlocked = False
 
 
 def run_amp(prog, ncores, mem_init=None, stdin=b"", argv=None, max_steps=300000):
@@ -988,10 +1041,11 @@ def run_amp(prog, ncores, mem_init=None, stdin=b"", argv=None, max_steps=300000)
     hub = AmpHub(ncores)
     cores = [VM(prog, mem_init=mem_init, stdin=stdin, argv=argv, core_id=i, amp=hub)
              for i in range(ncores)]
+    hub.cores = cores
     steps = 0
     while any(not c.halted for c in cores) and steps < max_steps:
         for i, c in enumerate(cores):
-            if c.halted:
+            if c.halted or hub.blocked[i]:
                 continue
             c.step()
             steps += 1
@@ -1002,4 +1056,11 @@ def run_amp(prog, ncores, mem_init=None, stdin=b"", argv=None, max_steps=300000)
                     o.mem[AMP_SHARED_BASE:AMP_SHARED_BASE + AMP_SHARED_SZ] = w
             if all(cc.halted for cc in cores):
                 break
+        # ADR-23①：全体存活核都挂在 mrecvw 上 = 死锁，诚实停机
+        alive = [j for j, c in enumerate(cores) if not c.halted]
+        if alive and all(hub.blocked[j] for j in alive):
+            hub.deadlocked = True
+            for j in alive:
+                cores[j].halted = True
+            break
     return cores, hub

@@ -41,6 +41,11 @@ typedef struct {
     int len[AMP_MAX_CORES][AMP_MBOX_SLOTS];
     uint8_t data[AMP_MAX_CORES][AMP_MBOX_SLOTS][AMP_MSG_MAX];
     uint8_t shared[AMP_SHARED_SZ];
+    /* ADR-23①：mrecvw 挂起位（msend 唤醒）+ 核反引用（mipi 置位；VM 类型
+     * 后定义，存 void* 用处强转）+ 全体阻塞死锁旗 */
+    int blocked[AMP_MAX_CORES];
+    int deadlocked;
+    void *cores[AMP_MAX_CORES];
 } AmpHub;
 /* ---- Zicsr + 特权最小集常量（对齐 trirv_isa.CSR）---- */
 #define CSR_MSTATUS  768   /* 0x300 */
@@ -59,6 +64,8 @@ typedef struct {
 #define CAUSE_BREAKPOINT 3
 /* CAUSE_MTIMER = (1<<63)|7，放于 __int128，用宏构造 */
 #define CAUSE_MTIMER_LO  7
+/* ADR-23①：CAUSE_MSI = (1<<63)|3（机器软件中断，与断点异常 3 靠 bit63 区分） */
+#define CAUSE_MSI_LO     3
 #define MIP_MTIP         (1<<7)     /* mip 中的机器定时器中断挂起位 */
 #define NCSR 900                    /* CSR 索引上限（最大地址 836） */
 
@@ -347,6 +354,7 @@ typedef struct {
     int priv;                           /* 0=U, 3=M；复位为 M */
     __uint128_t csr[NCSR];              /* CSR 寄存器文件（按地址索引） */
     int irq_timer;                      /* 定时器中断挂起（供固件/测试注入） */
+    int irq_mipi;                       /* ADR-23①：核间软中断挂起（mipi 5014 置位） */
     /* A 扩展：LR/SC 保留集 + 共享内存多核模式 */
     __int128_t lr_addr;                 /* 保留地址（-1=无） */
     int lr_valid;                       /* 保留有效性 */
@@ -425,6 +433,9 @@ static inline void csr_op(VM *v,Op op,int rd,int rs1,__uint128_t csr_addr){
         static const Op hmap[6]={OP_CSRRW,OP_CSRRS,OP_CSRRC,OP_CSRRWI,OP_CSRRSI,OP_CSRRCI};
         csr_addr+=2187; op=hmap[op-OP_CSRRW_H];
     }
+    /* mhartid（ADR-23②）：本核号，只读——早于 NCSR 检查（0xF14=3860 超数组界），
+     * 读旧值=核号、写路径整体跳过（高区归一化后直达同一入口） */
+    if(csr_addr==0xF14){ v->reg[rd]=umod_M((__uint128_t)v->core_id); return; }
     /* csr_addr 来自 7-trit 字段(0..2186)，可能超出 csr[NCSR=900] 范围：
      * 越界按未实现 CSR 处理——读 0、写忽略，与 Python VM 的 dict.get 行为一致，
      * 杜绝数组越界读/写。 */
@@ -703,16 +714,19 @@ SYS_MUNMAP=215,SYS_MMAP=222,SYS_MPROTECT=226,SYS_BRK=214,SYS_GETRANDOM=278,
  * 内存保持纯三进制（tryte 仍 0..242），musl 的 CHAR_BIT==8 依赖由边界编解码满足。 */
 SYS_READ8=5000,SYS_WRITE8=5001,
 /* ---- T11 AMP：mailbox + coreid（多实例协作，与 PyVM 逐常量一致）---- */
-SYS_COREID=5010,SYS_MSEND=5011,SYS_MRECV=5012};
+SYS_COREID=5010,SYS_MSEND=5011,SYS_MRECV=5012,
+/* ADR-23①：阻塞收 + 核间中断 */
+SYS_MRECVW=5013,SYS_MIPI=5014};
 #define E_BADF  (-9)
 #define E_INVAL (-22)
 #define E_NOMEM (-12)
 #define E_NOSYS (-38)
 
-static void syscall_vm(VM *v){
+/* 返回 1=mrecvw 挂起（调用方跳过 a0 写回；pc 已回卷） */
+static int syscall_vm(VM *v,__int128_t oldpc){
     __int128_t num=s(v->reg[17]);
     __int128_t a0=s(v->reg[10]),a1=s(v->reg[11]),a2=s(v->reg[12]);
-    if(num==0){v->halted=1;return;}
+    if(num==0){v->halted=1;return 0;}
     __int128_t ret=0;
     if(num==SYS_WRITE){
         if(a2<0) ret=E_INVAL;                       /* 畸形 count：与 Python VM 统一 */
@@ -765,6 +779,7 @@ static void syscall_vm(VM *v){
             h->len[a0][slot]=(int)a2;
             for(int i=0;i<a2;i++) h->data[a0][slot][i]=v->mem_ref[a1+i]%243;
             h->count[a0]++;
+            if(h->blocked[a0]) h->blocked[a0]=0;   /* 唤醒 mrecvw 挂起核（消息先入队，FIFO 必中） */
             ret=0;
         }
     } else if(num==SYS_MRECV){
@@ -798,6 +813,45 @@ static void syscall_vm(VM *v){
                 }
             }
         }
+    } else if(num==SYS_MRECVW){
+        /* mrecvw(src,buf,max)（ADR-23①）：mrecv 语义 + 空匹配挂起。
+         * 挂起 = pc 回卷到本 ECALL（唤醒后重执行即重试）+ hub.blocked 登记，
+         * 返回 1 → 调用方不写 a0（硬件阻塞 I/O 口径）。 */
+        AmpHub*h=v->amp;
+        if(!h) ret=-2;                                       /* 单实例：无唤醒源，即时返回 */
+        else if(a2<0) ret=E_INVAL;
+        else{
+            int me=v->core_id,found=-1;
+            for(int k=0;k<h->count[me]&&found<0;k++){
+                int slot=(h->head[me]+k)%AMP_MBOX_SLOTS;
+                if(a0<0||h->src[me][slot]==a0) found=k;
+            }
+            if(found<0){ h->blocked[me]=1; v->pc_=oldpc; return 1; }
+            else{
+                int slot=(h->head[me]+found)%AMP_MBOX_SLOTS;
+                int n=h->len[me][slot];
+                if(a2<n) n=(int)a2;
+                if(a1<0||a1+n>MEMSZ){ ret=E_INVAL; }         /* buf 越界：不消费也不阻塞 */
+                else{
+                    for(int i=0;i<n;i++) v->mem_ref[a1+i]=h->data[me][slot][i];
+                    for(int k=found;k<h->count[me]-1;k++){
+                        int c=(h->head[me]+k)%AMP_MBOX_SLOTS;
+                        int nx=(h->head[me]+k+1)%AMP_MBOX_SLOTS;
+                        h->src[me][c]=h->src[me][nx];
+                        h->len[me][c]=h->len[me][nx];
+                        memcpy(h->data[me][c],h->data[me][nx],AMP_MSG_MAX);
+                    }
+                    h->count[me]--;
+                    ret=n;
+                }
+            }
+        }
+    } else if(num==SYS_MIPI){
+        /* mipi(dst)（ADR-23①）→ 0 | -3：置目标核软中断挂起位（CLINT MSIP
+         * 模型：MIE=1 时步末陷入 CAUSE_MSI；MIE=0 挂起待使能） */
+        AmpHub*h=v->amp;
+        if(!h||a0<0||a0>=h->ncores||!h->cores[a0]) ret=-3;
+        else{ ((VM*)h->cores[a0])->irq_mipi=1; ret=0; }
     } else if(num==SYS_EXIT||num==SYS_EXIT_GROUP){v->exit_code=a0&0xFF;v->halted=1;ret=a0;}
     else if(num==SYS_BRK){
         if(a0==0)ret=v->brk_ptr;
@@ -830,6 +884,7 @@ static void syscall_vm(VM *v){
         else ret=E_INVAL;
     } else ret=E_NOSYS;
     v->reg[10]=u(ret);
+    return 0;
 }
 
 /* ---------------- 执行引擎 ---------------- */
@@ -1002,7 +1057,7 @@ static inline void step(VM *v){
         case OP_LUI:v->reg[rd]=u((__int128_t)immraw*POW3[7]);break;
         case OP_AUIPC:v->reg[rd]=u((__int128_t)oldpc+(__int128_t)immraw*POW3[7]);break;
         case OP_ECALL:
-            if(v->priv==3)syscall_vm(v);                        /* M 态直连 syscall（兼容） */
+            if(v->priv==3)syscall_vm(v,oldpc);                  /* M 态直连 syscall（兼容） */
             else take_trap(v,CAUSE_ECALL_U,0,oldpc);            /* U 态陷入 */
             break;
         case OP_EBREAK:take_trap(v,CAUSE_BREAKPOINT,0,oldpc);break;
@@ -1023,6 +1078,11 @@ static inline void step(VM *v){
     if(!v->halted && v->irq_timer && (v->csr[CSR_MSTATUS]&MSTATUS_MIE)){
         v->irq_timer=0;
         take_trap(v,((__uint128_t)1<<63)|CAUSE_MTIMER_LO,0,v->pc_);
+    }
+    /* ADR-23①：核间软中断——同款步末检查；MIE=0 时挂起位保持 */
+    if(!v->halted && v->irq_mipi && (v->csr[CSR_MSTATUS]&MSTATUS_MIE)){
+        v->irq_mipi=0;
+        take_trap(v,((__uint128_t)1<<63)|CAUSE_MSI_LO,0,v->pc_);
     }
 }
 /* TRV2 流制（B1①）：PC→流内指令序号解析（顺序 hint 快路径 + 二分回退）。
@@ -1131,6 +1191,9 @@ static void vm_run_cg(VM *v, long max_steps){
     if(__builtin_expect(v->irq_timer&&(v->csr[CSR_MSTATUS]&MSTATUS_MIE),0)){ \
         v->irq_timer=0; take_trap(v,((__uint128_t)1<<63)|CAUSE_MTIMER_LO,0,v->pc_); \
     } \
+    if(__builtin_expect(v->irq_mipi&&(v->csr[CSR_MSTATUS]&MSTATUS_MIE),0)){ \
+        v->irq_mipi=0; take_trap(v,((__uint128_t)1<<63)|CAUSE_MSI_LO,0,v->pc_); \
+    } \
     { int si=cvm_fetch_slot(v); \
       if(v->halted||si<0||v->steps>=max_steps) goto L_DONE;   /* PC=tryte 地址（流制按偏移表解析） */ \
       v->slot_hint=si; \
@@ -1230,7 +1293,7 @@ L_JAL:   v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hi
 L_JALR:  {v->reg[rd]=oldpc+(v->packed?(v->offs[v->slot_hint+1]-v->offs[v->slot_hint]):4);__int128_t t=s(v->reg[rs1])+imm;v->pc_=cvm_align_target(v,t);if(v->pc_<0)v->halted=1;} NEXT();  /* 目标按 tryte 对齐 */
 L_LUI:   v->reg[rd]=u((__int128_t)immraw*POW3[7]); NEXT();
 L_AUIPC: v->reg[rd]=u((__int128_t)oldpc+(__int128_t)immraw*POW3[7]); NEXT();
-L_ECALL: if(v->priv==3)syscall_vm(v); else take_trap(v,CAUSE_ECALL_U,0,oldpc); NEXT();
+L_ECALL: if(v->priv==3)syscall_vm(v,oldpc); else take_trap(v,CAUSE_ECALL_U,0,oldpc); NEXT();
 L_EBREAK: take_trap(v,CAUSE_BREAKPOINT,0,oldpc); NEXT();
 L_TMIN:  v->reg[rd]=tritwise(0,v->reg[rs1],v->reg[rs2]); NEXT();
 L_TMAX:  v->reg[rd]=tritwise(1,v->reg[rs1],v->reg[rs2]); NEXT();
@@ -1442,14 +1505,23 @@ int main(int argc,char**argv){
             vm_init_ex(&vms[r],prog,nprog,segmem,stdin_data,stdin_len,NULL,&sync,gargc,gargv);
             vms[r].core_id=r; vms[r].amp=&hub;
             vm_attach_offs(&vms[r],offs,nprog);
+            hub.cores[r]=&vms[r];
         }
         long amp_steps=0;
         while(1){
-            int alive=0;
+            int alive=0,runnable=0;
             for(int r=0;r<repeat;r++){
-                if(vms[r].halted) continue;
-                alive=1;
-                step(&vms[r]);          /* 单步切片（vm_run(v,1) 的 max 是总额度——首次后恒 0 步死锁实证） */
+                if(!vms[r].halted){alive=1;if(!hub.blocked[r])runnable=1;}
+            }
+            if(!alive) break;
+            if(!runnable){          /* ADR-23①：全体存活核挂 mrecvw = 死锁，诚实停机 */
+                hub.deadlocked=1;
+                for(int r=0;r<repeat;r++) if(!vms[r].halted) vms[r].halted=1;
+                break;
+            }
+            for(int r=0;r<repeat;r++){
+                if(vms[r].halted||hub.blocked[r]) continue;
+                step(&vms[r]);      /* 单步切片（vm_run(v,1) 的 max 是总额度——首次后恒 0 步死锁实证） */
                 for(int j=0;j<repeat;j++){
                     if(j==r) continue;
                     memcpy(vms[j].mem_ref+AMP_SHARED_BASE,
@@ -1457,9 +1529,8 @@ int main(int argc,char**argv){
                 }
                 memcpy(hub.shared,vms[r].mem_ref+AMP_SHARED_BASE,AMP_SHARED_SZ);
                 amp_steps++;
-                if(amp_steps>=200000000){alive=0;break;}
+                if(amp_steps>=200000000){break;}
             }
-            if(!alive) break;
         }
         if(getenv("TRV_AMP_DEBUG"))fprintf(stderr,"[amp] steps=%ld exits=",amp_steps);
         for(int r=0;r<repeat;r++)if(getenv("TRV_AMP_DEBUG"))fprintf(stderr,"%d ",vms[r].exit_code);
