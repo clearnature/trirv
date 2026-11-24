@@ -217,9 +217,9 @@ def test_data_region():
 
     cases = [
         # (名, 源, 期望 rc==0?, 报错 needle 或 None)
-        ("越界拒绝 big[600]", "int big[600]; int id(int x){return x;} "
+        ("越界拒绝 big[2000]", "int big[2000]; int id(int x){return x;} "
          "int main(void){ big[599]=1; return id(0)+big[0]; }", False, "栈基址"),
-        ("越界精确 b[433]", "int b[433]; int main(void){ b[432]=9; return 0; }",
+        ("越界精确 b[1798]", "int b[1798]; int main(void){ b[1797]=9; return 0; }",
          False, "栈基址"),
         ("边界安全 b[432](4095≤4096)", "int b[432]; int main(void){ b[431]=9; return b[431]&255; }",
          True, None),

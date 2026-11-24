@@ -23,7 +23,18 @@ def preprocess(text):
     text = re.sub(r'\blong\s+long\b', 'int', text)
     text = re.sub(r'\bunsigned\s+long\b', 'unsigned', text)
     text = re.sub(r'\blong\b', 'int', text)
+    # FLOCK/FUNLOCK 宏展开（stdio_impl.h include 剥离后丢失——
+    # 单线程口径 __lockfile 恒 1、__unlockfile 空操作→宏即空操作）
+    text = re.sub(r'FFINALLOCK\s*\([^)]*\)', '0', text)
+    # FLOCK/FUNLOCK 单线程无锁口径=空操作（删除整个调用+尾分号）
+    text = re.sub(r'FLOCK\s*\([^)]*\)\s*;?', '', text)
+    text = re.sub(r'FUNLOCK\s*\([^)]*\)\s*;?', '', text)
+    text = re.sub(r'__unlist_locked_file\s*\([^)]*\)\s*;?', '', text)
+    # __need_unlock 残留清理（FLOCK 展开产物声明——删除整行赋值）
+    text = re.sub(r'int __need_unlock[^;]*;\s*', '', text)
     # stdio 头常量折叠（trirv_cc 无宏引擎，桥文本的 #define 是死文本——
+    # musl 内部 sys_open 定义在多个 fcntl/stdio 文件——桥定义一份即可，
+    # 上游定义剥离（6.3b 虚拟磁盘面——桥 sys_open 调 openat 内建）
     # 值必须直接进源文本；stdio.h/stdio_impl.h 的 include 已被丢弃）
     for _k, _v in (("EOF","(-1)"),("SEEK_SET","0"),("SEEK_CUR","1"),("SEEK_END","2"),
                    ("BUFSIZ","1024"),("_IOFBF","0"),("_IOLBF","1"),("_IONBF","2"),

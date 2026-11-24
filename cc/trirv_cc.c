@@ -1518,7 +1518,8 @@ static char **STRSEG; static int *STRLEN; static int NSTR, CAPSTR, CAPSTRLEN; st
 /* 栈基址（tryte）：VM sp 初值（PyVM regs[2]=C VM reg[2]，一致）。
  * 内存映射：数据 200..STACK_BASE-1（全局+字符串），栈 STACK_BASE+ 向上。
  * 契约文档 trirv-unified-memory-abi.md §3；编译器链接期静态检查越界拒绝。 */
-#define TRI_STACK_BASE 4096
+#define TRI_STACK_BASE 16384    /* 批次 6.3b：stdio 全套链接需要 >4K 数据面
+                              * （22+ TRVO 全局+字符串累积 ~4.5K——原 4096 是小程序时代约束） */
 static int STRSEG_START=100;             /* 字符串段写出的起始地址（= 分配前的 STRBASE） */
 static void assign_glob_addrs(void);     /* 全局地址分配（会改写 STRBASE），实现见下方 */
 static void gen_glob_data(void);         /* 全局数据生成（依赖字符串地址），实现见下方 */
@@ -2724,6 +2725,9 @@ static int eval(Node*n){
         char*ty=expr_type(n);
         int pa=addr_of(n);
         if(struct_find(ty)) return pa;            /* 成员本身是结构体：值是首地址 */
+        if(is_array(ty)) return pa;               /* 数组成员退化为指针（C 数组→指针）——
+         * musl `f->wbuf` FILE 缓冲数组面：load_mem 试图加载数组内容到寄存器
+         * 导致 fwrite 缓冲空转（缓冲内容从未被 write syscall 读到） */
         int d=dstof(pa);
         if(strcmp(ty,"int")) load_mem(d,pa,0,ty);
         else emitf("LW %s, 0(%s)",regname(d),regname(pa));

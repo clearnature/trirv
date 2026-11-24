@@ -1504,7 +1504,7 @@ static void vm_init_ex(VM *v,Inst *prog,int n,uint8_t *segmem,uint8_t *stdin_dat
     memset(v,0,sizeof(*v));
     v->mem_ref=shared_mem?shared_mem:v->mem;   /* 必须在 memset 之后设置 */
     v->shared=shared_mem?1:0; v->sync=sync;
-    v->prog=prog;v->nprog=n;v->reg[2]=4096;
+    v->prog=prog;v->nprog=n;v->reg[2]=16384;
     if(!shared_mem) memcpy(v->mem_ref,segmem,MEMSZ);  /* 共享镜像已由调用方初始化一次，避免逐核清零 */
     v->heap_base=1<<19;v->brk_ptr=v->heap_base;v->mmap_ptr=(1<<20)-(1<<16);
     v->clock_sec=0;v->clock_nsec=0;v->rng_state=0x12345678;v->next_fd=3;

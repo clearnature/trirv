@@ -123,7 +123,7 @@ class VM:
         self.pc = 0
         self.halted = False
         self.steps = 0
-        self.regs[2] = 4096                   # sp: tryte 地址，向高地址增长
+        self.regs[2] = 16384                  # sp: tryte 地址，向高地址增长（6.3b stdio 数据面扩容）
         self.syscalls = []                    # 记录 (号, a0, a1, a2) 历史
         # --- glibc 启动所需的最小进程状态 ---
         self.pid = 1                          # getpid() 返回值（单进程 VM）
@@ -172,7 +172,7 @@ class VM:
         for i, s in enumerate(args):
             data = s.encode("latin1") if isinstance(s, str) else bytes(s)
             need = ((len(data) + 1 + 8) // 9) * 9     # 串+NUL，9 对齐
-            if sp - need < 4096:
+            if sp - need < 16384:
                 break
             sentry = sp - need                        # 先减后写：串占 [sentry,sp)
             self._store_word(arr + i * 9, sentry)
