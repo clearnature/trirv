@@ -282,3 +282,31 @@ table/element（多表、类型哨兵 typeidx+1/0=null、越界/失配 trap）�
 
 **门禁**：trirv_wasm_spec_smoke.py 6 文件冒烟（fail 必须=0、pass ≥ 基线）
 入 fast 门禁；全量为手工报告工具。现有 trirv_wasm_e2e.py 112 项差分继续有效。
+
+## 八、9.4 架构裁定：wasm 浮点 = soft-float（P4 路线，2026-11-24 立项）
+
+**定义层发现（不可回避）**：wasm f32/f64 的值域是**二进有理数**（m×2^k），
+TF 三进浮点是三进有理数（m×3^k）——2 与 3 互素 ⇒ 绝大多数 f32/f64 值
+（0.5、0.1 等一切非整数）在 TF 中**不可精确表示**；现有编译期「IEEE 位模式
+穿透成 TF raw」本质是舍入。spec 浮点断言（f32.wast 等）要求 **IEEE 位级
+精确**（含 NaN payload/次正规）——TF 直算路线结构性不可达，这不是工程缺口
+而是定义层差异（与「2^8>3^5」同一诚实口径）。
+
+**裁定（P4 路线）**：wasm 浮点 = **soft-float**——IEEE 位模式作为 i32 数据
+存取（复用 9.9 前的整数面），全部浮点运算在整数 ALU 上软件模拟（比较用
+符号-幅值→偏置变换的整数比较法；abs/neg/copysign/min/max/ceil/floor/
+trunc/nearest 为纯位操作；add/sub/mul/div/sqrt 为 softfloat 核心算法，
+参照 musl math/soft-fp 移植到 trirv C 子集 → 预编译 .trvo 运行时库，
+翻译器 emit 调用）。ISA 浮点指令（TF 语义）服务原生 TF 用例，与 wasm
+soft-float 正交——不在 ISA 层加 IEEE 语义指令（ISA 冻结边界）。
+
+**分批落地**：P4a 位操作九件（abs/neg/copysign/min/max/ceil/floor/trunc/
+nearest——整数位技巧全精确）→ P4b softfp 加减乘除核心 → P4c sqrt/convert/
+trunc_sat → 与 9.5 convert/trunc 合流 → 9.6 多参与多返回 → 9.7 i64（mod
+2^64 同 soft 路线评估）→ 9.9 Barrett 约减（微基准）。现 P3（TF raw 面板）
+保留给非 spec 场景，P4 落地后 spec 路径切 P4。
+
+**Why:** 路线由定义层差异决定，非偏好；soft-float 是栈机到任意宿主的
+标准诚实做法（musl/SoftFloat 同源）。
+**How to apply:** 9.4 起浮点相关 spec 断言以 soft-float 位精确为准；
+TF 直算路径不再对 spec 基线计数。
