@@ -56,6 +56,9 @@ typedef struct {
 #define CSR_MCAUSE   834   /* 0x342 */
 #define CSR_MTVAL    835   /* 0x343 */
 #define CSR_MIP      836   /* 0x344 */
+/* ADR-24（批次 5）：CLINT 模型定时器（高区 2187+630=2817 / 2187+631=2818） */
+#define CSR_MTIME    2817  /* 0xB01 指令步进钟，只读 */
+#define CSR_MTIMECMP 2818  /* 0xB02 deadline，触发后解除武装 */
 #define MSTATUS_MIE      (1<<3)
 #define MSTATUS_MPIE     (1<<4)
 #define MSTATUS_MPP_SH   11
@@ -355,6 +358,7 @@ typedef struct {
     __uint128_t csr[NCSR];              /* CSR 寄存器文件（按地址索引） */
     int irq_timer;                      /* 定时器中断挂起（供固件/测试注入） */
     int irq_mipi;                       /* ADR-23①：核间软中断挂起（mipi 5014 置位） */
+    __uint128_t mtimecmp;               /* ADR-24：CLINT deadline（0 装置=未武装） */
     /* A 扩展：LR/SC 保留集 + 共享内存多核模式 */
     __int128_t lr_addr;                 /* 保留地址（-1=无） */
     int lr_valid;                       /* 保留有效性 */
@@ -395,10 +399,13 @@ static inline __int128_t align_down4(__int128_t x){
 static inline int csr_valid(__uint128_t a){return a<NCSR && (a==CSR_MSTATUS||a==CSR_MIE||a==CSR_MTVEC||a==CSR_MSCRATCH||a==CSR_MEPC||a==CSR_MCAUSE||a==CSR_MTVAL||a==CSR_MIP);}
 static inline void csr_write(VM *v,__uint128_t addr,__uint128_t val){
     if(!csr_valid(addr))return;                       /* 未实现 CSR：写忽略 */
-    if(addr==CSR_MTVEC||addr==CSR_MEPC){              /* PC 是 tryte 地址：4 对齐 */
+    if(addr==CSR_MTVEC||addr==CSR_MEPC){
         /* 必须先 u() 规整到 [0,MOD_X) 再 s()：CSRRS/CSRRC 的 old|src 可 >= MOD_X，
          * 直接 s(val) 只减一次 MOD_X 会算错 3 补码值（与 Python s(u(val)) 对齐）。 */
-        val=u((__uint128_t)align_down4(s(u(val))));
+        val=u((__uint128_t)s(u(val)));
+        if(addr==CSR_MEPC) val=(__uint128_t)align_down4((__int128_t)val);   /* mepc 4 对齐 */
+        /* mtvec 保留低 2 tryte 位作向量模式（ADR-24：0=direct 1=vectored）——
+         * 旧实现这里把模式位对齐抹掉，批次 5 起原样存、派发时再拆 */
     }
     v->csr[addr]=umod_M(val);                         /* 无除法取模 */
     if(addr==CSR_MIP && (val&MIP_MTIP)) v->irq_timer=1;  /* 写 mip.MTIP -> 挂起定时器中断 */
@@ -413,7 +420,12 @@ static void take_trap(VM *v,__uint128_t cause,__uint128_t tval,int from_pc){
     csr_write(v,CSR_MCAUSE,cause);
     csr_write(v,CSR_MTVAL,tval);
     v->priv=3;
-    long tgt=(long)s(v->csr[CSR_MTVEC]);
+    long raw=(long)s(v->csr[CSR_MTVEC]);
+    long tgt=(raw/4)*4;                    /* 基址（低 2 tryte 位=模式位，ADR-24） */
+    if((raw&1)&&(((cause>>63)&1))){        /* 向量模式且为中断：按 cause 低位散转 */
+        long low=(long)(cause&~((__uint128_t)1<<63));
+        tgt=tgt+4*low;                     /* MTIMER→base+28、MSI→base+12（4 tryte/槽） */
+    }
     if(v->packed){ v->pc_=cvm_align_target(v,tgt); if(v->pc_<0)v->halted=1; }
     else if(tgt>=0&&tgt%4==0&&tgt/4<v->nprog)v->pc_=(int)tgt; else v->halted=1;  /* tryte 地址 */
 }
@@ -436,6 +448,21 @@ static inline void csr_op(VM *v,Op op,int rd,int rs1,__uint128_t csr_addr){
     /* mhartid（ADR-23②）：本核号，只读——早于 NCSR 检查（0xF14=3860 超数组界），
      * 读旧值=核号、写路径整体跳过（高区归一化后直达同一入口） */
     if(csr_addr==0xF14){ v->reg[rd]=umod_M((__uint128_t)v->core_id); return; }
+    /* mtime（ADR-24）：指令步进钟，只读（steps 在指令提交后自增，读出=已执行条数） */
+    if(csr_addr==CSR_MTIME){ v->reg[rd]=umod_M((__uint128_t)v->steps); return; }
+    /* mtimecmp（ADR-24）：deadline 存 VM 字段（2818 超 csr 数组界），全操作语义 */
+    if(csr_addr==CSR_MTIMECMP){
+        __uint128_t old=umod_M(v->mtimecmp),src2;
+        switch(op){
+            case OP_CSRRWI:case OP_CSRRSI:case OP_CSRRCI: src2=(__uint128_t)rs1; break;
+            default: src2=(rs1<NREG)?v->reg[rs1]:0; break;
+        }
+        __uint128_t nw;
+        if(op==OP_CSRRW||op==OP_CSRRWI) nw=src2;
+        else if(op==OP_CSRRS||op==OP_CSRRSI) nw=old|src2;
+        else nw=old&~src2;
+        v->mtimecmp=nw; v->reg[rd]=old; return;
+    }
     /* csr_addr 来自 7-trit 字段(0..2186)，可能超出 csr[NCSR=900] 范围：
      * 越界按未实现 CSR 处理——读 0、写忽略，与 Python VM 的 dict.get 行为一致，
      * 杜绝数组越界读/写。 */
@@ -887,6 +914,14 @@ static int syscall_vm(VM *v,__int128_t oldpc){
     return 0;
 }
 
+/* ADR-24：CLINT deadline 步末检查——mtime(=steps) ≥ mtimecmp 时挂起 MTIP
+ * 并解除武装（诚实重装语义）。在既有 irq_timer 陷入检查之前调用。 */
+static inline void vm_tick(VM *v){
+    if(!v->halted && (v->csr[CSR_MSTATUS]&MSTATUS_MIE) && v->mtimecmp
+       && (__int128_t)v->steps>=(__int128_t)v->mtimecmp){
+        v->mtimecmp=0; v->irq_timer=1;
+    }
+}
 /* ---------------- 执行引擎 ---------------- */
 static inline void step(VM *v){
     /* PC 是 tryte 地址：槽制按 4*i，流制按偏移表解析。非法目标统一停机。
@@ -1074,6 +1109,7 @@ static inline void step(VM *v){
     }
     v->reg[0]=0;
     v->steps++;
+    vm_tick(v);
     /* 异步中断检查：MIE=1 且定时器挂起 -> 陷入（提交后、下一条前），mepc=下一条 PC */
     if(!v->halted && v->irq_timer && (v->csr[CSR_MSTATUS]&MSTATUS_MIE)){
         v->irq_timer=0;
@@ -1188,6 +1224,7 @@ static void vm_run_cg(VM *v, long max_steps){
     goto *dispatch[in->op];
 
 #define NEXT() do { v->reg[0]=0; v->steps++; \
+    vm_tick(v); \
     if(__builtin_expect(v->irq_timer&&(v->csr[CSR_MSTATUS]&MSTATUS_MIE),0)){ \
         v->irq_timer=0; take_trap(v,((__uint128_t)1<<63)|CAUSE_MTIMER_LO,0,v->pc_); \
     } \
@@ -1318,12 +1355,16 @@ L_TC:    {  /* TC v2：与 switch 路径同语义（窗口/帧相对口径见 sw
              else if(sf==5){ if(in->rd) v->reg[1]=oldpc+(v->packed?3:4);
                 v->pc_=oldpc+(v->packed?1:4)*in->imm_s; }
          } NEXT();
-L_CSRRW: csr_op(v,OP_CSRRW,rd,rs1,immraw); NEXT();
-L_CSRRS: csr_op(v,OP_CSRRS,rd,rs1,immraw); NEXT();
-L_CSRRC: csr_op(v,OP_CSRRC,rd,rs1,immraw); NEXT();
-L_CSRRWI:csr_op(v,OP_CSRRWI,rd,rs1,immraw); NEXT();
-L_CSRRSI:csr_op(v,OP_CSRRSI,rd,rs1,immraw); NEXT();
-L_CSRRCI:csr_op(v,OP_CSRRCI,rd,rs1,immraw); NEXT();
+/* 坑实录：此处必须传 in->op——.H 高区形态复用同一标签（dispatch 表映射），
+ * 硬编码基础操作码会让 .H 归一化失效（高区 CSR 单实例静默读 0；
+ * AMP 的 switch 引擎传 in->op 故仅 AMP 命中——双引擎各验一处的实证坑）。
+ * 批次 5 mtime/mtimecmp 拦截暴露。 */
+L_CSRRW: csr_op(v,in->op,rd,rs1,immraw); NEXT();
+L_CSRRS: csr_op(v,in->op,rd,rs1,immraw); NEXT();
+L_CSRRC: csr_op(v,in->op,rd,rs1,immraw); NEXT();
+L_CSRRWI:csr_op(v,in->op,rd,rs1,immraw); NEXT();
+L_CSRRSI:csr_op(v,in->op,rd,rs1,immraw); NEXT();
+L_CSRRCI:csr_op(v,in->op,rd,rs1,immraw); NEXT();
 L_MRET:  mret(v); NEXT();
 L_WFI:   NEXT();
 L_NOP:   NEXT();

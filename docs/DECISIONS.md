@@ -251,6 +251,23 @@
 - **参照**：Zephyr 与 FreeRTOS 在 RISC-V 上默认跑在 M 态；OpenSBI 只在引导 Linux 这类
   S 态负载时才需要。
 - **出处**：trirv-firmware-architecture.md §10、§13.5、§14.5；TASKS.md C3。
+- **2026-11-24 批次 5 执行**：①mtime（CSR 0xB01，只读=指令步进钟，读出值=
+  已执行步数——确定性等值契约）+mtimecmp（0xB02，deadline：mtime≥cmp 且
+  MIE=1 → 步末挂起 MTIP → 既有 mtimer 陷入路径；**触发后解除武装**=诚实
+  重装语义，固件须显式写新 deadline；RISC-V 的 mtimecmp 是 CLINT MMIO 无
+  CSR 号，TriRV 取相邻空号经 CSR 高区 ADR-06 访问）。②ISR 向量表：mtvec
+  低 2 tryte 位=模式位（0=direct 1=vectored——旧实现在写入时被 4 对齐抹掉，
+  批次 5 起原样存、派发时拆）；向量模式中断按 cause 低位散转 base+4*cause
+  （MTIMER→base+28、MSI→base+12，4 tryte/槽=RISC-V 4 字节向量步距三值对应）；
+  异常恒落 base（RISC-V 同款）。契约 trirv_fw_tick_e2e 14 项双 VM（套件
+  注册入册，回归 57→58 套）。
+- **批次 5 附带破案（潜伏 bug）**：CVM computed-goto 引擎六条 CSR 标签硬编码
+  基础操作码（L_CSRRW: csr_op(v,OP_CSRRW,…)），.H 高区形态复用同标签 →
+  归一化永不触发 → **高区 CSR 单实例静默读 0**（AMP 的 switch 引擎传
+  in->op 故仅 AMP 命中；golden §3「旧值 0」期望与故障输出重合=假绿）。
+  修复=六标签改传 in->op；mtime/mtimecmp 拦截即因此暴露。教训入册：
+  「期望值恰为故障输出重合」的契约对引擎分支不设防——CSR 高区此前只有
+  AMP 路径真验证过。
 
 ### ADR-25 musl 覆盖顺序 ✅
 - **决策**：stdio → multibyte → time → legacy 与 locale。linux、network、process、signal

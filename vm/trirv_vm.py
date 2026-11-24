@@ -201,15 +201,22 @@ class VM:
         """读 CSR：mtvec/mepc 等存的是 tryte 地址（指令 i 地址 = 4*i）；未知 CSR 返回 0。"""
         if addr == 0xF14:                     # mhartid（ADR-23②）：本核号，只读
             return self.core_id
+        if addr == isa.CSR["mtime"]:          # ADR-24：指令步进钟，只读（触发前=steps）
+            return self.steps % MOD
         return self.csr.get(addr, 0)
 
     def _csr_write(self, addr, val):
         """写 CSR：只读位忽略；mtvec/mepc 为 tryte 地址，写入时规整到 4 的倍数。"""
         if addr not in self.csr:
             return                              # 未实现 CSR：写入忽略（RISC-V 允许）
+        if addr == isa.CSR["mtime"]:
+            return                              # 步进钟只读（ADR-24）
         if addr == isa.CSR["mtvec"] or addr == isa.CSR["mepc"]:
             val = s(u(val))                     # 规整到有符号字
-            val = (val // 4) * 4                # PC 是 tryte 地址：4 对齐（下一条 = +4）
+            if addr == isa.CSR["mepc"]:
+                val = (val // 4) * 4            # mepc 4 对齐
+            # mtvec 保留低 2 tryte 位作向量模式（0=direct 1=vectored，ADR-24）——
+            # 旧实现这里把模式位对齐抹掉，批次 5 起原样存、派发时再拆
         self.csr[addr] = u(val) % MOD
         if addr == isa.CSR["mip"] and (u(val) & (1 << 7)):
             self.irq_timer = True               # 写 mip.MTIP -> 挂起定时器中断
@@ -228,7 +235,12 @@ class VM:
         self._csr_write(isa.CSR["mcause"], cause)
         self._csr_write(isa.CSR["mtval"], tval)
         self.priv = 3                           # 陷入总是进入 M 态
-        target = s(self.csr[isa.CSR["mtvec"]])
+        mtvec_raw = s(self.csr[isa.CSR["mtvec"]])
+        target = (mtvec_raw // 4) * 4           # 基址（低 2 tryte 位=模式位）
+        if mtvec_raw & 1 and (cause & (1 << 63)):
+            # ADR-24 向量模式：中断按 cause 低位散转（MTIMER→base+28、MSI→base+12，
+            # 4 tryte/槽步距 = RISC-V 4 字节向量步距的三值对应）；异常落 base
+            target = target + 4 * (cause & ~(1 << 63))
         if self.packed:
             self.pc = target if self._stream_slot(target) >= 0 else -1
             if self.pc < 0:
@@ -936,6 +948,13 @@ class VM:
         else:
             raise RuntimeError(f"未实现指令: {name}")
 
+        # ADR-24：CLINT deadline——mtime 步进钟 ≥ mtimecmp 时挂起 MTIP，
+        # 触发后 mtimecmp 解除武装（诚实重装语义：固件须显式写新 deadline）
+        if (not self.halted) and (self.csr[isa.CSR["mstatus"]] & isa.MSTATUS_MIE):
+            _cmp = s(u(self.csr.get(isa.CSR["mtimecmp"], 0)))
+            if _cmp > 0 and self.steps >= _cmp:
+                self.csr[isa.CSR["mtimecmp"]] = 0
+                self.irq_timer = True
         # 异步中断检查：MIE=1 且定时器挂起 -> 陷入（在指令提交后、下一条之前）
         if (not self.halted) and self.irq_timer and (self.csr[isa.CSR["mstatus"]] & isa.MSTATUS_MIE):
             self.irq_timer = False

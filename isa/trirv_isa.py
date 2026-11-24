@@ -91,6 +91,10 @@ OPCODE = {
 # 常用 M 态 CSR 地址（沿用 RISC-V 编号，均 < 3^7=2187 可放入 imm7 字段）
 CSR = {
     "mstatus":0x300, "mie":0x304, "mtvec":0x305, "mscratch":0x340,
+    # ADR-24（批次 5）：CLINT 模型定时器——mtime=指令步进钟（只读），
+    # mtimecmp=deadline（触发后解除武装）。RISC-V 无 mtimecmp CSR（CLINT 是
+    # MMIO），TriRV 取相邻空号 0xB01/0xB02 经 CSR 高区（ADR-06）访问。
+    "mtime":0xB01, "mtimecmp":0xB02,
     "mepc":0x341, "mcause":0x342, "mtval":0x343, "mip":0x344,
 }
 # mstatus 位布局（二进制控制位，存于 45-trit 字中）

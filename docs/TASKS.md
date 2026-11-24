@@ -95,9 +95,9 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 3b + 批次 4（AMP ①②）收官 / 下一任务 批次 5 固件
-  （mtimer CSR/注入 API + ISR 向量表，ADR-24 → TSBI-RT 规范草案）→
-  解锁 TernixOS T3 Tick 面**
+**进度游标：批次 3b/4/5 收官（回归 58 套全绿）/ 下一任务 批次 6–8 musl
+  （stdio 桩层 → ctype 查表 → multibyte/time，ADR-25/38 M2/M3/M4）→
+  解锁 TernixOS 用户态 libc；TSBI-RT 规范草案并行可启**
 
 #### 批次 3b.1a + 3b.4 + 3b.5 审计——已收官（2026-11-24 晚）
 
