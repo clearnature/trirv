@@ -21,11 +21,12 @@ import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path）
 import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TCC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tinycc", "trirv-tcc")
+ROOT = os.path.dirname(HERE)
+TCC = os.path.join(ROOT, "tinycc", "trirv-tcc")
 CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
 PP = os.path.join(HERE, "..", "libc-musl", "preprocess_musl.py")
 TRI = os.path.join(HERE, "..", "libc-musl", "musl_tri")
-MUSL_STR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party", "musl", "src", "string")
+MUSL_STR = os.path.join(ROOT, "third_party", "musl", "src", "string")
 PPDIR = _bootstrap.scratch("tri_musl_pp")
 
 passed = 0
@@ -72,6 +73,7 @@ def preprocess(name):
 
 def build_and_run(name, main_src, tri_files, pp_files, max_steps=20000000):
     """多 TU 编译 + 双 VM。返回 (编译rc, PyVM exit, CVM exit&0xFF)。"""
+    os.makedirs(PPDIR, exist_ok=True)   # scratch 目录可能被外层清扫
     cpath = os.path.join(PPDIR, "main_%s.c" % name)
     tpath = os.path.join(PPDIR, "%s.trv" % name)
     with open(cpath, "w") as f:
@@ -199,7 +201,7 @@ def main():
         print("tri-tcc 未构建（%s 不存在）—— 全部 SKIP" % TCC)
         print("\ntri-musl 契约：0 PASS / 0 FAIL / %d 组 SKIP" % len(GROUPS))
         sys.exit(0)
-    if not os.path.isdir(os.path.dirname(os.path.abspath(__file__)) + "/musl/src/string"):
+    if not os.path.isdir(MUSL_STR):   # 批次 3b.1a：原 tests/musl（11-22 重组遗留）→ third_party/musl
         print("musl 源码缺失（~/ai-lab/musl）—— 全部 SKIP")
         print("\ntri-musl 契约：0 PASS / 0 FAIL / %d 组 SKIP" % len(GROUPS))
         sys.exit(0)
