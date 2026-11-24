@@ -439,6 +439,17 @@
       （volatile/hidden 剥离、weak_alias 整行、unsigned long/long 折算、
       stdio 常量折叠 18 项——桥 #define 对无宏引擎的 trirv_cc 是死文本）
 - [ ] 6.3 **FILE 结构与底层 I/O**（__stdio_read、write、seek、close）。验收：写读回环（管道与内存流）
+      **6.3a 探针第 3 轮（2026-11-24 深夜，sizeof 落地）**：trirv_cc 第九/十项
+      扩展 = **sizeof 全形态**（N_SIZEOF gen 期节点——解析期折叠曾得局部
+      类型幻影 9；`sizeof *f` 无括号一元式；is_kw 入关键字类）+
+      **PROTOS 入 is_known_fn**（`f->write = __stdio_write;` 原型函数裸名
+      作值=符号发射——审计后第 6/7 项解析扩展）。过程中连破四坑：
+      at() 只认 TK_KW/TK_OP（sizeof 词法类）、括号前瞻用 TOKS[IPOS+1]
+      （at(tykw) 测 "(" 恒假）、成员数组维度必须 dim_text（TK_NUM.s=NULL
+      → "char[(null)]"→bytes=0）、N_SIZEOF eval 的 TDN 归零覆写组合
+      表达式。核心 30 文件 **28 OK**（余 __fdopen=libc 全局、fmemopen=
+      base 解析 quirks 两项归重写层）。上一轮 48/63 基础上 sizeof 解锁
+      +PROTOS 解锁 __stdout_write/__fdopen 类
       **6.3a 探针推进（2026-11-24 深夜，第 2 轮）**：T1 可编集 63 文件
       **48 OK = 76% 编译通过**（上游锁 4 文件由 lock_tri.c 桩替代、
       stdin/stdout/stderr+底座 6 文件归重写层，均不计入）。当日累计

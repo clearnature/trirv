@@ -283,7 +283,8 @@ static void tok_push(Token t){
 }
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list","__tint2","__tint","__tbool",
-        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else","extern",NULL};
+        "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else","extern",
+        "sizeof",NULL};   /* 批次 6.3a：sizeof 入关键字类（at() 要求 TK_KW/TK_OP）*/
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -378,7 +379,7 @@ static void lex(const char*src){
 
 /* ===================== AST ===================== */
 typedef enum {
-    N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,
+    N_NUM,N_STR,N_VAR,N_BIN,N_UN,N_ASSIGN,N_CALL,N_INDEX,N_MEMBER,N_SIZEOF,
     N_PREINC,N_POSTINC,N_DEREF,N_ADDR,
     N_BLOCK,N_DECL,N_IF,N_WHILE,N_FOR,N_RETURN,N_EXPR,N_BREAK,N_CONT,
     N_FUNC,N_INITLIST,N_VASTART,N_VAARG,N_VAEND,N_DOWHILE,N_CAST,N_LABEL,N_GOTO,N_SWITCH,N_CASE,N_DEFAULT,N_COMPOUND
@@ -645,7 +646,40 @@ static Node* parse_postfix(void){
     }
     return n;
 }
+static int ty_bytes(const char*ty);                  /* sizeof 用（定义在后段） */
+static char* expr_type(Node*n);                      /* 同上 */
 static Node* parse_unary(void){
+    if(getenv("TRV_MEMB")&&cur()->s&&!strncmp(cur()->s,"size",4)) fprintf(stderr,"[unary] cur='%s'\n",cur()->s);
+    /* sizeof（批次 6.3a：musl `sizeof *f` / `sizeof(struct S)` 面）——
+     * 编译期常量折叠为 N_NUM。括号形态优先按类型名解析（类型起始词或
+     * typedef 名判定；误入表达式时回溯），表达式形态含无括号一元式。 */
+    if(at("sizeof")){
+        take();
+        static const char*tykw[]={"int","char","void","unsigned","signed",
+                                  "struct","const","va_list","__tint2","__tint","__tbool",NULL};
+        Node*out=nnew(N_SIZEOF);
+        if(at("(")){
+            /* 前瞻判定（IPOS+1，"(" 尚未吃掉——at() 只看当前词，曾用
+             * at(tykw) 测 "(" 恒假致 sizeof(类型) 全数坠入表达式路） */
+            int is_type=0;
+            { Token*n1=&TOKS[IPOS+1];
+              for(int k=0;tykw[k];k++) if(n1->s&&!strcmp(n1->s,tykw[k])){is_type=1;break;}
+              if(!is_type&&n1->kind==TK_ID&&typedef_find(n1->s)) is_type=1; }
+            take();                                  /* ( */
+            if(is_type){
+                char*ty=parse_type();
+                expect(")");
+                out->s=strdup(ty);                   /* gen 期折叠（局部类型
+                 * 解析期未入 LOC 表——解析期折叠曾得 int 幻影 9，审计侧案发点） */
+                return out;
+            }
+            out->e=parse_expr();                     /* 非类型：表达式形态 */
+            expect(")");
+            return out;
+        }
+        out->e=parse_unary();                        /* sizeof *f / sizeof x */
+        return out;
+    }
     if(accept("++")){ Node*x=nnew(N_PREINC); x->num=1; x->e=parse_unary(); return x; }
     if(accept("--")){ Node*x=nnew(N_PREINC); x->num=-1; x->e=parse_unary(); return x; }
     if(accept("-")){ Node*x=nnew(N_UN); x->s="-"; x->e=parse_unary(); return x; }
@@ -1006,9 +1040,14 @@ static void struct_def_semi(const char*name,int semi){
                 mty2=strdup(b2);
             }
             char*mn=take()->s;
-            while(accept("[")){                            /* 成员数组 */
-                char buf[96]; snprintf(buf,sizeof(buf),"%s[%s]",mty2,cur()->s);
-                mty2=strdup(buf); take(); expect("]");
+            /* 成员数组维度必须走 dim_text（TK_NUM 的 s 字段为 NULL——
+             * cur()->s 直取会得到 "char[(null)]"→bytes=0，审计侧案发点） */
+            while(accept("[")){
+                char cnt[32]="";
+                if(!at("]")) dim_text(cnt,sizeof(cnt));
+                expect("]");
+                char buf[96]; snprintf(buf,sizeof(buf),"%s[%s]",mty2,cnt);
+                mty2=strdup(buf);
             }
             int aln = !strcmp(mty2,"__tint2") ? 4 : 9;      /* __tint2 4-对齐档（C2 方案 A），
                                                                其余成员仍 9-对齐（ABI §6） */
@@ -1017,6 +1056,7 @@ static void struct_def_semi(const char*name,int semi){
             pos=off+ty_bytes(mty2);
             GROW(sd.m,sd.cap,sd.nm,Member);
             sd.m[sd.nm].name=mn; sd.m[sd.nm].ty=mty2; sd.m[sd.nm].off=off; sd.nm++;
+            if(getenv("TRV_MEMB")) fprintf(stderr,"[memb-def] %s ty='%s' off=%d bytes=%d\n",mn,mty2?mty2:"(null)",off,ty_bytes(mty2));
             if(!accept(",")) break;
         }
         expect(";");
@@ -1024,6 +1064,7 @@ static void struct_def_semi(const char*name,int semi){
     expect("}"); if(semi) expect(";");
     sd.size=((pos+maxaln-1)/maxaln)*maxaln;   /* 尺寸按 maxalign 圆整（含 __tint2
                                                  成员的结构体 4-圆整，其余 9-圆整） */
+    if(getenv("TRV_MEMB")) fprintf(stderr,"[sdef] %s size=%d nm=%d pos=%d\n",sd.name,sd.size,sd.nm,pos);
     GROW(STRUCTS,CAPSTRUCT,NSTRUCT,StructDef);
     STRUCTS[NSTRUCT++]=sd;
 }
@@ -1861,6 +1902,9 @@ static int is_known_fn(const char*name){
     for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,name)) return 1;
     const char*r=alias_follow(name);
     if(r){ for(int k=0;k<NFN;k++) if(!strcmp(FNS[k]->s,r)) return 1; }
+    /* 原型登记名（批次 6.3a：musl `f->write = __stdio_write;` 面——桥原型
+     * 已登记 PROTOS，裸名作值=符号发射 &name；跨单元导入链接期解析） */
+    for(int k=0;k<NPROT;k++) if(!strcmp(PROTOS[k],name)) return 1;
     return 1==0;
 }
 /* 间接调用目标：把"被调地址"装入 reg。
@@ -1969,6 +2013,7 @@ static char* expr_type(Node*n){
     case N_STR: return "char*";
     case N_CAST: return n->s ? n->s : "int";   /* cast 后类型=目标类型 */
     case N_COMPOUND: return n->s ? n->s : "int";
+    case N_SIZEOF: return "int";
     case N_VAR: { LocVar*v=findloc(n->s);
         if(!v){ Global*g=global_find(n->s); if(g) return g->ty; }
         return v&&v->ty?v->ty:"int"; }
@@ -2157,6 +2202,12 @@ static int eval(Node*n){
         int r=tacq(); load_imm128(r,n->numw); return r;
     }
     case N_STR: { int r=tacq(); emitf("ADDI %s, zero, &__str_%d",regname(r),n->strsym); return r; }
+    case N_SIZEOF: {                                /* gen 期折叠：局部类型此刻已在 LOC 表
+     * （TDN 不归零——组合表达式里归零会让后续求值复用本寄存器覆写 18，实证 88≠80） */
+        int r=tacq();
+        load_imm(r, ty_bytes(n->s ? n->s : expr_type(n->e)));
+        return r;
+    }
     case N_VAR: {
         LocVar*v=findloc(n->s);
         /* 全局优先级：局部遮蔽全局（C 作用域规则）。
@@ -3120,6 +3171,7 @@ static void collect_decls(Node*n){
     case N_CAST: collect_decls(n->e); break;   /* *(int*)&x：取址藏在 cast 里，漏扫则 x 留寄存器 → 取址 UNSUPPORTED */
     case N_INDEX: collect_decls(n->l); collect_decls(n->r); break;
     case N_MEMBER: collect_decls(n->l); break;
+    case N_SIZEOF: if(n->e) collect_decls(n->e); break;
     case N_CALL: for(int i=0;i<n->nargs;i++) collect_decls(n->args[i]); break;
     case N_VASTART: case N_VAARG: case N_VAEND: collect_decls(n->e); break;
     default: break;

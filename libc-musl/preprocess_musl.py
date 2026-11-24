@@ -53,6 +53,9 @@ def preprocess(text):
                    ("F_SETFD","2"),("F_GETFD","1"),("FD_CLOEXEC","1"),
                    ("F_SETFL","4"),("F_GETFL","3"),("AT_FDCWD","-100"),
                    ("AT_REMOVEDIR","2048"),("AT_EACCESS","512"),
+                   # tty ioctl 系（asm-generic 通用值；VM 无 tty——ioctl 走
+                   # ENOSYS/ENOTTY 诚实失败路径，常量仅供编译通过）
+                   ("TIOCGWINSZ","21523"),("TIOCGPGRP","21519"),("TIOCSPGRP","21520"),
                    # limits（TriRV 全字等宽：MAX=(3^45-1)/2；MIN=-MAX-1）
                    ("LONG_MAX","179055468165337236283"),
                    ("LLONG_MAX","179055468165337236283"),
