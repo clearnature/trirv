@@ -13,6 +13,8 @@ import struct
 import subprocess
 import sys
 
+import _bootstrap  # noqa: F401（模块路径引导——统一 sys.path；草稿文件经 scratch() 落仓库 tmp/）
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CC = os.path.join(ROOT, "cc", "bin", "trirv_cc")
@@ -70,9 +72,9 @@ PROGS = [
 
 
 def compile_and_run(src, trv2):
-    cf = "/tmp/eq_%d.c" % abs(hash(src))
+    cf = _bootstrap.scratch("eq_%d.c" % abs(hash(src)))
     ext = ".trv2" if trv2 else ".trv"
-    tf = "/tmp/eq_%d%s" % (abs(hash(src)), ext)
+    tf = _bootstrap.scratch("eq_%d%s" % (abs(hash(src)), ext))
     with open(cf, "w") as f:
         f.write(src)
     env = dict(os.environ)

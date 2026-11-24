@@ -10,9 +10,17 @@
 | tri_musl_e2e 空转 | ✅ 成立且根因更深：TCC/MUSL_STR/PPDIR 三处 HERE/ROOT 混用 + 依赖外部 ~/ai-lab/musl | 路径修复已起步后**回滚**——该套件系统性路径病耦 bootstrap，登记 3b.1 专项（逐文件精修） |
 | difftest_tcc PyVM 列=CVM | ✅ 成立（run_vm 先 CVM 仅失败回退） | **已修**：run_vm 改真 PyVM 独立执行，28 组真四路 |
 | SYS_READ 负 count | ✅ 成立且两 VM 错法不同（PyVM 切片赋值插入 guest 内存；CVM (size_t) 负转巨大全量读入） | **已修**：两 VM count<0 → -EINVAL；黄金 exit=234/内存不插长 |
-| ISA 守卫跑 /tmp 旧二进制 | ❌ **复核不成立**：/tmp/trirv_vm_test 存在但零 .py 引用；规范路径 test_isa_completeness.py:149 用 vm/bin | 评审误报，如实标注 |
+| ISA 守卫跑 /tmp 旧二进制 | ✅ **成立且已修**（时序澄清见下方更正注：复核时看的是已修好的 HEAD，仲裁以 4d970af 历史点为准——该时点 CVM 确为 /tmp/trirv_vm_test） | 现状 test_isa_completeness.py:149 用 vm/bin ✓；/tmp 旧二进制建议删除 |
 | TC 越窗寄存器两 VM 不一致（PyVM 落 x0 / CVM 回绕 cregs[rd&7]） | ✅ 成立（代码亲核；编码器保证 reg_s≤7 不触发，属未定义角落） | ADR-35 待办：ISA 规范定死「reg_s≥8 处理」+ 守卫用例（批次 3b.5） |
 | 非法指令 PyVM 陷入 / CVM NOP | ✅ 方向成立 | 并入 ADR-35（统一为陷入口径） |
+
+> **更正（2026-11-24，评审作者）：上表「ISA 守卫跑 /tmp 旧二进制 = 评审误报」不成立，该条评审成立。**
+> 评审钉在 `4d970af`（批次 3.4；历史重写前的编号是 `170f65f`），当时
+> `isa/test_isa_completeness.py:148` 是 `CVM = "/tmp/trirv_vm_test"`，
+> 复核命令：`git show 4d970af:isa/test_isa_completeness.py | grep -n /tmp`。
+> 复核时工作树里已是同日落下的修复（CVM 改用 `vm/bin/trirv_vm`、按需构建、构建失败判 FAIL），
+> 该修复随 `7160922`（原 `c70862d`）入库——「零 .py 引用、规范路径用 vm/bin」正是修复后的样子。
+> 处置应为「已修」，验证与范围见评审 A3 与 §8「已处置」。
 
 ## 文档矛盾（评审 22/23 条）——已修
 - TASKS.md 基线快照 109/102 并存 → 删旧「ISA 总量 102」行（109=102 全宽+FENCE.I+CSR.H×6）。
