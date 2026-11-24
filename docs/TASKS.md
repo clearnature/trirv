@@ -75,7 +75,7 @@
       单步协作轮转调度——CVM `-a N` / PyVM run_amp 双 VM 同构；
       保留符号 `__amp_shared` 编译器绑定窗口地址；契约 10 项四票：
       mailbox 往返/共享窗加倍/窗口地址绑定/错误路径 -3 -2 自环）
-- [ ] T11b AMP 扩展 → 并入批次 4（ADR-23：阻塞收走新号 5013、核间中断 5014、
+- [x] T11b AMP 扩展 → 并入批次 4（ADR-23：阻塞收走新号 5013、核间中断 5014、
       4 核契约、tri-tcc 用例）
 - [x] T7b py fn-ptr 收官（声明符 `int (*fp)(int)` + 函数名退化 `fp=f` +
       间接调用 `(*fp)(x)`/`(fp)(x)`；trirv_asm &sym 定点展开（ADDI/LUI+ADDI
@@ -127,8 +127,12 @@
   O_CREAT 落 "x" 让下轮"不存在拒绝"假红——main 开头预清理解决）
 - trirv_cc 内建 +2：unlink(87)/rename(82) 进 syscall_no 双表 + is_syscall_name
 
-**进度游标：批次 6.3b 虚拟磁盘落地（回归 65 套全绿）/ 下一任务 批次 6.4-6.7
-  stdio 行为契约（fopen→fwrite→fread 路径真跑）→ 批次 6.8-6.9 vfprintf
+**进度游标（2026-11-24 深夜全面盘点后）：
+  ✅ 已收官：批次 1/2/3(含 3b 全部)/4(①②)/5 = 65 套全绿
+  🔨 进行中：批次 6 musl stdio（6.1✅ 6.2✅ 6.3✅ / 余 6.4-6.11 = 8 项）
+  ❌ 未开工：批次 7 multibyte(5) / 8 time(6) / 9 wasm(10) / 10 LLVM(5)
+  📋 ADR-39 待办 5 批（VM CLI/调试器/门禁 mtime/缓冲 ASAN/常量散落）
+  下一任务：6.4-6.7 stdio 行为契约（虚拟磁盘已就位，fwrite→fread 真跑）
   （stdio 桩层 → ctype 查表 → multibyte/time，ADR-25/38 M2/M3/M4）→
   解锁 TernixOS 用户态 libc；TSBI-RT 规范草案并行可启**
 
@@ -369,30 +373,30 @@
 
 #### 批次 2 质量门禁（ADR-07/08/09/13/20/28①/29/30/31/32）
 
-- [ ] 2.1 **run_all 增 `--san`**：用 ASan/UBSan 构建编译器与 CVM 到规范路径，跑完恢复；
+- [x] 2.1 **run_all 增 `--san`**：用 ASan/UBSan 构建编译器与 CVM 到规范路径，跑完恢复；
       FAIL_PAT 增 sanitizer 报错模式。验收：`--san --only cc` 绿
-- [ ] 2.2 **首次全量 `--san`**：修暴露的问题，记录耗时。验收：`--san` 全量绿
-- [ ] 2.3 **随机种子**：run_all 增 `--fuzz-seed N|random`，透传三套 fuzz 的 `argv[1]`，默认仍为 0。
+- [x] 2.2 **首次全量 `--san`**：修暴露的问题，记录耗时。验收：`--san` 全量绿
+- [x] 2.3 **随机种子**：run_all 增 `--fuzz-seed N|random`，透传三套 fuzz 的 `argv[1]`，默认仍为 0。
       验收：3 个随机种子全过，默认输出不变
-- [ ] 2.4 **槽制↔流制随机差分**：生成含 TC 词与合法跳转的程序，PyVM 槽制与 from_stream 逐步比对。
+- [x] 2.4 **槽制↔流制随机差分**：生成含 TC 词与合法跳转的程序，PyVM 槽制与 from_stream 逐步比对。
       验收：N 例全过；人为注入一个流制 bug 能变红
-- [ ] 2.5 **TRV1/TRV2 文件差分**：同一程序两种容器跑 CVM，比较退出码、输出、步数
-- [ ] 2.6 **fn-ptr 裸 `(fp)(x)`**：parse_primary 的二义钩子。验收：py_fnptr_e2e 的 py-only 用例转为双后端同构
-- [ ] 2.7 **fn-ptr 声明带初始化**：parse_decl 的 fn-ptr 分支接初始化式。验收：`int (*fp)(int) = inc;`
+- [x] 2.5 **TRV1/TRV2 文件差分**：同一程序两种容器跑 CVM，比较退出码、输出、步数
+- [x] 2.6 **fn-ptr 裸 `(fp)(x)`**：parse_primary 的二义钩子。验收：py_fnptr_e2e 的 py-only 用例转为双后端同构
+- [x] 2.7 **fn-ptr 声明带初始化**：parse_decl 的 fn-ptr 分支接初始化式。验收：`int (*fp)(int) = inc;`
       双后端；探测全局 fn-ptr 表初始化，缺则一并补
-- [ ] 2.8 **ABI 探针固化**：八条探针入 difftest_tcc，struct 偏移入 tri_tcc_e2e
-- [ ] 2.9 **微基准集**：bench/ 下 fib、qsort、串操作、memcpy；`tests/run_perf.py` 每档 5 次取中位数，
+- [x] 2.8 **ABI 探针固化**：八条探针入 difftest_tcc，struct 偏移入 tri_tcc_e2e
+- [x] 2.9 **微基准集**：bench/ 下 fib、qsort、串操作、memcpy；`tests/run_perf.py` 每档 5 次取中位数，
       报告 TRV1/TRV2 码长。验收：PERF_REPORT 新增「固定微基准」节
-- [ ] 2.10 **CI**：`.github/workflows/ci.yml`（push 跑 `--fast`，每晚全量加随机种子，macOS 与 Linux）
+- [x] 2.10 **CI**：`.github/workflows/ci.yml`（push 跑 `--fast`，每晚全量加随机种子，macOS 与 Linux）
       加等价本地脚本。验收：yaml 可解析；本地脚本跑通 `--fast`
-- [ ] 2.11 **ABI 文档校准**：ternary-abi-minimal §6（syscall 约定与 ADR-09 全文）、§7（tryte 宽度）、
+- [x] 2.11 **ABI 文档校准**：ternary-abi-minimal §6（syscall 约定与 ADR-09 全文）、§7（tryte 宽度）、
       §8（ELF 阶段作废，引 ADR-10）。验收：五条命令级核对
-- [ ] 2.12 **行为笔记关账**：TCC_BEHAVIOR_NOTES §1.3、§1.5、§5.1 标已修并引 ADR-13
-- [ ] 2.13 **固件文档更正**：§14.5 两条已完成；§10 差距清单按 ADR-24 更新
-- [ ] 2.14 **ISA 文档**：RISC-V 差异表补 PC 单位、分支窗、CSR 分区、移位量、无延迟槽、
+- [x] 2.12 **行为笔记关账**：TCC_BEHAVIOR_NOTES §1.3、§1.5、§5.1 标已修并引 ADR-13
+- [x] 2.13 **固件文档更正**：§14.5 两条已完成；§10 差距清单按 ADR-24 更新
+- [x] 2.14 **ISA 文档**：RISC-V 差异表补 PC 单位、分支窗、CSR 分区、移位量、无延迟槽、
       CSR 操作数顺序；登记 ADR-07/08
-- [ ] 2.15 **全部 docs 首部加状态行**（15 份）。验收：脚本检查每份前 10 行含「状态：」
-- [ ] 2.16 **批次 2 收官**
+- [x] 2.15 **全部 docs 首部加状态行**（15 份）。验收：脚本检查每份前 10 行含「状态：」
+- [x] 2.16 **批次 2 收官**
 
 #### 批次 3 TRV2 默认化（ADR-16/17/28①）
 
@@ -404,43 +408,43 @@
       参照：解释器 thread-code 的间接跳转目标缓存；CVM slot_hint 单向
       缓存的对称扩展（批次 3.4 引入，trirv_vm.c:1069 附近）
 
-- [ ] 3.1 **弛豫设计定案**：反条件映射、三指令布局、阈值随输出格式（TRV1 为 1093 槽，TRV2 为 273 槽）。
+- [x] 3.1 **弛豫设计定案**：反条件映射、三指令布局、阈值随输出格式（TRV1 为 1093 槽，TRV2 为 273 槽）。
       验收：设计条目入 TC_COMPRESSION_DESIGN，附手算示例
-- [ ] 3.2 **trirv_asm.py 实现弛豫**。验收：超窗条件分支由报错变为正确执行
-- [ ] 3.3 **trirv_cc.c 弛豫**：assemble_all 定点迭代至稳定。验收：构造 1200 槽间隔的条件分支，两种格式均正确
-- [ ] 3.4 **TC 选取点改用 tryte 保守界**（C-BEQ、C-BNE、C-J）。验收：全语料无超窗报错
-- [ ] 3.5 **调试器加载 TRV2**：槽号经流偏移表解析。验收：同一程序两种容器断点行为一致
-- [ ] 3.6 **全语料等价 harness**：cc_e2e 70 例加可执行用例抽样 ≥ 30。验收：新套件入 run_all
-- [ ] 3.7 **审计数据段是否含代码地址**（跳表、回调表）。验收：结论记录；若有，列出重写方案
-- [ ] 3.8 **61 单元 musl 链、busybox、crt 链在 TRV2 下全过**。验收：三个套件各加 TRV2 变体
-- [ ] 3.9 **统一加载器 tests/_trvio.py**（自动识别两种格式），切换 21 个自带解析的测试。
+- [x] 3.2 **trirv_asm.py 实现弛豫**。验收：超窗条件分支由报错变为正确执行
+- [x] 3.3 **trirv_cc.c 弛豫**：assemble_all 定点迭代至稳定。验收：构造 1200 槽间隔的条件分支，两种格式均正确
+- [x] 3.4 **TC 选取点改用 tryte 保守界**（C-BEQ、C-BNE、C-J）。验收：全语料无超窗报错
+- [x] 3.5 **调试器加载 TRV2**：槽号经流偏移表解析。验收：同一程序两种容器断点行为一致
+- [x] 3.6 **全语料等价 harness**：cc_e2e 70 例加可执行用例抽样 ≥ 30。验收：新套件入 run_all
+- [x] 3.7 **审计数据段是否含代码地址**（跳表、回调表）。验收：结论记录；若有，列出重写方案
+- [x] 3.8 **61 单元 musl 链、busybox、crt 链在 TRV2 下全过**。验收：三个套件各加 TRV2 变体
+- [x] 3.9 **统一加载器 tests/_trvio.py**（自动识别两种格式），切换 21 个自带解析的测试。
       验收：TRV1 下行为不变，全部套件绿
-- [ ] 3.10 **切默认**：trirv_cc 默认输出 TRV2，`TRV_FORMAT=1` 回退，逐套切换。验收：默认 TRV2 全量绿
-- [ ] 3.11 **ADR-17 准入达成记录**、README 构建说明、批次 3 收官
+- [x] 3.10 **切默认**：trirv_cc 默认输出 TRV2，`TRV_FORMAT=1` 回退，逐套切换。验收：默认 TRV2 全量绿
+- [x] 3.11 **ADR-17 准入达成记录**、README 构建说明、批次 3 收官
 
 #### 批次 4 AMP（ADR-06/23）
 
-- [ ] 4.1 **mhartid**：双 VM 的 0xF14 只读返回核号，写忽略。验收：单实例读 0；`-a N` 下各核读到自己的核号
-- [ ] 4.2 **核间中断位**：mip.MEIP(11) 与 mie.MEIE(11) 的读写与掩码语义。验收：CSR 差分套件扩展
-- [ ] 4.3 **中断陷入**：MEIP 挂起且 MIE 使能时陷入（cause 11、mepc 为下一条），mret 返回；
+- [x] 4.1 **mhartid**：双 VM 的 0xF14 只读返回核号，写忽略。验收：单实例读 0；`-a N` 下各核读到自己的核号
+- [x] 4.2 **核间中断位**：mip.MEIP(11) 与 mie.MEIE(11) 的读写与掩码语义。验收：CSR 差分套件扩展
+- [x] 4.3 **中断陷入**：MEIP 挂起且 MIE 使能时陷入（cause 11、mepc 为下一条），mret 返回；
       与定时器并存时外部中断优先。验收：PyVM 与 CVM 轨迹一致
-- [ ] 4.4 **syscall 5014 mipi(dst)**：置目标核 MEIP，错误口径同 msend。验收：核 0 触发，核 1 的 ISR 计数加一
-- [ ] 4.5 **syscall 5013 mrecvw**：阻塞收，单实例返回 −2。验收：生产者消费者往返
-- [ ] 4.6 **确定性调度器扩展**：等待态核跳过，中断或消息到达时唤醒。验收：mrecvw 版步数不多于轮询版
-- [ ] 4.7 **4 核契约**：环形令牌传递加共享窗 AMOADD 累加。验收：双 VM 终态一致
-- [ ] 4.8 **tri-tcc AMP 用例**（`__tri_syscall` 调 msend、mrecv、coreid）。验收：入 tri_tcc_e2e
-- [ ] 4.9 **文档**：AMP 节（5013、5014 语义，中断模型，内存模型声明）加批次 4 收官
+- [x] 4.4 **syscall 5014 mipi(dst)**：置目标核 MEIP，错误口径同 msend。验收：核 0 触发，核 1 的 ISR 计数加一
+- [x] 4.5 **syscall 5013 mrecvw**：阻塞收，单实例返回 −2。验收：生产者消费者往返
+- [x] 4.6 **确定性调度器扩展**：等待态核跳过，中断或消息到达时唤醒。验收：mrecvw 版步数不多于轮询版
+- [x] 4.7 **4 核契约**：环形令牌传递加共享窗 AMOADD 累加。验收：双 VM 终态一致
+- [x] 4.8 **tri-tcc AMP 用例**（`__tri_syscall` 调 msend、mrecv、coreid）。验收：入 tri_tcc_e2e
+- [x] 4.9 **文档**：AMP 节（5013、5014 语义，中断模型，内存模型声明）加批次 4 收官
 
 #### 批次 5 固件（ADR-24）
 
-- [ ] 5.1 **定时器设备设计**：CLINT 模型——`time`（0xC01，高区 CSR）自增，mtimecmp 与设备地址，
+- [x] 5.1 **定时器设备设计**：CLINT 模型——`time`（0xC01，高区 CSR）自增，mtimecmp 与设备地址，
       到期置 MTIP。验收：设计条目入固件文档，地址与现有内存布局无冲突
-- [ ] 5.2 **双 VM 实现** `time`、mtimecmp、MTIP 注入。验收：差分契约
-- [ ] 5.3 **trap 入口的上下文保存与恢复**。验收：ISR 前后寄存器与内存除预期值外不变
-- [ ] 5.4 **固件 tick 切到 mtimer**。验收：既有 RMS、PIP、看门狗实测结果不变
-- [ ] 5.5 **ISR 向量表**（按 mcause 分发）与注册接口。验收：定时器 ISR 计数等于预期；非法指令路径可恢复
-- [ ] 5.6 **固件契约套件** trirv_firmware_e2e.py 入 run_all
-- [ ] 5.7 **固件文档 §10、§13.5 更新**加批次 5 收官
+- [x] 5.2 **双 VM 实现** `time`、mtimecmp、MTIP 注入。验收：差分契约
+- [x] 5.3 **trap 入口的上下文保存与恢复**。验收：ISR 前后寄存器与内存除预期值外不变
+- [x] 5.4 **固件 tick 切到 mtimer**。验收：既有 RMS、PIP、看门狗实测结果不变
+- [x] 5.5 **ISR 向量表**（按 mcause 分发）与注册接口。验收：定时器 ISR 计数等于预期；非法指令路径可恢复
+- [x] 5.6 **固件契约套件** trirv_firmware_e2e.py 入 run_all
+- [x] 5.7 **固件文档 §10、§13.5 更新**加批次 5 收官
 
 #### 批次 6 musl stdio（ADR-25）
 
@@ -456,7 +460,8 @@
       stdio_bridge.c 前导（FILE 原样结构+常量+原型）+ preprocess 增补
       （volatile/hidden 剥离、weak_alias 整行、unsigned long/long 折算、
       stdio 常量折叠 18 项——桥 #define 对无宏引擎的 trirv_cc 是死文本）
-- [ ] 6.3 **FILE 结构与底层 I/O**（__stdio_read、write、seek、close）。验收：写读回环（管道与内存流）
+- [x] 6.3 **FILE 结构与底层 I/O** ✓ stdio 桥+锁桩+虚拟磁盘透传（d4406f3：
+      写读回环 20 项双 VM 全绿——底座全部就位，6.4-6.7 行为路径可直接开工）
       **6.3a 探针第 3 轮（2026-11-24 深夜，sizeof 落地）**：trirv_cc 第九/十项
       扩展 = **sizeof 全形态**（N_SIZEOF gen 期节点——解析期折叠曾得局部
       类型幻影 9；`sizeof *f` 无括号一元式；is_kw 入关键字类）+
@@ -631,12 +636,12 @@ stack-use-after-scope）——batch_musl 间歇红根因（1cfd909→5446131）�
 - **实证**：witness(n) 的 TriRV C 等价形式（`2 << k`）双 VM 通过，n=0..43 恒等式
   0 错（exit=44 = 0×100 + 22 偶 + 22 奇）。
 - **由对照引出、待拍板**：
-  - [ ] B4a（→ ADR-03） C-JAL 改走 TC 子格式 sf5（opcode 23 内 t5–t14 共 10 trit 放跳转量），
+  - [x] B4a（→ ADR-03） C-JAL 改走 TC 子格式 sf5（opcode 23 内 t5–t14 共 10 trit 放跳转量），
         不占 opcode 24——27 个 opcode 已用 24，仅余 24/25/26（修正 B1② 原方案）
-  - [ ] B4b（→ ADR-05） FENCE.I 占位（Zifencei；统一内存下为空操作，WASM/JIT 路线前置）
-  - [ ] B4c（→ ADR-06） CSR 地址空间扩展方案（现 imm7 上限 2186：mcycle 0xB00=2816、
+  - [x] B4b（→ ADR-05） FENCE.I 占位（Zifencei；统一内存下为空操作，WASM/JIT 路线前置）
+  - [x] B4c（→ ADR-06） CSR 地址空间扩展方案（现 imm7 上限 2186：mcycle 0xB00=2816、
         cycle 0xC00=3072 编不进；当前实现 8 个）——C3 固件前置
-  - [ ] B4d（→ ADR-07） RTL 期备忘（现不动）：指令步长 4 tryte 非 3 的幂，JALR 对齐只能舍入
+  - [x] B4d（→ ADR-07） RTL 期备忘（现不动）：指令步长 4 tryte 非 3 的幂，JALR 对齐只能舍入（ADR-07 拍板：RTL 期备忘搁置）
         不能掩码；移位量取 7 trit（0–2186）需比较器而非截断
 
 ## C. 大方向立项（→ ADR-18/21/24/27/25；执行序见 ADR-33）
