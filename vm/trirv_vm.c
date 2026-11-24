@@ -1561,11 +1561,16 @@ int main(int argc,char**argv){
     init_consts();init_trit_tab();
     int repeat=1,nthreads=0,argi=1,shared=0,amp_mode=0,outaddr=-1;
     while(argi<argc&&argv[argi][0]=='-'){
-        if(!strcmp(argv[argi],"-n")){repeat=atoi(argv[++argi]);argi++;}
-        else if(!strcmp(argv[argi],"-t")){nthreads=atoi(argv[++argi]);argi++;}
+        if(!strcmp(argv[argi],"-n")){repeat=atoi(argv[++argi]);argi++;
+            if(repeat<1){fprintf(stderr,"-n 必须 ≥1\n");return 1;}}
+        else if(!strcmp(argv[argi],"-t")){nthreads=atoi(argv[++argi]);argi++;
+            if(nthreads<0){fprintf(stderr,"-t 必须 ≥0\n");return 1;}}
         else if(!strcmp(argv[argi],"-s")){shared=1;argi++;}
-        else if(!strcmp(argv[argi],"-a")){amp_mode=1;repeat=atoi(argv[++argi]);argi++;}
-        else if(!strcmp(argv[argi],"-o")){outaddr=atoi(argv[++argi]);argi++;}
+        else if(!strcmp(argv[argi],"-a")){amp_mode=1;repeat=atoi(argv[++argi]);argi++;
+            if(repeat<1){fprintf(stderr,"-a 必须 ≥1\n");return 1;}
+            if(repeat>AMP_MAX_CORES){fprintf(stderr,"AMP 实例上限 %d\n",AMP_MAX_CORES);return 1;}}
+        else if(!strcmp(argv[argi],"-o")){outaddr=atoi(argv[++argi]);argi++;
+            if(outaddr<0){fprintf(stderr,"-o 必须 ≥0\n");return 1;}}
         else break;
     }
     if(argi>=argc){usage(argv[0]);return 1;}
@@ -1671,5 +1676,8 @@ int main(int argc,char**argv){
     long total_steps=0;for(int r=0;r<repeat;r++)total_steps+=vms[r].steps;
     fprintf(stderr,"\n[TriRV C VM] 实例=%d 指令=%d 步数=%ld 时间=%.4fs 吞吐=%.2f MIPS exit=%lld halted=%d shared=%d\n",
             repeat,nprog,total_steps,sec,sec>0?total_steps/sec/1e6:0,(long long)vms[0].exit_code,vms[0].halted,shared);
-    return 0;
+    if(!vms[0].halted)
+        fprintf(stderr,"[TriRV] 警告: 步数耗尽未停机（halted=0）——死循环或步数不足\n");
+    if(amp_mode) return 0;    /* AMP 多实例：不传播（各核独立退出码在 stderr） */
+    return (int)(vms[0].exit_code & 0xFF);
 }

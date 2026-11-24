@@ -173,14 +173,10 @@ void rewind(TRI_FILE *f) {
 }
 
 int fgetc(TRI_FILE *f) {
-    unsigned char ch;
-    int got;
-    if (!f) return -1;
-    if (f->flags & 27) return -1;
-    got = read(f->fd, &ch, 1);
-    if (got <= 0) { f->flags |= 27; return -1; }
-    f->pos += 1;
-    return ch;
+    /* 走 fread 已验证路径（直调 read 的 1-tryte 读取有邻接栈污染问题） */
+    unsigned char c = 0;
+    if (fread(&c, 1, 1, f) != 1) return -1;
+    return c;
 }
 
 int fputc(int c, TRI_FILE *f) {
