@@ -121,20 +121,24 @@ class TriRVDebugger:
             offs = self.vm.imem_offs
             i = bisect_right(offs, pc) - 1
             return i if (i >= 0 and offs[i] == pc) else -1
-        return self.vm.pc // 4
+        return pc // 4               # 审计修正：用传入 pc（曾误用 self.vm.pc）
 
     # ---- 执行控制 ----
     def _step(self):
         self.vm.step()
 
-    def _continue(self):
+    def _continue(self, max_steps=1000000):
         start_pc = self.vm.pc          # c 语义：从当前位置出发，本 pc 不立即再停
+        steps = 0
         while not self.vm.halted:
             if self.vm.pc in self.breakpoints and self.vm.pc != start_pc:
                 return "breakpoint @ pc=%d (%s)" % (
                     self.vm.pc, ("off%d" % self._slot_of(self.vm.pc))
                     if self.vm.packed else ("slot%d" % (self.vm.pc // 4)))
             self._step()
+            steps += 1
+            if steps >= max_steps:
+                return "步数上限 %d 未停机（死循环或步数不足）" % max_steps
         return "halted (exit=%d)" % self.vm.exit_code
 
     # ---- 视图 ----
@@ -231,8 +235,10 @@ class TriRVDebugger:
             if op == "q":
                 return "quit"
             return "? 未知命令: %s（可用：b/c/s/r/m/d/w/q）" % op
-        except Exception as ex:                      # 调试器自身不许把 VM 搞挂
+        except (ValueError, IndexError, KeyError) as ex:  # 用户输入错误可恢复
             return "? %s" % ex
+        # 非 ValueError/IndexError/KeyError 异常不再吞——VM 内部错误应暴露而非
+        # 被调试器掩盖（审计实证：except Exception 吞掉一切 = 假象调试）
 
     @staticmethod
     def run_script(trv_path, script):

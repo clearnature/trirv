@@ -52,8 +52,12 @@ def _build_binaries():
             print("FATAL: trirv_cc 重建失败——拒绝用旧二进制继续回归"
                   "（源码改坏+旧二进制残留时全绿是假绿）")
             sys.exit(1)
-    if os.path.exists(vm_src) and (not os.path.exists(vm_bin)
-                                   or os.path.getmtime(vm_bin) < os.path.getmtime(vm_src)):
+    # trirv_float.h 也是 vm 依赖（审计实证：头文件改后不触发重建→旧二进制假绿）
+    vm_hdr = os.path.join(root, "trirv_float.h")
+    vm_stale = (not os.path.exists(vm_bin)
+                or os.path.getmtime(vm_bin) < os.path.getmtime(vm_src)
+                or (os.path.exists(vm_hdr) and os.path.getmtime(vm_bin) < os.path.getmtime(vm_hdr)))
+    if os.path.exists(vm_src) and vm_stale:
         for c in ("clang", "gcc", "cc"):
             r = subprocess.run([c, "-O2", "-I", root, "-o", vm_bin, vm_src, "-lm"],
                                capture_output=True, text=True)
