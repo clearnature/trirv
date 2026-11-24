@@ -245,3 +245,40 @@ word     = Σ tryte[i] * 3^(5i)          (mod 3^45)
 - 结论：本轮**最高价值产出是修复负数正确性 bug**；computed goto 为架构层面的分发优化（对无分支预测的目标硬件有意义），在当前 x86 解释器上无显著收益。
 
 **交付物**：`trirv_vm.c`（已含 `vm_run_cg` + 修复的 `u()`）、`trirv_vm`（computed goto 二进制）、`trirv_vm_switch`（switch 对照）、`trirv_vm_portable`（可移植版）、`trirv_perf_dispatch_bench.sh`（整合基准，含负数回归）。
+
+## 12. 内存模型声明（ADR-37，2026-11-24）
+
+### 12.1 现状：代码/数据物理分离
+
+TriRV 双 VM 的实现细节：
+- **代码**存放在独立的预译码数组（PyVM `imem[]` / CVM `prog[]`），
+  guest 只能通过 JAL/JALR/分支写入 pc 改变控制流，**不能读写代码区**；
+- **数据**存放在统一的 tryte 数组（PyVM `mem[]` / CVM `mem_ref[]`），
+  guest 通过 LW/SW/SB 等读写。
+
+这一分离是**实现约束**而非架构选择：
+- 链接布局（全局 GBASE=200、栈基址 TRI_STACK_BASE=4096、堆 1<<19）
+  的计算隐含假设代码区与数据区不重叠；
+- .trv 文件格式（TRV1）的 prog[] 与 seg[] 也是独立字段。
+
+### 12.2 架构定位
+
+- 「统一内存」指的是**统一地址空间**（代码与数据共享 tryte 编号空间
+  0..2^20-1），**不是**哈佛与冯诺依曼的区分——TriRV 实际是哈佛架构
+  （代码/数据物理分离）。
+- 未来如果需要自修改代码（JIT、动态加载），需要：
+  1. ISA 添加 `FENCE.I`（已登记 ADR-05）；
+  2. VM 实现代码区写入的 invalidation（flush 预译码缓存）；
+  3. 容器格式支持代码/数据混合段（TRV2 已预留）。
+- 在 TernixOS HAL 抽象（ADR-002）下，HAL 后端 A（VM 承载）使用
+  哈佛分离；后端 B（FPGA/ASIC 三值硬件）可以自由选择冯诺依曼
+  （统一物理存储）——HAL 接口不区分。
+
+### 12.3 对上层的影响
+
+- **编译器**（trirv_cc/tri-tcc）：无需改动——编译产物 .trv 的
+  prog/seg 分离与 VM 内部实现匹配；
+- **guest 代码**：不感知分离——栈/堆/全局全在数据区，代码地址
+  只出现在 JAL/JALR/ra；
+- **TernixOS**：HAL 接口定义（trirv_hal.h）以 trit 语义暴露，
+  不区分代码/数据后端。
