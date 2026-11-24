@@ -597,12 +597,15 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 - [ ] 9.4 **浮点剩余运算**（min、max、neg、abs、ceil、floor、trunc、nearest、copysign）
 - [ ] 9.5 **convert/trunc**（int 与 float 互转）
 - [ ] 9.6 **多参与多返回**
-- [x] 9.7–9.9 **溶解**（2026-11-25 纯三值拍板，WASM_ROUTE_A §九）：原生
-  word 覆盖 64 位值域（i64 无独立类型）；小类型 = tryte（i16 无独立
-  布局）；无回绕则 Barrett 无意义。整数算术 = 原生 ADD/SUB/MUL/
-  TAND/TOR/XOR/SLL/SRA（每 op 1 条，仿真层整体删除）；访存 = 原生
-  SW/LW/SB/LBU（每 op 1 条）。clz/ctz/popcnt/rotl/rotr = 二进制位概念，
-  方言删。
+- [x] 9.7–9.9 **溶解**（2026-11-25 纯三值拍板 + 三次澄清，WASM_ROUTE_A
+  §九）：原生 word 覆盖 64 位值域（i64 无独立类型）；小类型 = tryte
+  （i16 无独立布局）；无回绕则 Barrett 无意义。**算术层不是独立的另一
+  件事**——i32 的 mod 2^32 契约 = 二进制语义不进方言（「运行别家算法
+  契约」论 = 兼容思维残余）；二进制↔三进制翻译 = 硬件虚拟层（VM 边界）
+  职责，不是软件层；现在不考虑三进制中表示二进制。整数算术 = 原生
+  ADD/SUB/MUL/TAND/TOR/XOR/SLL/SRA（每 op 1 条，仿真层整体删除）；
+  访存 = 原生 SW/LW/SB/LBU（每 op 1 条）。clz/ctz/popcnt/rotl/rotr =
+  二进制位概念，方言删。
 - [ ] 9.4′ **浮点 = 原生 TF**（§九 浮点注记推翻 §八 soft-float）：
   min/max/abs/neg = TF sign-trit 操作；ceil/floor/trunc = 基 3 阶码操作；
   IEEE↔TF 只在数据边界。spec 浮点断言 = 定义性 NS。
