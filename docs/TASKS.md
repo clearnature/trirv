@@ -411,7 +411,13 @@
 
 #### 批次 6 musl stdio（ADR-25）
 
-- [ ] 6.1 **依赖盘点**：stdio 目录对 pthread、internal、syscall 的依赖矩阵。验收：矩阵入文档
+- [x] 6.1 **依赖盘点** ✓ libc-musl/stdio_matrix.md：T1 核心字节 73 /
+      T2 printf 包装 16 / T3 宽字符 25（含 vfprintf/vfscanf 本体——%ls 才依赖
+      wchar）/ T4 popen 族 2 不移植；锁桩口径（单核协作调度 __lockfile 恒 1）；
+      syscall 映射（63/64/57/62/56/80 已有 + unlink 87/rename 82 标准区空号
+      增补）；**6.3 虚拟磁盘面拍板=VM 宿主沙箱目录透传**（B0 虚拟化优先的
+      平台面兑现——现 openat 假 fd 恒 EOF，升级为透传+越界诚实拒绝）；
+      6.10 验收基数口径=T1+T2 可移植基数 100%
 - [ ] 6.2 **单线程桩层**：锁宏空操作、被引用的 pthread 函数桩。验收：桩清单与 6.1 一致
 - [ ] 6.3 **FILE 结构与底层 I/O**（__stdio_read、write、seek、close）。验收：写读回环（管道与内存流）
 - [ ] 6.4 **写路径**（fwrite、fflush）。验收：缓冲写与直接写结果一致
