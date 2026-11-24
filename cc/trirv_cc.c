@@ -3535,7 +3535,12 @@ static uint32_t asm_line(const char*line,int idx){
         /* ADR-16 长分支弛豫：全宽超窗 → 反条件(funct^1 成对反转) imm=2，
            assemble_all 在 idx+1 插 JAL zero 承担长跳（fu 0-5 相异或 1 恰好成对） */
         if(lt>=0 && (imm>lim || imm<-lim)){
-            if(!RELAX[RELAX_CUR]){ RELAX[RELAX_CUR]=1; RELAX_LBLV[RELAX_CUR]=lt; RELAX_HIT=1; }
+            if(!RELAX[RELAX_CUR]){ RELAX[RELAX_CUR]=1; RELAX_HIT=1; }
+            /* 坑实录（批次 8 strftime 6 分支 TRV2 实证）：RELAX_LBLV 只在首次
+             * 标记时写入 → 标签表随弛豫收敛移动后仍是旧值，展开 JAL 指向
+             * 陈旧目标（差 2 槽=8 tryte，恰好跳过循环头检查 → 死循环）。
+             * 每次发射都必须刷新为当前标签表取值。 */
+            RELAX_LBLV[RELAX_CUR]=lt;
             return encS(d->op,RELAX_MODE?2:imm,rs2,rs1,d->fu^1);
         }
         return encS(d->op,imm,rs2,rs1,d->fu);

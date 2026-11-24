@@ -17,11 +17,12 @@ CASES = [
     ("getpid", "int main(){ return getpid(); }", 1),
     ("gettid", "int main(){ return gettid(); }", 1),
     ("set_tid_address", "int main(){ int t=0; return set_tid_address(&t); }", 1),
-    # --- 时钟（r=0，nsec 每次 +1ms）---
-    ("clock_gettime sec/nsec",
-     "int main(){ int ts[2]; int r=clock_gettime(0,ts); return r*100+ts[0]*10+ts[1]/1000000; }", 1),
+    # --- 时钟（批次 8.4 契约：clk_id=0=CLOCK_REALTIME=宿主 epoch；
+    #     clk_id≠0=确定性单调 +1ms/次——2026-11-24 改版，原全单调契约废止）---
+    ("clock_gettime REALTIME=宿主epoch",
+     "int main(){ int ts[2]; int r=clock_gettime(0,ts); if(r!=0) return 9; if(ts[0]<1700000000||ts[0]>1900000000) return 8; return 1; }", 1),
     ("clock_gettime 单调 +1ms",
-     "int main(){ int a[2]; int b[2]; clock_gettime(0,a); clock_gettime(0,b); return b[1]/1000000-a[1]/1000000; }", 1),
+     "int main(){ int a[2]; int b[2]; clock_gettime(1,a); clock_gettime(1,b); if(a[0]!=0) return 8; return b[1]/1000000-a[1]/1000000; }", 1),
     # --- 随机（确定性 PRNG）---
     ("getrandom 返回字节数",
      "int main(){ char b[4]; return getrandom(b,4,0); }", 4),

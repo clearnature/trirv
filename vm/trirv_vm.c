@@ -937,10 +937,15 @@ static int syscall_vm(VM *v,__int128_t oldpc){
     } else if(num==SYS_GETPID)ret=1;
     else if(num==SYS_GETTID||num==SYS_SET_TID)ret=1;
     else if(num==SYS_CLOCK){
-        v->clock_nsec+=1000000;                        /* 每次 +1ms，单调 */
-        if(v->clock_nsec>=1000000000){v->clock_nsec-=1000000000;v->clock_sec++;}
-        if(a1>=0&&a1<MEMSZ-18){store_word(v,a1,(__uint128_t)v->clock_sec);store_word(v,a1+9,(__uint128_t)v->clock_nsec);ret=0;}
-        else ret=E_INVAL;
+        /* clk_id=0(CLOCK_REALTIME)→宿主 epoch；其余 clk_id 走 +1ms 单调钟(确定性) */
+        if(a0==0&&a1>=0&&a1<MEMSZ-18){
+            store_word(v,a1,(__uint128_t)(uint32_t)time(0));store_word(v,a1+9,0);ret=0;
+        } else {
+            v->clock_nsec+=1000000;
+            if(v->clock_nsec>=1000000000){v->clock_nsec-=1000000000;v->clock_sec++;}
+            if(a1>=0&&a1<MEMSZ-18){store_word(v,a1,(__uint128_t)v->clock_sec);store_word(v,a1+9,(__uint128_t)v->clock_nsec);ret=0;}
+            else ret=E_INVAL;
+        }
     } else if(num==SYS_GETRANDOM){
         if(a0>=0&&a0<MEMSZ){
             __int128_t n=a1;if(a0+n>MEMSZ)n=MEMSZ-a0;

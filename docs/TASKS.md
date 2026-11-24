@@ -127,14 +127,12 @@
   O_CREAT 落 "x" 让下轮"不存在拒绝"假红——main 开头预清理解决）
 - trirv_cc 内建 +2：unlink(87)/rename(82) 进 syscall_no 双表 + is_syscall_name
 
-**进度游标（2026-11-24 深夜第二轮盘点）：
-  ✅ 已收官：批次 1/2/3/4/5 + 6.1✅ 6.2✅ 6.3✅ 6.4-6.7 底座+契约✅ = 60 套全绿
-  ✅ 批次 6 stdio + 批次 7 multibyte 全收官 = 67 套全绿
-  🔨 下一任务：批次 8 time（6 项）
-  ❌ 未开工：批次 7 multibyte(5) / 8 time(6) / 9 wasm(10) / 10 LLVM(5)
-  📋 ADR-39 待办：VM CLI ✓ / 调试器 ✓ / 门禁 mtime ✓ / 余缓冲 ASAN 逐点+常量散落
-  下一任务：6.8 vfprintf 探针 → 6.9 落地 → 6.10 批量编译 → 6.11 收官
-  已知缺口：fgetc 读回值 ≠写入值（留台账排查）**
+**进度游标（2026-11-24 第三轮盘点·批次 8 收官）：
+  ✅ 已收官：批次 1/2/3/4/5/6/7/8 全部 + ADR-39 VM CLI/调试器/门禁三批
+  🔨 下一任务：批次 9 wasm（10 项）→ 批次 10 LLVM（5 项）
+  📋 ADR-39 余 2 批：缓冲 ASAN 逐点 / 布局常量散落重构
+  📋 已知缺口：fgetc 读回值 ≠写入值（归编译器健壮性批）；8.5 时区解析（固定 UTC 拍板）
+  🔎 新增回归面：trirv_trv2_relax_e2e.py（TRV2 长分支弛豫 10 项——P1 修复钉底）**
 
 #### 批次 3b.1a + 3b.4 + 3b.5 审计——已收官（2026-11-24 晚）
 
@@ -524,14 +522,22 @@
 - [x] 7.5 **契约套件** ✓ trirv_mbwc_e2e.py 22 项（multibyte 恒等+分类+wcs/wmem）
       入 run_all——批次 7 收官
 
-#### 批次 8 musl time（ADR-25）
+#### 批次 8 musl time（ADR-25）——收官（2026-11-24）
 
-- [ ] 8.1 **依赖盘点**（时区实现、所需 syscall）
-- [ ] 8.2 **日历换算**（gmtime、timegm、mktime，localtime 固定 UTC）。验收：2000-01-01T00:00:00Z = 946684800、闰年、2038 之后
-- [ ] 8.3 **strftime**
-- [ ] 8.4 **时钟接口**（clock、difftime、nanosleep 桩）
-- [ ] 8.5 **时区解析**（__tz 的纯函数部分）
-- [ ] 8.6 **契约套件**，批次 8 收官
+- [x] 8.1 **依赖盘点** ✓ 仅 SYS_CLOCK(113)；微内核无 /etc/localtime → 固定 UTC（时区解析 8.5 归后续有盘面再议，符号面不阻塞）
+- [x] 8.2 **日历换算** ✓ musl __secs_to_tm 三值本征（LEAPOCH=951868800，纯整数）+ 反向换 Hinnant days_from_civil 精确式（旧「月表累加法」Jan/Feb 跨 era 年界差两月——废弃）。验收钉点：t=0/闰日 2004-02-29/负值 -1/2100 世纪非闰域/1000000000 全过；mktime 往返恒等 7 钉点
+- [x] 8.3 **strftime** ✓ %Y %m %d %H %M %S + 补零 + 字面量透传 + 未知格式符
+- [x] 8.4 **时钟接口** ✓ time()=clock_gettime(CLOCK_REALTIME) 桥；双 VM 的 SYS_CLOCK(113) clk_id=0 分支改写宿主 epoch（原 +1ms 单调钟只有 clk_id≠0 保留——确定性口径不变）；difftime 等宽减法
+- [x] 8.5 **时区解析** → 固定 UTC 拍板（见 8.1；TZ 环境/parse_twixt 待真时区需求立项）
+- [x] 8.6 **契约套件** ✓ trirv_time_e2e.py 14 项双 VM（7 钉点×9 字段 gmtime / mktime 往返 / timegm 手建 tm / strftime 主格式+补零+未知符 / time 宿主 epoch 锚窗 / difftime）——期望值全部由 Python 参考实现导出后钉死
+
+**批次 8 衍生 P1 修复：TRV2 长分支弛豫陈旧标签（RELAX_LBLV 冻结）**
+  strftime 6 分支形状实证：TRV2 门 273 槽超窗分支弛豫后，RELAX_LBLV 只在首标时
+  写入，标签表随弛豫收敛移动后仍冻结旧值 → 展开 JAL 指向陈旧目标（差 2 槽=
+  8 tryte，恰跳过循环头检查→死循环）。TRV1（无弛豫）与短跳程序全绿漏网。
+  修复=每次发射刷新 RELAX_LBLV（trirv_cc.c 分支发射路径）。
+  新套件 trirv_trv2_relax_e2e.py 10 项双 VM 钉死形状族（2/6/8 分支链+回边+
+  真 strftime），突变验证：bug 形态 8 FAIL / 修复 10 PASS。
 
 #### 批次 9 wasm（ADR-21）
 

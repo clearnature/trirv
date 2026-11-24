@@ -5,6 +5,7 @@
 - 数据内存：byte(tryte) 编址，dict 存储
 """
 import os
+import time as _time_mod
 import trirv_isa as isa
 import trirv_float as tf
 from collections import deque
@@ -533,13 +534,19 @@ class VM:
             ret = self.tid
         elif num == SYS_CLOCK_GETTIME:
             # clock_gettime(clk_id, timespec*)：写 sec(低字)+nsec(高字)，各 9 tryte
-            self.clock_ns += 1000000          # 每次推进 1 ms（单调、确定性）
-            if 0 <= a1 < len(self.mem) - 2 * self.WORD_TRYTES:
-                self._store_word(a1, self.clock_ns // 1000000000)
-                self._store_word(a1 + self.WORD_TRYTES, self.clock_ns % 1000000000)
+            # clk_id=0(CLOCK_REALTIME)→宿主 epoch；其余 clk_id 走 +1ms 单调钟(确定性)
+            if a0 == 0 and 0 <= a1 < len(self.mem) - 2 * self.WORD_TRYTES:
+                self._store_word(a1, int(_time_mod.time()))
+                self._store_word(a1 + self.WORD_TRYTES, 0)
                 ret = 0
             else:
-                ret = EINVAL
+                self.clock_ns += 1000000      # 每次推进 1 ms（单调、确定性）
+                if 0 <= a1 < len(self.mem) - 2 * self.WORD_TRYTES:
+                    self._store_word(a1, self.clock_ns // 1000000000)
+                    self._store_word(a1 + self.WORD_TRYTES, self.clock_ns % 1000000000)
+                    ret = 0
+                else:
+                    ret = EINVAL
         elif num == SYS_GETRANDOM:
             # getrandom(buf, count, flags)：xorshift32 PRNG，确定性，写 count tryte
             if 0 <= a0 < len(self.mem):
