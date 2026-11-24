@@ -36,13 +36,14 @@ CASES = [
      "int main(){ int *p=mmap(0,90,3,2,-1,0); int *q=mmap(0,90,3,2,-1,0); int d=p-q; if(d<0) d=0-d; return d; }", 10),  # 90/9=10 (int 单位)
     ("munmap/mprotect stub",
      "int main(){ int *p=mmap(0,90,3,2,-1,0); return mprotect(p,90,0)+munmap(p,90); }", 0),
-    # --- 文件 stub ---
-    ("openat 分配 fd",
-     "int main(){ return openat(0,\"x\",0); }", 3),
-    ("close 成功/二次失败",
-     "int main(){ int fd=openat(0,\"x\",0); int a=close(fd); int b=close(fd); return a*100-b; }", 9),
-    ("fstat/lseek stub",
-     "int main(){ int fd=openat(0,\"x\",0); return fstat(fd,100)+lseek(fd,0,0); }", 0),
+    # --- 文件（6.3b 虚拟磁盘真实透传：不存在→ENOENT=-2；O_CREAT→真开；
+    #     close fd≥3 走宿主；lseek fd<3 保留 0 口径）---
+    ("openat 不存在拒绝",
+     "int main(){ return openat(0,\"x\",0)==-2 ? 42 : 1; }", 42),
+    ("openat O_CREAT+close 成功",
+     "int main(){ int fd=openat(0,\"x\",65); if(fd<0) return 1; return close(fd)==0 ? 42 : 2; }", 42),
+    ("lseek fd<3 口径 0",
+     "int main(){ return lseek(0,0,0); }", 0),
     # --- 信号/调度 stub ---
     ("futex/sched_yield stub",
      "int main(){ return futex(0,0,0,0,0,0)+sched_yield()+rt_sigaction(0,0,0)+rt_sigprocmask(0,0,0,0); }", 0),
@@ -65,6 +66,11 @@ def run(src, steps=400000):
     return S(cpu.regs[10]), cpu
 
 def main():
+    # 顺序耦合预清理：O_CREAT 用例会在 CWD 落 "x"——重跑时让"不存在拒绝"
+    # 用例真实拒绝（上轮残留文件让诚实拒绝假红的顺序耦合实证）
+    for f in ("x",):
+        if os.path.exists(f):
+            os.unlink(f)
     passed = 0
     for name, src, expected in CASES:
         try:

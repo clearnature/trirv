@@ -4,6 +4,7 @@
 - 指令内存按"指令槽"编址（简化：每条 20-trit 指令占 1 槽）
 - 数据内存：byte(tryte) 编址，dict 存储
 """
+import os
 import trirv_isa as isa
 import trirv_float as tf
 from collections import deque
@@ -21,6 +22,10 @@ def u(v):            # 有符号 -> 无符号
 # Syscall 编号（asm-generic / RISC-V Linux 约定，见 include/uapi/asm-generic/unistd.h）
 SYS_GETCWD       = 17
 SYS_OPENAT       = 56
+SYS_UNLINK       = 87
+SYS_RENAME       = 82
+SYS_UNLINKAT     = 35
+SYS_RENAMEAT     = 38
 SYS_CLOSE        = 57
 SYS_LSEEK        = 62
 SYS_READ         = 63
@@ -328,6 +333,32 @@ class VM:
             self._csr_write(csr_addr, old & ~src)
         self.regs[rd] = old % MOD
 
+    # ---- 6.3b 虚拟磁盘（ADR-39/6.1 拍板：宿主沙箱目录透传）----
+    # 沙箱口径：VM 进程 CWD 为根；拒绝绝对路径与 ".." 穿越；旗标翻译
+    # （guest 用 Linux 数值，宿主 O_CREAT/O_EXCL/O_TRUNC/O_APPEND 数值不同）
+    @staticmethod
+    def _host_open_flags(g):
+        h = g & 3                                   # O_ACCMODE 两宿同值
+        if g & 64:   h |= os.O_CREAT
+        if g & 128:  h |= os.O_EXCL
+        if g & 512:  h |= os.O_TRUNC
+        if g & 1024: h |= os.O_APPEND
+        if g & 2048: h |= os.O_NONBLOCK
+        return h
+    def _vdisk_path(self, addr):
+        out = bytearray()
+        while True:
+            if not (0 <= addr < len(self.mem)): return None
+            t = self.mem[addr] % 243
+            if t == 0: break
+            out.append(t); addr += 1
+            if len(out) > 4096: return None
+        if not out: return None
+        p = out.decode('latin-1')
+        if p.startswith('/'): return None           # 绝对路径拒绝
+        if '..' in p.replace('\\', '/').split('/'): return None  # 沙箱穿越拒绝
+        return p
+
     def _syscall(self):
         """RISC-V 约定：a7(x17)=号，a0..a5(x10..x15)=参数，返回值写 a0。"""
         num = s(self.regs[17])
@@ -342,6 +373,10 @@ class VM:
             # write(fd, buf, count) -> 写入 tryte 数；fd=1 stdout, fd=2 stderr
             if a2 < 0:
                 ret = EINVAL                       # 畸形 count：与 C VM 统一返回 -EINVAL
+            elif a0 >= 3 and 0 <= a1 < len(self.mem):
+                # 6.3b 虚拟磁盘写：宿主 os.write 直通
+                data = bytes(self.mem[a1:a1 + a2])
+                ret = os.write(a0, data)
             elif a0 in (1, 2) and 0 <= a1 < len(self.mem):
                 data = bytes(self.mem[a1:a1 + a2])
                 self.output.extend(data)
@@ -357,6 +392,12 @@ class VM:
             # 统一口径：count<0 → -EINVAL（与 SYS_WRITE 一致）。
             if a2 < 0:
                 ret = EINVAL
+            elif a0 >= 3 and 0 <= a1 < len(self.mem):
+                # 6.3b 虚拟磁盘读：宿主 os.read 直通（A5 口径 a2<0 已挡）
+                data = os.read(a0, a2)
+                n = min(len(data), len(self.mem) - a1)
+                self.mem[a1:a1 + n] = data[:n]
+                ret = n
             elif a0 == 0 and 0 <= a1 < len(self.mem):
                 n = min(a2, len(self.stdin), len(self.mem) - a1)
                 chunk = bytes(self.stdin[:n]); del self.stdin[:n]
@@ -533,14 +574,60 @@ class VM:
         elif num == SYS_SCHED_YIELD:
             ret = 0
         elif num == SYS_OPENAT:
-            # openat：VM 无真实文件系统，返回合法 fd 并记录（供 close/fstat 用）
-            fd = self.next_fd; self.next_fd += 1
-            self.open_files[fd] = a1  # 记录 filename 地址
-            ret = fd
+            # 6.3b 虚拟磁盘：dirfd 忽略（AT_FDCWD 口径）；沙箱校验+旗标翻译
+            pth = self._vdisk_path(a1)
+            if pth is None:
+                ret = -2               # ENOENT
+            else:
+                # OSError 捕获（宿主 os.open ENOENT 抛异常——CVM 口径 open<0
+                # 返 -2，PyVM 必须同构捕获；漏捕获曾致 guest 崩溃实证）
+                try:
+                    ret = os.open(pth, self._host_open_flags(a2),
+                                  0o644 if a2 & 64 else 0)
+                except OSError:
+                    ret = -2           # ENOENT
         elif num == SYS_CLOSE:
-            ret = 0 if self.open_files.pop(a0, None) is not None else EBADF
-        elif num in (SYS_FSTAT, SYS_FSTATAT, SYS_LSEEK):
+            # 6.3b：fd≥3 宿主 os.close（openat 已不再入 open_files——旧字典
+            # 路径对 fd<3 保留 0 口径，与 CVM 同构）
+            if a0 >= 3:
+                try: os.close(a0); ret = 0
+                except OSError: ret = -9  # EBADF
+            else:
+                ret = 0
+        elif num == SYS_LSEEK:
+            # 6.3b：fd≥3 宿主 lseek；whence=Linux 值（0/1/2 两宿同值）
+            if a0 >= 3:
+                try:
+                    ret = os.lseek(a0, a1, a2)
+                except OSError:
+                    ret = -1
+            else:
+                ret = 0
+        elif num in (SYS_FSTAT, SYS_FSTATAT):
             ret = 0                   # 简化：状态查询成功，大小/偏移 0
+        elif num in (SYS_UNLINK, SYS_UNLINKAT):
+            # 6.3b 虚拟磁盘删除：UNLINKAT a2=AT_REMOVEDIR(2048)→rmdir
+            pth = self._vdisk_path(a0 if num == SYS_UNLINK else a1)
+            if pth is None:
+                ret = -2
+            elif num == SYS_UNLINKAT and a2 & 2048:
+                try: os.rmdir(pth); ret = 0
+                except FileNotFoundError: ret = -2
+                except OSError: ret = -1
+            else:
+                try: os.unlink(pth); ret = 0
+                except FileNotFoundError: ret = -2
+                except OSError: ret = -1
+        elif num in (SYS_RENAME, SYS_RENAMEAT):
+            # 6.3b 虚拟磁盘改名：RENAMEAT 参数序 (olddfd,old,newdfd,new)
+            op = self._vdisk_path(a0 if num == SYS_RENAME else a1)
+            np = self._vdisk_path(a1 if num == SYS_RENAME else a3)
+            if op is None or np is None:
+                ret = -2
+            else:
+                try: os.rename(op, np); ret = 0
+                except FileNotFoundError: ret = -2
+                except OSError: ret = -1
         elif num == SYS_UNAME:
             # uname(buf)：写机器名 "TriRV"（tryte 值），返回 0
             if 0 <= a0 < len(self.mem):

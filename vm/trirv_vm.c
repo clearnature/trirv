@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 #include <time.h>
 #include <math.h>
 #include "trirv_float.h"           /* F 扩展：TF 三进制浮点（P2） */
@@ -746,6 +749,7 @@ SYS_READV=65,SYS_WRITEV=66,SYS_FSTATAT=79,SYS_FSTAT=80,SYS_EXIT=93,SYS_EXIT_GROU
 SYS_SET_TID=96,SYS_FUTEX=98,SYS_CLOCK=113,SYS_YIELD=124,SYS_SIGACTION=134,
 SYS_SIGPROCMASK=135,SYS_SIGRETURN=139,SYS_UNAME=160,SYS_GETPID=172,SYS_GETTID=178,
 SYS_MUNMAP=215,SYS_MMAP=222,SYS_MPROTECT=226,SYS_BRK=214,SYS_GETRANDOM=278,
+SYS_UNLINK=87,SYS_RENAME=82,SYS_UNLINKAT=35,SYS_RENAMEAT=38,
 /* ---- TriRV 扩展区（Linux 编号空间之外的自定义原语）----
  * read8/write8：8-bit 视图层。octet(0..255) <-> 双 tryte [lo=o%243, hi=o/243]，
  * 内存保持纯三进制（tryte 仍 0..242），musl 的 CHAR_BIT==8 依赖由边界编解码满足。 */
@@ -760,19 +764,55 @@ SYS_MRECVW=5013,SYS_MIPI=5014};
 #define E_NOSYS (-38)
 
 /* 返回 1=mrecvw 挂起（调用方跳过 a0 写回；pc 已回卷） */
+/* ---- 6.3b 虚拟磁盘（ADR-39/6.1 拍板：宿主沙箱目录透传）----
+ * 沙箱口径：VM 进程 CWD 为根；路径拒绝绝对形态与 ".." 穿越。
+ * guest fd 与宿主 fd 同值直通（宿主 open 天然 ≥3；0/1/2 归 stdin/out/err）。
+ * 旗标口径：guest 用 Linux 数值（preprocess 折算），宿主翻译（macOS 的
+ * O_CREAT/O_EXCL/O_TRUNC/O_APPEND 数值不同——按位重组而非直通）。 */
+static int vdisk_path(VM *v,__int128_t addr,char*out,int cap){
+    int n=0;
+    while(1){
+        if(addr<0||addr>=MEMSZ||n>=cap-1) return 0;
+        uint8_t t=v->mem_ref[addr]%243;
+        if(t==0) break;
+        out[n++]=(char)t; addr++;
+    }
+    out[n]=0;
+    if(n==0||out[0]=='/') return 0;              /* 空/绝对路径拒绝 */
+    {   char*p=out;                              /* ".." 组件拒绝（沙箱穿越） */
+        while(*p){ if(p[0]=='.'&&p[1]=='.'&&(p[2]=='/'||p[2]==0)) return 0; p++; }
+    }
+    return 1;
+}
+static int host_open_flags(int g){
+    int h=g&3;                                   /* O_ACCMODE 两宿同值 */
+    if(g&64)h|=O_CREAT; if(g&128)h|=O_EXCL; if(g&512)h|=O_TRUNC;
+    if(g&1024)h|=O_APPEND; if(g&2048)h|=O_NONBLOCK;
+    return h;
+}
 static int syscall_vm(VM *v,__int128_t oldpc){
     __int128_t num=s(v->reg[17]);
-    __int128_t a0=s(v->reg[10]),a1=s(v->reg[11]),a2=s(v->reg[12]);
+    __int128_t a0=s(v->reg[10]),a1=s(v->reg[11]),a2=s(v->reg[12]),a3=s(v->reg[13]);
     if(num==0){v->halted=1;return 0;}
     __int128_t ret=0;
     if(num==SYS_WRITE){
         if(a2<0) ret=E_INVAL;                       /* 畸形 count：与 Python VM 统一 */
+        else if(a0>=3&&a1>=0&&a1<MEMSZ){             /* 6.3b：虚拟磁盘写 */
+            ssize_t got=write((int)a0,(void*)(v->mem_ref+a1),(size_t)a2);
+            ret=(got<0)?-5:(__int128_t)got;
+        }
         else if((a0==1||a0==2)&&a1>=0&&a1<MEMSZ){
             __int128_t n=a2;if(a1+n>MEMSZ)n=MEMSZ-a1;
             for(__int128_t i=0;i<n;i++)vm_out(v,v->mem_ref[a1+i]);ret=n;
         } else ret=E_BADF;
     } else if(num==SYS_READ){
-        if(a0==0&&a1>=0&&a1<MEMSZ){
+        if(a0>=3&&a1>=0&&a1<MEMSZ){                  /* 6.3b：虚拟磁盘读 */
+            if(a2<0) ret=E_INVAL;
+            else{
+                ssize_t got=read((int)a0,(void*)(v->mem_ref+a1),(size_t)a2);
+                ret=(got<0)?-5:(__int128_t)got;
+            }
+        } else if(a0==0&&a1>=0&&a1<MEMSZ){
             size_t n=(size_t)a2;if(n>v->stdin_len-v->stdin_pos)n=v->stdin_len-v->stdin_pos;
             if((size_t)(a1+n)>MEMSZ)n=MEMSZ-(size_t)a1;
             memcpy(v->mem_ref+a1,v->stdin_data+v->stdin_pos,n);v->stdin_pos+=n;ret=(__int128_t)n;
@@ -910,12 +950,37 @@ static int syscall_vm(VM *v,__int128_t oldpc){
     } else if(num==SYS_MMAP){
         __int128_t len=((a1+8)/9)*9,addr=v->mmap_ptr-len;  /* 9 tryte 对齐 */
         if(len>0&&v->brk_ptr<addr){v->mmap_ptr=addr;ret=addr;}else ret=E_NOMEM;
+    } else if(num==SYS_LSEEK){
+        /* 6.3b：fd≥3 宿主 lseek；whence=Linux 值（0/1/2 两宿同值） */
+        if(a0>=3){ __int128_t r=lseek((int)a0,(__int128_t)a1,(int)a2); ret=(r<0)?-1:r; }
+        else ret=0;
     } else if(num==SYS_MUNMAP||num==SYS_MPROTECT||num==SYS_FUTEX||num==SYS_YIELD||
-              num==SYS_FSTAT||num==SYS_FSTATAT||num==SYS_LSEEK||num==SYS_SIGACTION||
+              num==SYS_FSTAT||num==SYS_FSTATAT||num==SYS_SIGACTION||
               num==SYS_SIGPROCMASK||num==SYS_SIGRETURN||num==SYS_GETCWD||
               num==SYS_READV||num==SYS_WRITEV) ret=0;
-    else if(num==SYS_OPENAT)ret=v->next_fd++;
-    else if(num==SYS_CLOSE)ret=0;
+    else if(num==SYS_OPENAT){
+        /* 6.3b：dirfd 忽略（AT_FDCWD 口径）；沙箱校验+旗标翻译 */
+        char pth[4096];
+        if(!vdisk_path(v,a1,pth,sizeof pth)) ret=-2;          /* ENOENT */
+        else{
+            int hf=host_open_flags((int)a2);
+            int fd=open(pth,hf,(int)a2&64?0644:0);
+            ret=(fd<0)?-2:fd;
+        }
+    }
+    else if(num==SYS_CLOSE)ret=(a0>=3)?close((int)a0):0;
+    else if(num==SYS_UNLINK||num==SYS_UNLINKAT){ /* dirfd 忽略；UNLINKAT a2=AT_REMOVEDIR→rmdir */
+        char pth[4096]; __int128_t pa=(num==SYS_UNLINKAT)?a1:a0;
+        if(!vdisk_path(v,pa,pth,sizeof pth)) ret=-2;
+        else if(num==SYS_UNLINKAT&&(a2&2048)) ret=rmdir(pth)?((errno==ENOENT)?-2:-1):0;
+        else ret=unlink(pth)?((errno==ENOENT)?-2:-1):0;
+    }
+    else if(num==SYS_RENAME||num==SYS_RENAMEAT){
+        char op[4096],np[4096];
+        __int128_t pa=(num==SYS_RENAMEAT)?a1:a0, pb=(num==SYS_RENAMEAT)?a3:a1;
+        if(!vdisk_path(v,pa,op,sizeof op)||!vdisk_path(v,pb,np,sizeof np)) ret=-2;
+        else ret=rename(op,np)?((errno==ENOENT)?-2:-1):0;
+    }
     else if(num==SYS_UNAME){
         if(a0>=0&&a0<MEMSZ){const char*nm="TriRV";for(int i=0;i<5;i++)v->mem_ref[a0+i]=nm[i]%243;ret=0;}
         else ret=E_INVAL;

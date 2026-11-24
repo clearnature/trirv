@@ -110,7 +110,25 @@
   调试器批、门禁 mtime 批、编译器缓冲 ASAN 逐点批——见 ADR-39 §三
 - 全文=docs/ADR-39-audit-disposition.md
 
-**进度游标：批次 3b/4/5 收官（回归 58 套全绿）/ 下一任务 批次 6–8 musl
+#### 6.3b 虚拟磁盘落地（2026-11-24 深夜，ADR-39/6.1 拍板兑现）
+
+- **双 VM 同构**：openat（dirfd 忽略/AT_FDCWD 口径 + 沙箱校验 + 旗标翻译
+  ——guest 用 Linux 数值，宿主 macOS O_CREAT=512≠Linux 64 按位重组）/
+  read/write fd≥3 宿主直通（A5 口径 count<0→-EINVAL）/lseek fd≥3 宿主/
+  close fd≥3 宿主 / unlink/rename+at 变体（AT_REMOVEDIR→rmdir）
+- **沙箱**：VM 进程 CWD 为根；绝对路径与 ".." 穿越诚实拒绝（-2=ENOENT）；
+  guest fd 与宿主 fd 同值直通（0/1/2 归 std 流不变）
+- **契约 trirv_vdisk_e2e.py 20 项**（fast=59/full=65 套）：创建写入→宿主
+  文件验证/读回校验和/lseek 定位读/O_APPEND 追加/unlink 宿主消失/rename
+  roundtrip/绝对路径拒绝/..穿越拒绝（双 VM × 全部场景）——**20/20 全绿**
+- 坑实录：PyVM os.open ENOENT 抛异常（CVM 口径 open<0 返 -2，PyVM 必须
+  try/except 同构）；PyVM close 还是旧 open_files 字典路径（openat 新 fd
+  不入字典→close 恒 EBADF）；syscall_e2e 三用例顺序耦合残留文件（上轮
+  O_CREAT 落 "x" 让下轮"不存在拒绝"假红——main 开头预清理解决）
+- trirv_cc 内建 +2：unlink(87)/rename(82) 进 syscall_no 双表 + is_syscall_name
+
+**进度游标：批次 6.3b 虚拟磁盘落地（回归 65 套全绿）/ 下一任务 批次 6.4-6.7
+  stdio 行为契约（fopen→fwrite→fread 路径真跑）→ 批次 6.8-6.9 vfprintf
   （stdio 桩层 → ctype 查表 → multibyte/time，ADR-25/38 M2/M3/M4）→
   解锁 TernixOS 用户态 libc；TSBI-RT 规范草案并行可启**
 
