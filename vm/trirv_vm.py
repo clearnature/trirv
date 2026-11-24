@@ -85,6 +85,7 @@ class VM:
         #     数组，imem_offs 为各指令的 tryte 偏移表（PC→槽 bisect 解析）---
         self.packed = False
         self.imem_offs = None
+        self._dcache = {}                # slot → decoded dict（decode 占 profile 53%）
         # F 扩展浮点寄存器堆：f0..f31，存 TF45 的 45-trit raw（= (sign,mant,exp3)
         # 分离表示的无损打包）。裸 double 会把指数卡在 3^646，违背全阶码模型；
         # raw 打包天然无损，算术时才 decompose → mant 进 FPU、exp3 走整数 → compose。
@@ -537,7 +538,11 @@ class VM:
             self._exec_c(cd, old_pc)
             self.steps += 1
             return
-        d = isa.decode(inst)
+        _ck = self._dcache.get(inst)
+        if _ck is None:
+            _ck = isa.decode(inst)
+            self._dcache[inst] = _ck
+        d = _ck
         name = d["inst"]
         rd, rs1, rs2 = d["rd"], d["rs1"], d["rs2"]
         imm = d.get("imm", 0)
