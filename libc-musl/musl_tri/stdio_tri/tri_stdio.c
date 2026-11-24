@@ -130,6 +130,7 @@ int fread(void *ptr, int size, int nmemb, TRI_FILE *f) {
     total = size * nmemb;
     got = read(f->fd, ptr, total);
     if (got <= 0) { f->flags |= 27; return 0; }
+    if (got < total) f->flags |= 27;   /* 短读=EOF（musl fread 口径） */
     f->pos += got;
     return got / size;
 }
