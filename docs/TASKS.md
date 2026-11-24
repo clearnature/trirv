@@ -7,12 +7,22 @@
 
 ## 基线快照（2026-11-23 最新）
 
-- 回归：python3 tests/run_all_tests.py → PASS 61 / FAIL 0（连续 38 次全绿）
-  门禁：--san 60 套零 sanitizer 报错（ADR-29）；--fuzz-seed 可透传
-- HEAD：trirv d5ca505（批次 2 收官）/ tinycc 21410af4
-- TC v2+sf5：35.2% TC 率 / TRV2 节省 8.5%；ISA 109 条（+FENCE.I+CSR 高区六条）
-- ADR-17 准入进度：①长分支弛豫=批次 3.1–3.4 未做；②调试器流制 PC=未做；
-  ③④全链 TRV2 等价=双引擎/文件差分轴已建（450 例+40 对），61 单元链待批次 3.8
+- 回归：python3 tests/run_all_tests.py → PASS 63 / FAIL 0（连续 39 次全绿）
+  门禁：--san 首证 60 套零 sanitizer 报错（ADR-29）；--fuzz-seed 可透传
+- HEAD：trirv 5448ed2 / tinycc c77e0661（trirv 分支已推送）
+- TC v2+sf5：35.2% TC 率 / TRV2 节省 8.5%；ISA 109 条（102 全宽+FENCE.I+CSR.H×6）
+- 仓库远端（ADR-36）：主仓 clearnature/trirv（hooks/CI 随仓生效）+
+  tinycc trirv 分支 21 提交已推 + musl fork clearnature/musl
+  （trirv-vendor=本地快照）；子模块 .gitmodules 两项已登记；
+  本地代理 127.0.0.1:10808 已持久化两仓 git config
+- 评审处置：ARCH_PLAN_REVIEW 25 条 → docs/ADR-34-review-disposition.md
+  （纯修复组已修：difftest 真双路/SYS_READ 负 count/文档矛盾；
+  e 条复核不成立如实标注；tri_musl 深修回滚登记 3b.1a）
+- ADR-17 准入进度：①弛豫 ✓（批次 3.1–3.4）；②调试器流制 PC ✓（3.5）；
+  ③④等价 ✓（等价 harness 102 项+差分 450 例+文件 40 对+61 单元探针）；
+  性能准入 1.15× 未达（fib 2.26×）→ 3b.4 前置
+- musl 全量里程碑 M0–M7：docs/ADR-38（批准 2/3/4 已落 DECISIONS；
+  M1 math 226 SKIP 规则解除为快赢）
 - TC v2：窗口 {t0-t2,s0,s1,a0-a2} + 五类子格式（C-ADDI 双寄存器 /
   C-LWs/C-SWs 帧相对 / C-BEQ/C-BNE vs zero）——isa.C_REGS canonical
 - 三工具链同构：tri-tcc / trirv_cc(C) / trirv_cc.py(py) 全支持
@@ -74,7 +84,19 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
-**进度游标：批次 3b / 任务 3b.1（剩余 19 套统一加载器迁移）**
+**进度游标：批次 3b / 任务 3b.1a（tri_musl 深度修复）**
+
+#### 批次 3 前半——已收官（2026-11-24，63 套全绿连续 39 次）
+
+- [x] 3.1–3.4 长分支弛豫全链（设计 §7.1 / trirv_asm / trirv_cc / 窗口
+      收窄 ±273；契约 relax_e2e 5 项；TDD 守卫语义更新）
+- [x] 3.5 调试器流制 PC（四视图双模式）
+- [x] 3.6–3.7 全语料等价 harness 102 项（数据段逐字节一致审计）
+- [x] 3.8 61 单元全量导入 × TRV2 × CVM 探针
+- [x] 3.9 统一加载器 _trvio.py + 样板迁移（compact/amp）
+- [x] 仓库治理（ADR-34/36）：评审纯修复组、三远端推送、子模块化
+      （主仓跟踪 2898→~200）、三平台 CI、入库 hooks、musl 文件整理
+      （musl_src/musl_pp 删除、README 目录地图）
 
 - [x] 3.8 61 单元链 TRV2 探针实证：bb_probe（busybox 同构）×61 单元
       全量导入 ×TRV2 输出 ×CVM 执行 exit=16 ✓（等价 harness 102 项 +
@@ -83,7 +105,9 @@
 - [x] 3.9 统一加载器 tests/_trvio.py（load_any/load_vm/run_vm）+
       代表套件迁移（compact/amp）。**批量正则迁移 7/21 半成品回滚**
       ——模式各异正则不可靠，剩余 19 套逐文件精修（3b.1）
-- [ ] 3b.1 剩余 19 套迁移（每套 2–4 处，grep 定位逐个改）
+- [ ] 3b.1a tri_musl_e2e 深度修复（TCC/MUSL_STR/PPDIR 三处 HERE/ROOT
+      病耦 + _bootstrap.scratch 交互——首轮修复已回滚）
+- [ ] 3b.1b 剩余 19 套加载器迁移（每套 2–4 处，样板=compact/amp）
 - [ ] 3b.2 切默认：trirv_cc 默认输出 TRV2（TRV_FORMAT=1 回退）+
       全量回归（此时 63 套即全 TRV2 覆盖，ADR-17 准入④完成）
 - [ ] 3b.3 ADR-17 准入记录 + README 构建说明 + 批次 3b 收官

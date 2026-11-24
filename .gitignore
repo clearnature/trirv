@@ -28,3 +28,6 @@ __pycache__/
 /tmp/
 *.tmp
 .zcode/
+# 规范二进制路径（防 git add -A 误跟踪/往返损坏）
+vm/bin/
+cc/bin/
