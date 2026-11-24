@@ -360,6 +360,11 @@ typedef struct {
     int packed;
     int *offs;
     int slot_hint;          /* 顺序执行快路径：上一条取指序号 */
+    /* ---- 3b.4 pc→si 直接映射缓存：取指与 JALR 目标校验共用，bisect 回退。
+     * fib 类递归的 JAL/JALR 目标恒非顺序，slot_hint 必然脱靶——不缓存的
+     * 代价是每次跳转 log2(n) 二分。dc[i].pc=-1 = 空项（pc=-1 永非真目标）。 */
+    struct { int pc; int si; } *dc;
+    unsigned dc_mask;       /* 2^k-1；dc==NULL = 禁用（TRV1 槽制路径不用） */
 } VM;
 
 static int cvm_fetch_slot(VM *v);
@@ -1025,18 +1030,47 @@ static int cvm_fetch_slot(VM *v){
     if(v->packed){
         int si=v->slot_hint;
         if(si>=0&&si<v->nprog&&v->offs[si]==v->pc_) return si;
+        if(v->dc){                                  /* 直接映射缓存：跳转目标热路径 */
+            int b=v->pc_&(int)v->dc_mask;
+            if(v->dc[b].pc==v->pc_) return v->dc[b].si;
+        }
         int lo=0,hi=v->nprog-1;
         while(lo<=hi){int m=(lo+hi)/2; if(v->offs[m]<v->pc_)lo=m+1; else hi=m-1;}
-        return (lo<v->nprog&&v->offs[lo]==v->pc_)?lo:-1;
+        if(lo<v->nprog&&v->offs[lo]==v->pc_){
+            if(v->dc){int b=v->pc_&(int)v->dc_mask; v->dc[b].pc=v->pc_; v->dc[b].si=lo;}
+            return lo;
+        }
+        return -1;                                  /* 非指令起点不缓存——每次诚实停机 */
     }
     if(v->pc_<0||v->pc_%4||v->pc_>=(int)4*v->nprog) return -1;
     return v->pc_/4;
 }
 static int cvm_align_target(VM *v,__int128_t t){
     if(!v->packed) return (int)align_down4(t);
+    if(v->dc){                                      /* 命中=已验证的指令起点（JALR 回跳热路径） */
+        int b=(int)t&(int)v->dc_mask;
+        if(v->dc[b].pc==(int)t&&v->dc[b].si>=0) return (int)t;
+    }
     int lo=0,hi=v->nprog-1;
     while(lo<=hi){int m=(lo+hi)/2; if(v->offs[m]<(int)t)lo=m+1; else hi=m-1;}
-    return (lo<v->nprog&&v->offs[lo]==(int)t)?(int)t:-1;
+    if(lo<v->nprog&&v->offs[lo]==(int)t){
+        if(v->dc){int b=(int)t&(int)v->dc_mask; v->dc[b].pc=(int)t; v->dc[b].si=lo;}
+        return (int)t;
+    }
+    return -1;
+}
+/* 3b.4：offs 挂接 + pc→si 缓存分配（容量=2^k ≥ 2·nprog，封顶 64K 项=512KB；
+ * fib 类小程序只占几十项，musl busybox 量级也在 L2 内）。进程退出模型：
+ * 与 offs 一致不显式释放。 */
+static void vm_attach_offs(VM *v,int *offs,int nprog){
+    v->packed=(offs!=NULL); v->offs=offs; v->slot_hint=0;
+    v->dc=NULL; v->dc_mask=0;
+    if(offs==NULL) return;
+    unsigned cap=256;
+    while(cap<(unsigned)nprog*2u&&cap<65536u) cap<<=1;
+    v->dc=malloc(sizeof(*v->dc)*cap);
+    for(unsigned i=0;i<cap;i++){v->dc[i].pc=-1;v->dc[i].si=-1;}
+    v->dc_mask=cap-1;
 }
 static void vm_run(VM *v,long max_steps){while(!v->halted&&v->steps<max_steps)step(v);}
 
@@ -1404,7 +1438,7 @@ int main(int argc,char**argv){
         for(int r=0;r<repeat;r++){
             vm_init_ex(&vms[r],prog,nprog,segmem,stdin_data,stdin_len,NULL,&sync,gargc,gargv);
             vms[r].core_id=r; vms[r].amp=&hub;
-            vms[r].packed=(offs!=NULL); vms[r].offs=offs; vms[r].slot_hint=0;
+            vm_attach_offs(&vms[r],offs,nprog);
         }
         long amp_steps=0;
         while(1){
@@ -1431,7 +1465,7 @@ int main(int argc,char**argv){
     #pragma omp parallel for num_threads(nthreads?nthreads:1) if(repeat>1)
     for(int r=0;r<repeat;r++){
         vm_init_ex(&vms[r],prog,nprog,shared_mem?shared_mem:segmem,stdin_data,stdin_len,shared_mem,&sync,gargc,gargv);
-        vms[r].packed=(offs!=NULL); vms[r].offs=offs; vms[r].slot_hint=0;
+        vm_attach_offs(&vms[r],offs,nprog);
 #ifdef TRIRV_SWITCH
         vm_run(&vms[r],50000000);
 #else
