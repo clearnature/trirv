@@ -561,6 +561,38 @@
   P4b softfp 加减乘除（musl soft-fp → trirv C 子集 → .trvo 运行时库）→
   P4c sqrt/convert。e2e 现存 TF 算术差分用例在 P4a 切换时转 xfail（口径
   =位精确），spec 基线计数自 P4 起只收 soft 路径。
+
+#### 批次 9 合规审查（2026-11-25，P4a 实施中发现的四层违规——待修批次登记）
+
+P4a 落地时对 wasm 内存面做合规审查，发现四层问题（工作树改动已回滚到
+fa93c6d 绿态；发现全部保留如下，修复=独立批次）：
+
+1. **平衡三进制泄漏（违反标准三进制口径）**：i32.store 用平衡 243 数字
+  （d∈[−121,121]，SLTI 122/−121 归位）分解 + i32.load 用 LB（符号字节
+  解释）组装——格值序列与非平衡相同，但**读回解释是平衡语义**，与 VM
+  权威口径（格值 0..242 非平衡、负数在字级 3 补码，`_store_word` 用
+  `(val//3^(5i))%243`）冲突，且与 data 段/store8/load8_u 互不相容。
+2. **store 操作数序违反 wasm 规范**：gen_store 与参考解释器均把
+  `[value, address]` 读反（address=下槽、value=顶）——两侧同错假绿；
+  实证：store8 存 200 后 i32.load 读 −43。
+3. **4 tryte=20 trit 装不下 32 位**：旧平衡容量 ±121×14408200=
+  ±1743392200——「内存 1743392200」用例恰好钉在容量边界上假绿；
+  非平衡 4 位容量 243^4−1 更小。i32/f32 需 7 tryte（35 trit）、
+  f64/i64 需 9 tryte（45 trit=恰好一 word）。
+4. **1 byte=1 tryte 的定义缺口**：243<256 ⇒ byte 243..255 无法表示、
+  跨宽度混访（i32.store 的格子 vs store8/load8_u 的字节）语义错位。
+
+**裁定（P4 内存模型定版，待实施）**：**1 wasm byte = 2 tryte**（10 trit
+≥ 8 bit，全 256 值保真，wasm 地址 ×2=TriRV 地址）——唯一直洽模型：
+字节精确（store8/load8_u/load8_s 全保真、无 243 上限拒绝）、跨宽度
+别名符合 wasm 语义、i32=8 tryte（4 byte×2）且 20 trit 容量问题消失。
+配套重排：常量区（TABLE/TYPE/GLOBAL/STACK/P2/RESULT）上移出
+[0, 524288)；数据段 byte→对展开；RESULT 通道 li 装地址（524288 超
+imm7）；参考解释器 byte()/st32/ld32 对偶同步。
+**本轮教训（防复发）**：P4a 半途状态（dispatch 引用未实现方法）不得
+停留——已回滚绿态；修复批必须包含：store8→i32.load 往返、data 段
+>121 字节 load、负值 store→load 往返、跨宽度别名四个新契约用例
+（全部在本轮证伪过）。
 - [ ] 9.4 **浮点剩余运算**（min、max、neg、abs、ceil、floor、trunc、nearest、copysign）
 - [ ] 9.5 **convert/trunc**（int 与 float 互转）
 - [ ] 9.6 **多参与多返回**
