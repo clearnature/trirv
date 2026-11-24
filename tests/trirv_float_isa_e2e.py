@@ -21,7 +21,7 @@ import trirv_vm as vm
 from export_trv import export as _unused_export  # 仅确认模块存在；本测试自造 TRV1
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（重组后上跳一层）
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "trirv_vm"))
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "vm", "bin", "trirv_vm"))
 F = tf.TF45
 PASS = FAIL = 0
 

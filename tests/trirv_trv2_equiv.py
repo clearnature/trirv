@@ -50,7 +50,10 @@ PROGS = [
     ("全局数组", "int g[8]; int main(){ int i=0,s=0; while(i<8){ g[i]=i*3; i=i+1; } while(i>0){ i=i-1; s=s+g[i]; } return s; }", 84),
     ("局部数组", "int main(){ int a[5]; int i=0; while(i<5){ a[i]=i*i; i=i+1; } return a[1]+a[4]; }", 17),
     ("字符串", "char *m=\"AB\"; int main(){ return m[0]+m[1]; }", 131),
-    ("字符串数组", "int main(){ char m[3]=\"AB\"; return m[0]+m[1]; }", 200),
+    # 审计 2026-11-24 破案：旧期望 200 = 字符串段首地址的幻影值——原编译器把
+    # 局部 char 数组的字符串初始化编成 SW 整字存地址（且越界写相邻变量）。
+    # 编译器已修（逐字节拷入+NUL 补齐），期望回归 C 语义 65+66=131。
+    ("字符串数组", "int main(){ char m[3]=\"AB\"; return m[0]+m[1]; }", 131),
     ("char 窄化", "int main(){ char c=300; return c; }", 57),
     ("struct 偏移", "struct S{char c; int *p;}; struct S s; int main(){ return (int)((char*)&s.p-(char*)&s); }", 9),
     ("struct 按值", "struct P{int a; int b;}; struct P mk(int v){ struct P r; r.a=v; r.b=v*2; return r; } int main(){ struct P p=mk(5); return p.a+p.b; }", 15),

@@ -24,7 +24,7 @@ import trirv_vm as vm
 from export_trv import export
 
 S = isa.to_signed_word
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(os.path.dirname(os.path.abspath(__file__)), "trirv_vm"))
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vm", "bin", "trirv_vm"))
 
 # (名称, C 源码, 期望返回值, 期望出现的载入指令)
 CASES = [

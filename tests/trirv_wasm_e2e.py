@@ -456,7 +456,7 @@ def run_c_vm(asm, segs):
     with tempfile.TemporaryDirectory() as td:
         trv = os.path.join(td, "a.trv")
         build_trv(asm, segs, trv)
-        r = subprocess.run(["./trirv_vm", trv], capture_output=True)
+        r = subprocess.run([os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vm", "bin", "trirv_vm"), trv], capture_output=True)
         for ln in r.stderr.decode("utf-8", "replace").splitlines():
             if "exit=" in ln:
                 return int(ln.split("exit=")[1].split()[0]), bytes(r.stdout)

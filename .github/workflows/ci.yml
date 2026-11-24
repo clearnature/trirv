@@ -52,8 +52,12 @@ jobs:
         run: |
           cd tinycc
           ./configure
-          make -j2
-          cp tcc trirv-tcc
+          # trirv-tcc 是交叉目标（DEF-trirv=-DTCC_TARGET_TRIRV）；`make` 默认
+          # 只产宿主版 tcc——cp 改名 = 宿主编译器冒充 tri-tcc（审计 2026-11-24
+          # 实证：Ubuntu 5 套 tri-tcc 相关失败的两个 VM 读到的都是 ELF）。
+          # 只构建 trirv-tcc 单目标，避免 cross 全量顺带 libtcc1（macOS
+          # Xcode 26 SDK #import 崩溃源）。
+          make trirv-tcc -j2
 
       - name: Run fast regression
         run: python3 tests/run_all_tests.py --fast --timeout 900

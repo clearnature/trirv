@@ -62,7 +62,7 @@ def c_run(inst_name, a, b, vmbin):
     return r.stdout
 
 def main():
-    vmbin = sys.argv[1] if len(sys.argv) > 1 else "./trirv_vm"
+    vmbin = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vm", "bin", "trirv_vm")
     random.seed(20261117)
     # 操作数集合：0/1/-1、大小正数、负数（3 补码 word）、随机
     specials = [0, 1, 2, MOD - 1, MOD - 2, HALF, HALF + 1, 242, 243, 3**7]

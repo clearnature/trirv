@@ -209,5 +209,24 @@ for _tag, _uw in (("fc0-f2=2", UW1), ("fc0-f2=3", UW2)):
           (c.exit_code, c.regs[10], c.halted), (0, 0, False))
     check("ADR-35 未定义编码·CVM 同口径（%s）" % _tag, run_cvm(prog_ill), 0)
 
+# ================ §9 ADR-35 补口：寄存器字段越界（审计 2026-11-24）================
+# rd 作寄存器的指令（R/I/U/J 格式）字段 4 trit 可取 0..80，越 32 界 → 双 VM
+# 统一非法指令陷入 → mtvec=0 重启循环 → 步耗尽 exit=0。审计实证旧行为：
+# CVM rd=40 静默写 freg[8]（PyVM IndexError 崩溃）。对照证据：陷入则后续
+# ADDI a0=7 不执行；若静默放过会 exit=7。合法 rd=31 对照不受影响。
+for _rd in (33, 40, 64):
+    prog_rd = [E("ADD", rd=_rd, rs1=0, rs2=0),
+               E("ADDI", rd=10, rs1=0, imm=7),
+               E("ADDI", rd=17, rs1=0, imm=93), EC]
+    c = run_py(prog_rd, steps=300)
+    check("ADR-35 rd 越界·PyVM 陷入重启（rd=%d）" % _rd,
+          (c.exit_code, c.regs[10], c.halted), (0, 0, False))
+    check("ADR-35 rd 越界·CVM 同口径（rd=%d）" % _rd, run_cvm(prog_rd), 0)
+prog_ok = [E("ADD", rd=31, rs1=0, rs2=0), E("ADDI", rd=10, rs1=31, imm=7),
+           E("ADDI", rd=17, rs1=0, imm=93), EC]
+c = run_py(prog_ok, steps=500)
+check("ADR-35 rd 界内·合法不受影响（rd=31）", (c.exit_code, c.regs[10]), (7, 7))
+check("ADR-35 rd 界内·CVM", run_cvm(prog_ok), 7)
+
 print("\n手算黄金补缺：%d PASS / %d FAIL" % (passed, failed))
 sys.exit(1 if failed else 0)

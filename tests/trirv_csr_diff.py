@@ -22,7 +22,7 @@ def c_exit(prog, irq=False):
     trv = _bootstrap.scratch("csr_diff.trv")
     write_trv(trv, prog)
     env = dict(os.environ)
-    r = subprocess.run(["./trirv_vm", trv], capture_output=True, env=env)
+    r = subprocess.run([os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vm", "bin", "trirv_vm"), trv], capture_output=True, env=env)
     line = [l for l in r.stderr.decode().split("\n") if "exit=" in l]
     return int(line[0].split("exit=")[1].split()[0]) if line else None
 

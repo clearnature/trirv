@@ -95,6 +95,21 @@
 与记忆 → 汇报 TC 命中率（ADR-14）；新指令带手算黄金用例（ADR-28②）；提交前过门禁
 （ADR-29，自批次 2 起生效）。
 
+#### ADR-39 外部只读审计处置（2026-11-24 深夜，钉 ba379b1）
+
+- **采纳已修**：①局部 char[N]="str" 逐字节拷入（200 幻影期望破案→131，
+  trv2_equiv 修正）②聚合部分初始化整块清零（C §6.7.9）③rd 字段越界双 VM
+  统一非法陷入（CVM fmt 条件+PyVM 名称集合程序化枚举；golden §9 八项守卫）
+  ④运行器门禁硬化（重建失败/san 失败 → FATAL+exit 1）⑤CI 改 `make trirv-tcc`
+  （原 make+cp=宿主编译器冒充，CI 从未测过 tri-tcc）⑥14 处套件 VM 路径统一
+  vm/bin（路径修复即暴露 float_isa FSW.S 豁免漏项——本机首次真双 VM 运行，
+  39 项全绿）
+- **澄清**：调度器 TRV_FORMAT=1=已记录契约（槽序词消费方），TRV2 覆盖由
+  直调 trirv_cc 的 ~30 套承担（ADR-17 执行记录补注）
+- **采纳-待办**：VM CLI 健壮性批（atoi 校验/退出码/argv 回绕/零页冲突）、
+  调试器批、门禁 mtime 批、编译器缓冲 ASAN 逐点批——见 ADR-39 §三
+- 全文=docs/ADR-39-audit-disposition.md
+
 **进度游标：批次 3b/4/5 收官（回归 58 套全绿）/ 下一任务 批次 6–8 musl
   （stdio 桩层 → ctype 查表 → multibyte/time，ADR-25/38 M2/M3/M4）→
   解锁 TernixOS 用户态 libc；TSBI-RT 规范草案并行可启**

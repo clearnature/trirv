@@ -84,7 +84,7 @@ def main():
 
     trv = _bootstrap.scratch("tritlogic.trv")
     trirv_wasm.build_trv(src, {}, trv)
-    r = subprocess.run(["./trirv_vm", trv], capture_output=True)
+    r = subprocess.run([os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vm", "bin", "trirv_vm"), trv], capture_output=True)
     c = r.stdout
 
     print(f"用例 {len(expect)} 组（{len(PAIRS)}×3 寄存器 + {len(IMMS)}×3 立即数）")

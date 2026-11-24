@@ -49,7 +49,9 @@ def _build_binaries():
                 notes.append(f"重建 trirv_cc（{c}）")
                 break
         else:
-            notes.append("!! trirv_cc 重建失败")
+            print("FATAL: trirv_cc 重建失败——拒绝用旧二进制继续回归"
+                  "（源码改坏+旧二进制残留时全绿是假绿）")
+            sys.exit(1)
     if os.path.exists(vm_src) and (not os.path.exists(vm_bin)
                                    or os.path.getmtime(vm_bin) < os.path.getmtime(vm_src)):
         for c in ("clang", "gcc", "cc"):
@@ -59,7 +61,8 @@ def _build_binaries():
                 notes.append(f"重建 trirv_vm（{c}）")
                 break
         else:
-            notes.append("!! trirv_vm 重建失败")
+            print("FATAL: trirv_vm 重建失败——拒绝用旧二进制继续回归")
+            sys.exit(1)
     return notes
 
 
@@ -90,7 +93,11 @@ def _build_san():
     for tag, s, b in pairs:
         r = subprocess.run(["clang"] + flags + ["-o", b, s, "-lm"],
                            capture_output=True, text=True)
-        notes.append(f"{tag} ASan/UBSan 构建{'✓' if r.returncode == 0 else '✗ ' + r.stderr[-120:]}")
+        if r.returncode != 0:
+            # 审计实证：静默退化=门禁假绿——san 版构建失败必须硬失败
+            print(f"FATAL: {tag} ASan/UBSan 构建失败: {r.stderr[-200:]}")
+            sys.exit(1)
+        notes.append(f"{tag} ASan/UBSan 构建✓")
     return notes
 
 

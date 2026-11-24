@@ -27,7 +27,7 @@ import trirv_vm as vm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(ROOT, "trirv_vm"))
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(ROOT, "vm", "bin", "trirv_vm"))
 CC = os.path.join(ROOT, "cc", "bin", "trirv_cc")
 ARCH = os.path.join(ROOT, "libc-musl", "musl_tri", "arch_tri")
 

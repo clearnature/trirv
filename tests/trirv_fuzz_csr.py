@@ -18,7 +18,7 @@ import trirv_isa as isa
 from trirv_vm import VM, s
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（重组后上跳一层）
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "trirv_vm"))
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "vm", "bin", "trirv_vm"))
 BUF = 1000
 MEMSZ = 1 << 20
 e = isa.encode

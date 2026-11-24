@@ -618,6 +618,18 @@ class VM:
             self.steps += 1
             return
 
+        # ADR-35 补口（审计 2026-11-24）：rd 作寄存器的指令越 32 界 → 非法指令
+        # 陷入（与 CVM fmt 条件同口径；原行为 IndexError 崩溃）。B/S 的 rd 槽是
+        # 立即数片段（下方 rs1/rs2 钳制覆盖），豁免。
+        _RD_NONREG = {"BEQ","BNE","BLT","BGE","BLTU","BGEU",
+                      "SB","SH","SW","SW4","FSW","FSW.S"}  # S 格式全集（isa.INST fmt=S）：
+        # rd 槽=立即数片段；集合来源=INST 表程序化枚举，勿手补单名（FSW 漏
+        # FSW.S 曾致浮点 SW 全数误陷，浮点差分转红实证）
+        if rd >= isa.NREG and name not in _RD_NONREG:
+            self._take_trap(isa.CAUSE_ILLEGAL, inst, old_pc)
+            self.steps += 1
+            return
+
         # rs1/rs2 字段在 I/U/J/S/B 格式里可能存的是立即数片段（>=32），
         # 不是合法寄存器索引。钳制到 0，避免越界；真正的操作数在各分支内按需读取。
         rs1 = rs1 if rs1 < isa.NREG else 0

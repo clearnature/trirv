@@ -33,7 +33,7 @@ from export_trv import export
 
 S = isa.to_signed_word
 CVM = os.environ.get("TRIRV_VM_BIN",
-                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "trirv_vm"))
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vm", "bin", "trirv_vm"))
 
 P = 3 ** 45
 H = (P - 1) // 2

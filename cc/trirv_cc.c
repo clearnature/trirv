@@ -2938,7 +2938,15 @@ static void gen_stmt(Node*n){
             if(!n->dinit[i]) continue;
             LocVar*v=findloc(n->dnames[i]); if(!v) continue;
             if(n->dinit[i]->k==N_INITLIST){
-                if(v->spilled){ int slot=0; gen_init_at(v->ty, v->off, n->dinit[i], &slot); }
+                if(v->spilled){
+                    /* C §6.7.9：初始化式未列出的元素=0（审计实证：不清零会
+                     * 读到上一栈帧残留；现有用例恰在 main 首帧+内存初始全零
+                     * 而侥幸全绿）。整块清零后再按列表填。 */
+                    int sz=ty_bytes(v->ty);
+                    for(int zb=0; zb<sz; zb++)
+                        emitf("SB zero, %d(s0)",v->off+zb);
+                    int slot=0; gen_init_at(v->ty, v->off, n->dinit[i], &slot);
+                }
                 else {                                   /* 标量 {x}：取第一个元素 */
                     Node*first=n->dinit[i];
                     while(first&&first->k==N_INITLIST&&first->nitems>0) first=first->items[0];
@@ -2950,6 +2958,34 @@ static void gen_stmt(Node*n){
             }
             if(!v->spilled&&n->dinit[i]->k==N_NUM){
                 load_imm128(v->reg,n->dinit[i]->numw); TDN=0; continue;
+            }
+            /* char 数组字符串初始化（审计 2026-11-24 破案：原 SW 整字存的是
+             * 字符串【地址】——`char m[3]="AB"` 得 200 幻影期望值，且
+             * 9-tryte 整字越界写相邻局部变量）。C 语义=逐字符拷入：
+             * LB 源串逐字节 → SB 落槽；≥N 截断（C 允许无 NUL 形态） */
+            if(is_array(v->ty)&&is_char_ty(array_elem(v->ty))
+               &&n->dinit[i]->k==N_STR){
+                Node*st=n->dinit[i];
+                int sa=tacq();                      /* 全程驻留：sa 与 ch 必须不同
+                 * 寄存器（TDN 过早归零会让 LB 自毁源地址——首字节 65 后续 0 实证） */
+                emitf("ADDI %s, zero, &__str_%d",regname(sa),st->strsym);
+                int ncopy=st->slen;
+                { char*el=array_elem(v->ty);
+                  int cap=array_count(v->ty);
+                  if(ncopy>cap) ncopy=cap;          /* 无 NUL 形态（C 标准 §6.7.9） */
+                }
+                for(int b2=0;b2<ncopy;b2++){
+                    int ch=tacq();
+                    emitf("LB %s, %d(%s)",regname(ch),b2,regname(sa));
+                    emitf("SB %s, %d(s0)",regname(ch),v->off+b2);
+                }
+                TDN=0;
+                /* 其余元素补 NUL（仅当数组比串长——C 要求尾部零填充） */
+                { int cap=array_count(v->ty);
+                  for(int b2=ncopy;b2<cap;b2++)
+                      emitf("SB zero, %d(s0)",v->off+b2);
+                }
+                continue;
             }
             TDN=0; int r=eval(n->dinit[i]);
             if(v->spilled){

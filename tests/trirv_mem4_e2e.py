@@ -33,7 +33,7 @@ import trirv_isa as isa
 from trirv_vm import VM
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "trirv_vm"))
+CVM = os.environ.get("TRIRV_VM_BIN", os.path.join(R, "vm", "bin", "trirv_vm"))
 
 MOD3_7 = 3 ** 7
 MOD20 = 3 ** 20

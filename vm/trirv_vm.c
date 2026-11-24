@@ -307,6 +307,13 @@ static Inst decode_one(uint32_t raw) {
         return in;
     }
     if(!d){ in.op=OP_ILLEGAL; return in; }   /* ADR-35：未定义编码不再伪装 NOP */
+    /* ADR-35 补口（审计 2026-11-24）：rd 作寄存器的格式（R/I/U/J）字段 4 trit
+     * 可取 0..80，越 32 界 → 非法指令陷入。审计实证：rd=40 静默写 freg[8]，
+     * ≥64 写浮点常量/mem 头。B/S 的 rd 槽是立即数片段（exec 侧 rs1/rs2 钳制
+     * 已覆盖），U/J 的 rs1/rs2 亦为立即数片段——均不在本检查范围。 */
+    if(rd>31&&(d->fmt=='R'||d->fmt=='I'||d->fmt=='U'||d->fmt=='J')){
+        in.op=OP_ILLEGAL; return in;
+    }
     in.op=d->code;
     __uint128_t immraw;
     if(d->fmt=='U'||d->fmt=='J') immraw=field(raw,7,19);
