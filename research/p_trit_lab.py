@@ -89,7 +89,7 @@ def build_kernel_asm(n, edges, sweeps, noise_len):
     add("    BEQ t2, zero, __done")
     add("    REM t0, s1, s2")                  # e = it mod E
     add("    ADD t0, t0, t0")                  # 2e
-    add("    ADDI t1, zero, %d" % EDGE)
+    A.extend(li_lines("t1", EDGE))
     add("    ADD s3, t1, t0")                  # &edges[2e]
     add("    LBU t1, 0(s3)")                   # ni
     add("    LBU t2, 1(s3)")                   # nj
@@ -113,7 +113,7 @@ def build_kernel_asm(n, edges, sweeps, noise_len):
     add("    JAL zero, __loop")
     add("__done:")
     # 冲突计数 → mem[CNT]
-    add("    ADDI t1, zero, %d" % CNT)
+    A.extend(li_lines("t1", CNT))
     add("    SB zero, 0(t1)")
     add("    ADDI s1, zero, 0")
     add("__cnt:")
@@ -121,7 +121,7 @@ def build_kernel_asm(n, edges, sweeps, noise_len):
     add("    SLT t2, s1, t2")
     add("    BEQ t2, zero, __cntdone")
     add("    ADD t0, s1, s1")
-    add("    ADDI t1, zero, %d" % EDGE)
+    A.extend(li_lines("t1", EDGE))
     add("    ADD s3, t1, t0")
     add("    LBU t1, 0(s3)")
     add("    LBU t2, 1(s3)")
@@ -131,7 +131,7 @@ def build_kernel_asm(n, edges, sweeps, noise_len):
     add("    LBU t4, 0(s3)")
     add("    SUB s3, t3, t4")
     add("    BNE s3, zero, __ce")
-    add("    ADDI t1, zero, %d" % CNT)
+    A.extend(li_lines("t1", CNT))
     add("    LBU t3, 0(t1)")
     add("    ADDI t3, t3, 1")
     add("    SB t3, 0(t1)")
@@ -139,7 +139,7 @@ def build_kernel_asm(n, edges, sweeps, noise_len):
     add("    ADDI s1, s1, 1")
     add("    JAL zero, __cnt")
     add("__cntdone:")
-    add("    ADDI t1, zero, %d" % CNT)
+    A.extend(li_lines("t1", CNT))
     add("    LBU a0, 0(t1)")
     return "\n".join(A) + "\n", CNT
 
@@ -274,3 +274,191 @@ def heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweeps=40):
         ok += (conf == 0)
     print(f"  热浴 sweeps={sweeps}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
     return ok, seeds
+
+
+# ------------------------------------------------------------ 热浴 VM 内核（CSR 布局）
+def li_lines(rd, v):
+    """大常数分段装载（trirv_cc load_imm128 同款）：|v|≤1093 一条 ADDI；
+    否则按 2187 分段、每段三补码归位（±1093）的 LUI/ADDI 链。
+    术语注意：这是「三补码字段编码」（v mod 2187，≥1094 解码为负），
+    不是平衡三进制——平衡三进制（数字集 {−1,0,+1}）在本项目非法。"""
+    if -1093 <= v <= 1093:
+        return [f"    ADDI {rd}, zero, {v}"]
+    digits, x = [], v
+    while x:
+        d = x % 2187
+        if d > 1093:
+            d -= 2187
+        digits.append(d)
+        x = (x - d) // 2187
+    out = [f"    ADDI {rd}, zero, {digits[-1]}"]
+    for d in reversed(digits[:-1]):
+        out.append(f"    SLLI {rd}, {rd}, 7")
+        if d:
+            out.append(f"    ADDI {rd}, {rd}, {d}")
+    return out
+
+
+def build_heatbath_asm(n, edges, sweeps, noise_len):
+    """顶点热浴（Glauber 三值版）→ trirv 汇编。4 层循环：sweep/vertex/
+    neighbor/argmin。内存布局（tryte 编址）：
+      [0, NL)        噪声流
+      [NL, NL+n)     自旋数组
+      [NL+n, NL+2n)  CSR 行偏移（n+1 tryte，值 ≤ 242）
+      CSR+…          CSR 平铺邻居（2E tryte）
+      EDGE=FLAT+2E   边表（2E tryte，冲突计数用）
+      CNT=EDGE+2E    三色计数器（3 tryte）
+      CCNT=CNT+3     冲突计数槽
+    语义与 heatbath_repair 逐条对应（噪声消费序/平票破缺/收敛早退）。"""
+    E_n = len(edges)
+    NL = sweeps * n + 16
+    NOISE = 0
+    SPINS = NL
+    CSR = SPINS + n
+    FLAT = CSR + n + 1
+    EDGE = FLAT + 2 * E_n
+    CNT = EDGE + 2 * E_n
+    CCNT = CNT + 3
+    A = []
+    add = lambda t: A.append(t)
+    add("    ADDI s1, zero, 0")                    # sweep
+    add("    ADDI s6, zero, %d" % n)               # n 常驻
+    add("    ADDI s7, zero, %d" % sweeps)
+    add("__sweep:")
+    add("    SLT t2, s1, s7")
+    add("    BEQ t2, zero, __ccinit")
+    add("    ADDI s2, zero, 0")                    # vertex
+    add("__vloop:")
+    add("    SLT t2, s2, s6")
+    add("    BEQ t2, zero, __vend")
+    # cnt[0..2] 清零（CNT/CNT+1/CNT+2）
+    A.extend(li_lines("t1", CNT))
+    add("    SB zero, 0(t1)")
+    add("    SB zero, 1(t1)")
+    add("    SB zero, 2(t1)")
+    # 邻居迭代：k = CSR[v] .. CSR[v+1]
+    add("    ADDI t1, zero, %d" % CSR)
+    add("    ADD s3, t1, s2")
+    add("    LBU s4, 0(s3)")                       # k = CSR[v]
+    add("    ADDI s3, s3, 1")
+    add("    LBU s5, 0(s3)")                       # kend = CSR[v+1]
+    add("__nb:")
+    add("    SLT t2, s4, s5")
+    add("    BEQ t2, zero, __nbdone")
+    add("    ADDI t1, zero, %d" % FLAT)
+    add("    ADD s3, t1, s4")
+    add("    LBU t3, 0(s3)")                       # nb
+    add("    ADDI t1, zero, %d" % SPINS)
+    add("    ADD s3, t1, t3")
+    add("    LBU t3, 0(s3)")                       # spin[nb]
+    # cnt[spin[nb]] += 1：地址 = CNT + c
+    A.extend(li_lines("t1", CNT))
+    add("    ADD s3, t1, t3")
+    add("    LBU t4, 0(s3)")
+    add("    ADDI t4, t4, 1")
+    add("    SB t4, 0(s3)")
+    add("    ADDI s4, s4, 1")
+    add("    JAL zero, __nb")
+    add("__nbdone:")
+    # cur = cnt[spin[v]]
+    add("    ADDI t1, zero, %d" % SPINS)
+    add("    ADD s3, t1, s2")
+    add("    LBU t3, 0(s3)")                       # spin[v]
+    A.extend(li_lines("t1", CNT))
+    add("    ADD s3, t1, t3")
+    add("    LBU t4, 0(s3)")                       # cur
+    # argmin（平票取小色）：best=0; if cnt[1]<cnt[0]: best=1; if cnt[2]<cnt[best]: best=2
+    add("    ADDI s3, zero, %d" % CNT)
+    add("    LBU t0, 0(s3)")                       # cnt[0]
+    add("    LBU t1, 1(s3)")                       # cnt[1]
+    add("    LBU t2, 2(s3)")                       # cnt[2]
+    add("    ADDI t5, zero, 0")                    # best
+    add("    SLT t6, t1, t0")
+    add("    BNE t6, zero, __a1")
+    add("    JAL zero, __a2")
+    add("__a1:")
+    add("    ADDI t5, zero, 1")
+    add("__a2:")
+    add("    ADD s3, t1, zero")                    # 占位防误删（t1 复用保护无实义）
+    add("    LBU t1, 2(s3)")
+    # cnt[2] < cnt[best]：读 cnt[best]（CNT+best）
+    A.extend(li_lines("t1", CNT))
+    add("    ADD s3, t1, t5")
+    add("    LBU t1, 0(s3)")
+    add("    SLT t1, t2, t1")
+    add("    BEQ t1, zero, __a3")
+    add("    ADDI t5, zero, 2")
+    add("__a3:")
+    # 更新判定：cnt[best] < cur → 更新；== cur 且 best≠spin[v] 且噪声=0 → 更新
+    A.extend(li_lines("t1", CNT))
+    add("    ADD s3, t1, t5")
+    add("    LBU t1, 0(s3)")                       # cnt[best]
+    add("    SLT t2, t1, t4")                      # cnt[best] < cur
+    add("    BNE t2, zero, __upd")
+    add("    SUB t2, t1, t4")                      # == cur？
+    add("    BNE t2, zero, __nou")
+    add("    SUB t2, t5, t3")                      # best == spin[v]？
+    add("    BNE t2, zero, __nou")
+    # 噪声 trit：nit = sweep*n + vertex；addr = NOISE + (nit mod NL)
+    add("    MUL t2, s1, s6")
+    add("    ADD t2, t2, s2")
+    add("    ADDI t1, zero, %d" % NL)
+    add("    REM t2, t2, t1")
+    add("    ADDI t1, zero, %d" % NOISE)
+    add("    ADD s3, t1, t2")
+    add("    LBU t2, 0(s3)")
+    add("    BNE t2, zero, __nou")                 # 噪声≠0 不迁移
+    add("__upd:")
+    add("    ADDI t1, zero, %d" % SPINS)
+    add("    ADD s3, t1, s2")
+    add("    SB t5, 0(s3)")
+    add("__nou:")
+    add("    ADDI s2, s2, 1")
+    add("    JAL zero, __vloop")
+    add("__vend:")
+    # 冲突计数：若 0 → 收敛早退（记 CCNT=0）
+    A.extend(li_lines("t1", CCNT))
+    add("    SB zero, 0(t1)")
+    add("    ADDI s2, zero, 0")                    # edge idx
+    add("__cloop:")
+    add("    ADDI t2, zero, %d" % (2 * E_n))
+    add("    SLT t2, s2, t2")
+    add("    BEQ t2, zero, __cdone")
+    A.extend(li_lines("t1", EDGE))
+    add("    ADD s3, t1, s2")
+    add("    LBU t1, 0(s3)")                       # edges[s2]   = ni
+    add("    ADDI s3, s2, 1")
+    add("    ADDI t2, zero, %d" % EDGE)
+    add("    ADD s3, t2, s3")
+    add("    LBU t2, 0(s3)")                       # edges[s2+1] = nj
+    add("    ADDI t2, zero, %d" % SPINS)
+    add("    ADD s3, t2, t1")
+    add("    LBU t3, 0(s3)")                       # spin[ni]
+    add("    ADDI t2, zero, %d" % SPINS)
+    add("    ADD s3, t2, t2")
+    add("    LBU t4, 0(s3)")                       # spin[nj]
+    add("    SUB s3, t3, t4")
+    ok = "__cne"
+    add("    BNE s3, zero, __cne")
+    A.extend(li_lines("t1", CCNT))
+    add("    LBU t3, 0(t1)")
+    add("    ADDI t3, t3, 1")
+    add("    SB t3, 0(t1)")
+    add("__cne:")
+    add("    ADDI s2, s2, 2")
+    add("    JAL zero, __cloop")
+    add("__cdone:")
+    A.extend(li_lines("t1", CCNT))
+    add("    LBU t2, 0(t1)")
+    add("    BNE t2, zero, __next_sweep")
+    add("    JAL zero, __finish")                  # 收敛早退
+    add("__next_sweep:")
+    add("    ADDI s1, s1, 1")
+    add("    JAL zero, __sweep")
+    add("__ccinit:")
+    add("__finish:")
+    # 返回：a0 = CCNT（最终冲突数）
+    A.extend(li_lines("t1", CCNT))
+    add("    LBU a0, 0(t1)")
+    return "\n".join(A) + "\n", dict(NL=NL, SPINS=SPINS, CSR=CSR,
+                                      FLAT=FLAT, EDGE=EDGE, CNT=CNT, CCNT=CCNT)
