@@ -172,6 +172,7 @@ SUITES = [
     ("trirv_stdio_e2e.py",         "stdio 行为契约 24 项",      False, None),
     ("trirv_mbwc_e2e.py",          "multibyte+wctype+wcs 22 项", False, None),
     ("trirv_ctype_e2e.py",        "ctype M3 查表差分 12 项",   False, None),
+    ("trirv_mersenne_e2e.py",     "梅森素数高精度验证 16 项",  False, None),
     ("trirv_time_e2e.py",          "time 日历/strftime/时钟 14 项", False, None),
     ("trirv_trv2_relax_e2e.py",    "TRV2 长分支弛豫 10 项",     False, None),
     ("trirv_wasm_spec_smoke.py",   "wasm spec 冒烟 5 文件",     False, None),
