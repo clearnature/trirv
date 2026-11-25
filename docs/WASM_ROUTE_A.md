@@ -277,6 +277,13 @@ pass / fail（翻译成功语义不符）/ tskip（模块 Unsupported）/ vskip
 > 按定义性差异诚实计入 fail，不追认。9.4+ 的工单面 = 536 中排除
 > 定义性 NS 后的真实翻译缺口。
 
+**全量复验（2026-11-25，9.4 浮点全项 + 9.5 convert/trunc 落地后）**：
+全量重跑（wasm/spec_run.py，无参 = test/core 全部 .wast）逐项复现
+§九 列（pass=620 / fail=536 / tskip=408 / vskip=58915，零漂移）——
+浮点 sign/round 族与 int↔float 互转的加入未扰动结构面基线；fail=536
+即定义性 NS 记账总量（二进制语义断言，不在方言语义内，不追认）。
+全量明细 = 手工报告（tmp/spec_full_baseline.txt，scratch 不入库）。
+
 **本阶段解锁**：blocktype 全形态（参数/结果块 + s33 类型索引）、br/br_if
 携带值（值槽搬家）、br_table（比较链 + 逐目标搬家）、call_indirect +
 table/element（多表、类型哨兵 typeidx+1/0=null、越界/失配 trap）、

@@ -930,16 +930,16 @@ def float_suite():
 
 
 def main():
-    # 1) 基本算术与回绕
+    # 1) 基本算术（§九 原生 word，无回绕）
     body = LGET(0) + LGET(1) + ADD + END
     case("i32.add 3+4", wrap1(body, [3, 4]))
-    case("i32.add 大数 (2^31-1)+1", wrap1(body, [2**31 - 1, 1]))
-    case("i32.add 大负数 (-2^31)+(-1)", wrap1(body, [-(2**31), -1]))
+    case("i32.add 大数 2147483647+1", wrap1(body, [2**31 - 1, 1]))
+    case("i32.add 大负数 −2147483648−1", wrap1(body, [-(2**31), -1]))
     case("i32.sub 小值", wrap1(LGET(0) + LGET(1) + SUB + END, [100, 234]))
     case("i32.mul 65536*65536", wrap1(LGET(0) + LGET(1) + MUL + END, [65536, 65536]))
     case("i32.mul 负数", wrap1(LGET(0) + LGET(1) + MUL + END, [-1234, 567]))
 
-    # 2) 阶乘：循环 + 比较 + 乘法回绕
+    # 2) 阶乘：循环 + 比较 + 乘法（§九 原生 word）
     # 退出循环必须 br 到外层 block：只 br 到 loop 是"重来"，不是"跳出"
     fact = (I32C(1) + LSET(1) +
             I32C(1) + LSET(2) +
@@ -981,8 +981,8 @@ def main():
     case("eqz 0", wrap1(LGET(0) + EQZ + END, [0]))
     case("eqz -5", wrap1(LGET(0) + EQZ + END, [-5]))
 
-    # 6b) 二进制位视图：三进制寄存器里没有二进制位，全靠比较走查拆出来
-    #     这组用例既验语义，也验"负数走无符号位模式"和 32 位边界
+    # 6b) 位视图族（§九 删除面）：拆位走查/rot/位计数已删，整组 NS = SKIP，
+    #     保留作为定义性 NS 记账证据
     bits = [
         ("and 0x0F0F", 0x0F0F, 0x00FF), ("and 负数", -1, 0x0FF0),
         ("and 2^31", 2**31, -1), ("or 高低位", 0x00FF, 0x0F00),
