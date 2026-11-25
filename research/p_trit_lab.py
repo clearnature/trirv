@@ -185,3 +185,92 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ------------------------------------------------------------ 收敛率统计
+def gen_3partite(groups, p, seed):
+    """三部分图生成器：组内无边、组间以概率 p 连边——构造性 3-可着色。"""
+    rng = random.Random(seed)
+    ids = []
+    start = 0
+    for g in range(3):
+        ids.append(list(range(start, start + groups[g])))
+        start += groups[g]
+    edges = []
+    for g1 in range(3):
+        for g2 in range(g1 + 1, 3):
+            for i in ids[g1]:
+                for j in ids[g2]:
+                    if rng.random() < p:
+                        edges.append((i, j))
+    return ids, edges
+
+
+def convergence_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweep_grid=(20, 40, 80, 160)):
+    """多种子收敛率：{sweeps: 成功数/seeds}——「能 achieving 到吗」的定量答案。"""
+    rows = []
+    for sweeps in sweep_grid:
+        ok = 0
+        for sd in range(seeds):
+            _, edges = gen_3partite(groups, p, seed=1000 + sd)
+            noise = trit_noise(seed=sd, n=sweeps * len(edges))
+            _, conf = ref_repair(sum(groups), edges, sweeps, noise)
+            ok += (conf == 0)
+        rows.append((sweeps, ok, seeds))
+        print(f"  sweeps={sweeps:4d}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
+    return rows
+
+
+def stats_main():
+    print("== 收敛率统计（三部分图 n=24, p=0.3, 50 种子）==")
+    rows = convergence_stats()
+    return rows
+
+
+if __name__ == "__main__":
+    pass
+
+
+def conflicts_of(spins, edges):
+    return sum(1 for ni, nj in edges if spins[ni] == spins[nj])
+
+
+# ------------------------------------------------------------ 顶点热浴动力学（Glauber）
+def heatbath_repair(n, edges, sweeps, noise):
+    """顶点热浴：每顶点取冲突最小色（平票噪声破缺）——p-bit/Ising 机的
+    Glauber 动力学三值版。返回 (最终自旋, 冲突数, 收敛所用 sweep 数)。"""
+    adj = [[] for _ in range(n)]
+    for ni, nj in edges:
+        adj[ni].append(nj)
+        adj[nj].append(ni)
+    spins = [0] * n
+    nit = 0
+    done_at = None
+    for sweep in range(sweeps):
+        for v in range(n):
+            cnt = [0, 0, 0]
+            for nb in adj[v]:
+                cnt[spins[nb] % 3] += 1
+            cur = cnt[spins[v]]
+            best = min(range(3), key=lambda c: (cnt[c], c))
+            t = noise[nit % len(noise)]
+            nit += 1
+            if cnt[best] < cur:
+                spins[v] = best
+            elif cnt[best] == cur and best != spins[v] and t == 0:
+                spins[v] = best                 # 平票噪声游走（避免死锁）
+        if done_at is None and conflicts_of(spins, edges) == 0:
+            done_at = sweep + 1
+            break
+    return spins, conflicts_of(spins, edges), done_at
+
+
+def heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweeps=40):
+    ok = 0
+    for sd in range(seeds):
+        _, edges = gen_3partite(groups, p, seed=1000 + sd)
+        noise = trit_noise(seed=sd, n=sweeps * (sum(groups) + len(edges)) + 16)
+        _, conf, _ = heatbath_repair(sum(groups), edges, sweeps, noise)
+        ok += (conf == 0)
+    print(f"  热浴 sweeps={sweeps}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
+    return ok, seeds

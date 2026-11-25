@@ -41,6 +41,9 @@ def main():
     check("TriRV 内核 halted", bool(halted))
     check(f"差分逐位一致（自旋 {tspins} 冲突 {tcnt}）",
           tspins == spins and tcnt == conf)
+    # 热浴动力学收敛（Glauber 三值版）：n=24 三部分图 10 种子全收敛
+    ok10, seeds10 = lab.heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=10, sweeps=40)
+    check(f"热浴动力学收敛 {ok10}/{seeds10}（n=24, sweeps=40）", ok10 == seeds10)
     print(f"\np-trit 契约：{passed} PASS / {failed} FAIL")
     sys.exit(1 if failed else 0)
 
