@@ -575,6 +575,16 @@ def float_suite():
     def near32(v, tol=1e-2):
         return lambda raw: abs(tf.TF20.decode(raw) - v) <= tol
 
+    # 9.4′ sign/trit 电池：±0 / NaN 需字节级判定（decode 过 ±0/NaN 不可 near）
+    def is_raw(want):
+        return lambda raw: raw == want
+
+    def is_nanf(fmt):
+        return lambda raw: _tf_is_nan(fmt, raw)
+
+    F45, F20 = tf.TF45, tf.TF20
+    F64NAN, F32NAN = F64C(float("nan")), F32C(float("nan"))
+
     cases64 = [
         ("wasm f64 1.5+2.25=3.75", F64C(1.5) + F64C(2.25) + F64ADD, near(3.75)),
         ("wasm f64 3.0*2.0=6.0", F64C(3.0) + F64C(2.0) + F64MUL, near(6.0)),
@@ -583,10 +593,34 @@ def float_suite():
         ("wasm f64 sqrt(9)=3", F64C(9.0) + F64SQRT, near(3.0)),
         ("wasm f64 abs(-3)=3", F64C(-3.0) + F64ABS, near(3.0)),
         ("wasm f64 neg(3)=-3", F64C(3.0) + F64NEG, near(-3.0)),
+        ("wasm f64 abs(+3)=3", F64C(3.0) + F64ABS, near(3.0)),
+        ("wasm f64 neg(-3)=3", F64C(-3.0) + F64NEG, near(3.0)),
+        ("wasm f64 abs(-0)=+0", F64C(-0.0) + F64ABS, is_raw(0)),
+        ("wasm f64 neg(+0)=-0", F64C(0.0) + F64NEG, is_raw(F45.ZERO_NEG)),
         ("wasm f64 copysign(-3,+5)=3", F64C(-3.0) + F64C(5.0) + F64CPS, near(3.0)),
+        ("wasm f64 copysign(+3,-5)=-3", F64C(3.0) + F64C(-5.0) + F64CPS, near(-3.0)),
+        ("wasm f64 copysign(-3,-5)=-3", F64C(-3.0) + F64C(-5.0) + F64CPS, near(-3.0)),
+        ("wasm f64 copysign(+3,+5)=3", F64C(3.0) + F64C(5.0) + F64CPS, near(3.0)),
+        ("wasm f64 copysign(3,-0)=-3", F64C(3.0) + F64C(-0.0) + F64CPS, near(-3.0)),
+        ("wasm f64 copysign(-3,+0)=3", F64C(-3.0) + F64C(0.0) + F64CPS, near(3.0)),
+        ("wasm f64 copysign(NaN,-5)=-NaN", F64NAN + F64C(-5.0) + F64CPS,
+         lambda raw: _tf_is_nan(F45, raw) and raw >= F45.P_SIGN),
         ("wasm f64 min(-3,5)=-3", F64C(-3.0) + F64C(5.0) + F64MIN, near(-3.0)),
         ("wasm f64 max(-3,5)=5", F64C(-3.0) + F64C(5.0) + F64MAX, near(5.0)),
         ("wasm f64 min(+5,-3)=-3", F64C(5.0) + F64C(-3.0) + F64MIN, near(-3.0)),
+        ("wasm f64 min(3,-5)=-5", F64C(3.0) + F64C(-5.0) + F64MIN, near(-5.0)),
+        ("wasm f64 max(-5,3)=3", F64C(-5.0) + F64C(3.0) + F64MAX, near(3.0)),
+        ("wasm f64 max(5,-3)=5", F64C(5.0) + F64C(-3.0) + F64MAX, near(5.0)),
+        ("wasm f64 min(3,3)=3", F64C(3.0) + F64C(3.0) + F64MIN, near(3.0)),
+        ("wasm f64 max(-3,-3)=-3", F64C(-3.0) + F64C(-3.0) + F64MAX, near(-3.0)),
+        ("wasm f64 min(+0,-0)=-0", F64C(0.0) + F64C(-0.0) + F64MIN,
+         is_raw(F45.ZERO_NEG)),
+        ("wasm f64 max(+0,-0)=+0", F64C(0.0) + F64C(-0.0) + F64MAX, is_raw(0)),
+        ("wasm f64 min(-0,+0)=-0", F64C(-0.0) + F64C(0.0) + F64MIN,
+         is_raw(F45.ZERO_NEG)),
+        ("wasm f64 max(-0,+0)=+0", F64C(-0.0) + F64C(0.0) + F64MAX, is_raw(0)),
+        ("wasm f64 min(NaN,5)=NaN", F64NAN + F64C(5.0) + F64MIN, is_nanf(F45)),
+        ("wasm f64 max(5,NaN)=NaN", F64C(5.0) + F64NAN + F64MAX, is_nanf(F45)),
     ]
     for name, body, chk in cases64:
         a, b, s = run_float_case(name, mk(body), "run", chk)
@@ -598,6 +632,21 @@ def float_suite():
         ("wasm f32 sqrt(9)=3", F32C(9.0) + F32SQRT, near32(3.0)),
         ("wasm f32 abs(-3)=3", F32C(-3.0) + F32ABS, near32(3.0)),
         ("wasm f32 min(-3,5)=-3", F32C(-3.0) + F32C(5.0) + F32MIN, near32(-3.0)),
+        ("wasm f32 abs(+3)=3", F32C(3.0) + F32ABS, near32(3.0)),
+        ("wasm f32 neg(-3)=3", F32C(-3.0) + F32NEG, near32(3.0)),
+        ("wasm f32 abs(-0)=+0", F32C(-0.0) + F32ABS, is_raw(0)),
+        ("wasm f32 neg(+0)=-0", F32C(0.0) + F32NEG, is_raw(F20.ZERO_NEG)),
+        ("wasm f32 copysign(-3,+5)=3", F32C(-3.0) + F32C(5.0) + F32CPS, near32(3.0)),
+        ("wasm f32 copysign(+3,-5)=-3", F32C(3.0) + F32C(-5.0) + F32CPS, near32(-3.0)),
+        ("wasm f32 copysign(-3,-5)=-3", F32C(-3.0) + F32C(-5.0) + F32CPS, near32(-3.0)),
+        ("wasm f32 min(3,-5)=-5", F32C(3.0) + F32C(-5.0) + F32MIN, near32(-5.0)),
+        ("wasm f32 max(-3,5)=5", F32C(-3.0) + F32C(5.0) + F32MAX, near32(5.0)),
+        ("wasm f32 max(3,-5)=3", F32C(3.0) + F32C(-5.0) + F32MAX, near32(3.0)),
+        ("wasm f32 min(+0,-0)=-0", F32C(0.0) + F32C(-0.0) + F32MIN,
+         is_raw(F20.ZERO_NEG)),
+        ("wasm f32 max(+0,-0)=+0", F32C(0.0) + F32C(-0.0) + F32MAX, is_raw(0)),
+        ("wasm f32 min(NaN,5)=NaN", F32NAN + F32C(5.0) + F32MIN, is_nanf(F20)),
+        ("wasm f32 max(5,NaN)=NaN", F32C(5.0) + F32NAN + F32MAX, is_nanf(F20)),
     ]
     for name, body, chk in cases32:
         a, b, s = run_float_case(name, mk(body), "run", chk)
