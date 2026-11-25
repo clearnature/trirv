@@ -193,6 +193,8 @@ F32ADD, F32SUB, F32MUL, F32DIV = b"\x92", b"\x93", b"\x94", b"\x95"
 F64SQRT, F32SQRT = b"\x9f", b"\x91"
 F64ABS, F64NEG, F64MIN, F64MAX, F64CPS = (bytes([x]) for x in (0x99, 0x9a, 0xa4, 0xa5, 0xa6))
 F32ABS, F32NEG, F32MIN, F32MAX, F32CPS = (bytes([x]) for x in (0x8b, 0x8c, 0x96, 0x97, 0x98))
+F64CEIL, F64FLOOR, F64TRUNC, F64NEAR = (bytes([x]) for x in (0x9b, 0x9c, 0x9d, 0x9e))
+F32CEIL, F32FLOOR, F32TRUNC, F32NEAR = (bytes([x]) for x in (0x8d, 0x8e, 0x8f, 0x90))
 F64EQ, F64NE, F64LT, F64GT, F64LE, F64GE = (bytes([x]) for x in range(0x61, 0x67))
 F32EQ, F32NE, F32LT, F32GT, F32LE, F32GE = (bytes([x]) for x in range(0x5b, 0x61))
 def FLOAD64(off=0): return b"\x2b" + u(0) + u(off)
@@ -362,6 +364,37 @@ class Ref:
             elif op in (0x91, 0x9F):               # f32.sqrt / f64.sqrt
                 F = tf.TF20 if op == 0x91 else tf.TF45
                 st.append(tf.f_sqrt(st.pop(), F))
+            elif op in (0x8D, 0x8E, 0x8F, 0x90, 0x9B, 0x9C, 0x9D, 0x9E):
+                # ceil/floor/trunc/nearest（9.4″）：M/den 精确有理舍入——
+                # v = sign·M·3^(e−k1)；e ≥ k1 已整数恒等；den = 3^(k1−e) 奇
+                # ⇒ 三进制不存在精确半点，nearest 无平票。NaN 传染 canon。
+                # M 取自 parts() 整数域（host double 重建 mant×P_NORM 有 ±1 误差）
+                F = tf.TF20 if op <= 0x90 else tf.TF45
+                raw = st.pop()
+                s_, E_, M_ = F.parts(raw)
+                sgn = -1 if s_ else 1
+                if E_ == F.max_exp:
+                    st.append(F.NAN if M_ != 0 else raw)     # NaN 传染 / ±Inf 恒等
+                elif E_ == 0 and M_ == 0:
+                    st.append(raw)                            # ±0 恒等
+                elif E_ - F.bias >= F.mant_trits - 1:
+                    st.append(raw)                            # 已整数：恒等
+                else:
+                    den = 3 ** (F.mant_trits - 1 - (E_ - F.bias))
+                    tq = M_ // den
+                    rem = M_ % den
+                    if op in (0x8F, 0x9D):          # trunc：向零
+                        q = tq
+                    elif op in (0x8E, 0x9C):        # floor：负侧幅度进位
+                        q = tq + (1 if rem and sgn < 0 else 0)
+                    elif op in (0x8D, 0x9B):        # ceil：正侧幅度进位
+                        q = tq + (1 if rem and sgn > 0 else 0)
+                    else:                            # nearest：幅 > 1/2 进位
+                        q = tq + (1 if 2 * rem > den else 0)
+                    if q == 0:
+                        st.append(F.ZERO_NEG if sgn < 0 else F.ZERO_POS)
+                    else:
+                        st.append(F.encode(sgn * float(q)))
             elif 0x5B <= op <= 0x66:              # f32/f64 比较
                 b2 = st.pop(); a2 = st.pop()
                 F = tf.TF20 if op <= 0x60 else tf.TF45
@@ -621,6 +654,33 @@ def float_suite():
         ("wasm f64 max(-0,+0)=+0", F64C(-0.0) + F64C(0.0) + F64MAX, is_raw(0)),
         ("wasm f64 min(NaN,5)=NaN", F64NAN + F64C(5.0) + F64MIN, is_nanf(F45)),
         ("wasm f64 max(5,NaN)=NaN", F64C(5.0) + F64NAN + F64MAX, is_nanf(F45)),
+        # -- 9.4″ round 族：ceil/floor/trunc/nearest --
+        ("wasm f64 ceil(0.4)=1", F64C(0.4) + F64CEIL, near(1.0)),
+        ("wasm f64 ceil(-0.4)=-0", F64C(-0.4) + F64CEIL, is_raw(F45.ZERO_NEG)),
+        ("wasm f64 ceil(1.2)=2", F64C(1.2) + F64CEIL, near(2.0)),
+        ("wasm f64 floor(0.9)=+0", F64C(0.9) + F64FLOOR, is_raw(0)),
+        ("wasm f64 floor(-0.4)=-1", F64C(-0.4) + F64FLOOR, near(-1.0)),
+        ("wasm f64 floor(-2.7)=-3", F64C(-2.7) + F64FLOOR, near(-3.0)),
+        ("wasm f64 trunc(2.7)=2", F64C(2.7) + F64TRUNC, near(2.0)),
+        ("wasm f64 trunc(-2.7)=-2", F64C(-2.7) + F64TRUNC, near(-2.0)),
+        ("wasm f64 trunc(-0.4)=-0", F64C(-0.4) + F64TRUNC, is_raw(F45.ZERO_NEG)),
+        ("wasm f64 nearest(1.2)=1", F64C(1.2) + F64NEAR, near(1.0)),
+        ("wasm f64 nearest(2.7)=3", F64C(2.7) + F64NEAR, near(3.0)),
+        ("wasm f64 nearest(-2.7)=-3", F64C(-2.7) + F64NEAR, near(-3.0)),
+        ("wasm f64 nearest(1e-20)=+0", F64C(1e-20) + F64NEAR, is_raw(0)),
+        ("wasm f64 ceil(5.0)=5", F64C(5.0) + F64CEIL, near(5.0)),
+        ("wasm f64 floor(-5.0)=-5", F64C(-5.0) + F64FLOOR, near(-5.0)),
+        ("wasm f64 trunc(5.0)=5", F64C(5.0) + F64TRUNC, near(5.0)),
+        ("wasm f64 ceil(1e20)=1e20", F64C(1e20) + F64CEIL,
+         is_raw(F45.encode(1e20))),
+        ("wasm f64 ceil(tiny)=1", F64C(1e-20) + F64CEIL, near(1.0)),
+        ("wasm f64 floor(-tiny)=-1", F64C(-1e-20) + F64FLOOR, near(-1.0)),
+        ("wasm f64 trunc(-tiny)=-0", F64C(-1e-20) + F64TRUNC,
+         is_raw(F45.ZERO_NEG)),
+        ("wasm f64 ceil(NaN)=NaN", F64NAN + F64CEIL, is_nanf(F45)),
+        ("wasm f64 floor(-Inf)=-Inf", F64C(float("-inf")) + F64FLOOR,
+         is_raw(F45.INF_NEG)),
+        ("wasm f64 ceil(-0)=-0", F64C(-0.0) + F64CEIL, is_raw(F45.ZERO_NEG)),
     ]
     for name, body, chk in cases64:
         a, b, s = run_float_case(name, mk(body), "run", chk)
@@ -647,6 +707,17 @@ def float_suite():
         ("wasm f32 max(+0,-0)=+0", F32C(0.0) + F32C(-0.0) + F32MAX, is_raw(0)),
         ("wasm f32 min(NaN,5)=NaN", F32NAN + F32C(5.0) + F32MIN, is_nanf(F20)),
         ("wasm f32 max(5,NaN)=NaN", F32C(5.0) + F32NAN + F32MAX, is_nanf(F20)),
+        # -- 9.4″ round 族 f32 --
+        ("wasm f32 ceil(0.4)=1", F32C(0.4) + F32CEIL, near32(1.0)),
+        ("wasm f32 floor(-0.4)=-1", F32C(-0.4) + F32FLOOR, near32(-1.0)),
+        ("wasm f32 trunc(-2.7)=-2", F32C(-2.7) + F32TRUNC, near32(-2.0)),
+        ("wasm f32 nearest(2.7)=3", F32C(2.7) + F32NEAR, near32(3.0)),
+        ("wasm f32 trunc(-0.4)=-0", F32C(-0.4) + F32TRUNC, is_raw(F20.ZERO_NEG)),
+        ("wasm f32 ceil(-0.4)=-0", F32C(-0.4) + F32CEIL, is_raw(F20.ZERO_NEG)),
+        ("wasm f32 floor(-tiny)=-1", F32C(-1e-20) + F32FLOOR, near32(-1.0)),
+        ("wasm f32 ceil(tiny)=1", F32C(1e-20) + F32CEIL, near32(1.0)),
+        ("wasm f32 trunc(5.0)=5", F32C(5.0) + F32TRUNC, near32(5.0)),
+        ("wasm f32 ceil(NaN)=NaN", F32NAN + F32CEIL, is_nanf(F20)),
     ]
     for name, body, chk in cases32:
         a, b, s = run_float_case(name, mk(body), "run", chk)

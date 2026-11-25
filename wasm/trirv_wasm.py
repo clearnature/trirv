@@ -755,6 +755,149 @@ class Gen:
         self.vtype[ia] = vt
         self.h += 1
 
+    def f_round(self, mode, vt):
+        """ceil/floor/trunc/nearest（9.4″）：整数面 M/den 精确有理舍入。
+        v = sign·M·3^(e−k1)；payload ≥ (bias+k1)·PM ⟺ e ≥ k1（含 NaN/Inf/±0）
+        恒等；工作面 sh = k1−e ≥ 1：q = M // 3^sh 幅度舍入（den 奇 ⇒ 无平票）
+        + 尾零 trit 重归一（q ≤ PN，单向上调 ≤ k1 次）。sh > k1+1 clamp 不建
+        den（v < 1/3）：trunc/nearest → ±0；floor 负 → −1；ceil 正 → +1。
+        参考语义 = e2e 解释器 round 分支。"""
+        k1 = 33 if vt == F64 else 13
+        bias = 29524 if vt == F64 else 121
+        ET = 10 if vt == F64 else 5
+        PS = 3 ** (k1 + 1 + ET)
+        PM = 3 ** (k1 + 1)
+        PN = 3 ** k1
+        THRESH = (bias + k1) * PM
+        BK1 = bias + k1
+        ONE = bias * PM + PN                          # encode(1.0)
+        self.h -= 1
+        i0 = self.h
+        wr = self.lab("rd")
+        self.L(f"    LW t0, {self.slot(i0)}(s0)")
+        self.li("s6", PS)
+        self.L("    SLTU t4, t0, s6")                 # 1 ⟺ 正（s=0）
+        posp = self.lab("rd")
+        idn = self.lab("rd")
+        self.L(f"    BNE t4, zero, {posp}")
+        self.L("    SUB t1, t0, s6")                  # payload（负）
+        self.L(f"    JAL zero, {idn}")
+        self.L(f"{posp}:")
+        self.L("    ADD t1, t0, zero")                # payload（正）
+        self.L(f"{idn}:")
+        self.li("t2", THRESH)
+        self.L("    SLTU t2, t1, t2")                 # 1 ⟺ payload < THRESH ⟺ 工作
+        self.L(f"    BEQ t2, zero, {wr}")             # NaN/Inf/±0/e ≥ k1：恒等
+        self.li("t2", PM)
+        self.L("    DIV t3, t1, t2")                  # E
+        self.L("    MUL t5, t3, t2")                  # E·PM
+        self.L("    SUB t1, t1, t5")                  # M（纯尾数）
+        self.li("t5", BK1)
+        self.L("    SUB t5, t5, t3")                  # sh = BK1 − E
+        self.li("t2", k1 + 1)
+        self.L("    SLTU t2, t2, t5")                 # 1 ⟺ sh > k1+1 → clamp
+        q0 = self.lab("rd")
+        self.L(f"    BNE t2, zero, {q0}")
+        self.L("    ADD s3, t5, zero")                # count = sh
+        self.li("t3", 1)                              # den = 3^sh
+        lp = self.lab("rd")
+        lpd = self.lab("rd")
+        self.L(f"{lp}:")
+        self.L(f"    BEQ s3, zero, {lpd}")
+        self.L("    ADD t5, t3, t3")
+        self.L("    ADD t3, t5, t3")                  # den ×3（经临时，勿自加×2）
+        self.L("    ADDI s3, s3, -1")
+        self.L(f"    JAL zero, {lp}")
+        self.L(f"{lpd}:")
+        self.L("    DIV s5, t1, t3")                  # q 幅度
+        self.L("    REM t5, t1, t3")                  # rem
+        ad = self.lab("rd")
+        if mode == "floor":
+            nz = self.lab("rd")
+            self.L(f"    BNE t5, zero, {nz}")
+            self.L(f"    JAL zero, {ad}")
+            self.L(f"{nz}:")
+            self.L(f"    BNE t4, zero, {ad}")         # 正 floor：不变
+            self.L("    ADDI s5, s5, 1")              # 负 floor = −ceil(mag)
+            self.L(f"{ad}:")
+        elif mode == "ceil":
+            nz = self.lab("rd")
+            self.L(f"    BNE t5, zero, {nz}")
+            self.L(f"    JAL zero, {ad}")
+            self.L(f"{nz}:")
+            self.L(f"    BEQ t4, zero, {ad}")         # 负 ceil：不变
+            self.L("    ADDI s5, s5, 1")              # 正 ceil 进位
+            self.L(f"{ad}:")
+        elif mode == "nearest":
+            self.L("    ADD t5, t5, t5")              # 2·rem
+            self.L("    SLTU t5, t3, t5")             # 1 ⟺ den < 2rem（无平票）
+            self.L(f"    BEQ t5, zero, {ad}")
+            self.L("    ADDI s5, s5, 1")
+            self.L(f"{ad}:")
+        else:                                          # trunc：无调整
+            self.L(f"{ad}:")
+        # q == 0 → ±0（纯小数；normalize 循环对 0 不终止，先拦）
+        zq = self.lab("rd")
+        zn0 = self.lab("rd")
+        self.L(f"    BNE s5, zero, {zq}")
+        self.L(f"    BEQ t4, zero, {zn0}")
+        self.L("    ADD t0, zero, zero")              # +0
+        self.L(f"    JAL zero, {wr}")
+        self.L(f"{zn0}:")
+        self.L("    ADD t0, s6, zero")                # −0
+        self.L(f"    JAL zero, {wr}")
+        self.L(f"{zq}:")
+        # 重归一：q ≤ PN → m ∈ [PN, PM)，单向上调
+        up = self.lab("rd")
+        upd = self.lab("rd")
+        self.li("t2", PN)
+        self.li("s4", 0)                              # j（负向计数）
+        self.L(f"{up}:")
+        self.L("    SLTU t5, s5, t2")                 # 1 ⟺ m < PN
+        self.L(f"    BEQ t5, zero, {upd}")
+        self.L("    ADD t1, s5, s5")
+        self.L("    ADD s5, t1, s5")                  # ×3（经临时）
+        self.L("    ADDI s4, s4, -1")
+        self.L(f"    JAL zero, {up}")
+        self.L(f"{upd}:")
+        self.li("t1", PM)
+        self.li("t2", BK1)
+        self.L("    ADD t2, t2, s4")                  # E' = BK1 + j
+        self.L("    MUL t2, t2, t1")                  # E'·PM
+        self.L("    ADD t0, s5, t2")                  # + m
+        self.L(f"    BNE t4, zero, {wr}")
+        self.L("    ADD t0, t0, s6")                  # 负 → +ps
+        self.L(f"    JAL zero, {wr}")
+        # clamp 路径（v < 1/3）：±0 / floor 负 −1 / ceil 正 +1
+        self.L(f"{q0}:")
+        if mode == "floor":
+            zp = self.lab("rd")
+            self.L(f"    BNE t4, zero, {zp}")         # 正 → +0
+            self.li("t0", ONE)
+            self.L("    ADD t0, t0, s6")              # 负 → ps + ONE = −1.0
+            self.L(f"    JAL zero, {wr}")
+            self.L(f"{zp}:")
+            self.L("    ADD t0, zero, zero")          # +0
+        elif mode == "ceil":
+            zn = self.lab("rd")
+            self.L(f"    BEQ t4, zero, {zn}")         # 负 → −0
+            self.li("t0", ONE)                        # 正 → +1.0
+            self.L(f"    JAL zero, {wr}")
+            self.L(f"{zn}:")
+            self.L("    ADD t0, s6, zero")            # −0
+        else:                                          # trunc/nearest → ±0
+            zn = self.lab("rd")
+            self.L(f"    BEQ t4, zero, {zn}")         # 负 → −0
+            self.L("    ADD t0, zero, zero")          # +0
+            self.L(f"    JAL zero, {wr}")
+            self.L(f"{zn}:")
+            self.L("    ADD t0, s6, zero")            # −0
+        self.L(f"{wr}:")
+        self.L(f"    SW t0, {self.slot(i0)}(s0)")
+        self.vs.pop(i0, None)
+        self.vtype[i0] = vt
+        self.h += 1
+
     def f_minmax(self, op, vt):
         """min/max：NaN（幅 > INF_POS，SLTU）传染 canon；FEQ 等值 → TOR/TAND
         （min 保 −0 / max 保 +0）；FLT 数值选边（原 raw 直传，符号随行）——
@@ -1280,6 +1423,18 @@ class Gen:
         # ---- 数值 ----
         if op == 0x91 or op == 0x9F:              # f32.sqrt / f64.sqrt
             self.f_sqrt(F32 if op == 0x91 else F64)
+            return p
+        if op in (0x8D, 0x9B):                    # ceil（9.4″）
+            self.f_round("ceil", F32 if op == 0x8D else F64)
+            return p
+        if op in (0x8E, 0x9C):                    # floor
+            self.f_round("floor", F32 if op == 0x8E else F64)
+            return p
+        if op in (0x8F, 0x9D):                    # trunc
+            self.f_round("trunc", F32 if op == 0x8F else F64)
+            return p
+        if op in (0x90, 0x9E):                    # nearest
+            self.f_round("nearest", F32 if op == 0x90 else F64)
             return p
         if op in (0x92, 0x93, 0x94, 0x95):        # f32.add/sub/mul/div
             self.f_arith({0x92:"FADD",0x93:"FSUB",0x94:"FMUL",0x95:"FDIV"}[op], F32)

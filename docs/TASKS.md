@@ -594,8 +594,8 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 停留——已回滚绿态；修复批必须包含：store8→i32.load 往返、data 段
 >121 字节 load、负值 store→load 往返、跨宽度别名四个新契约用例
 （全部在本轮证伪过）。
-- [ ] 9.4 **浮点剩余运算**（ceil、floor、trunc、nearest 剩余；min、max、
-  neg、abs、copysign ✓ 2026-11-25 9.4′）
+- [x] 9.4 **浮点剩余运算** ✓（2026-11-25：9.4′ min/max/neg/abs/copysign
+  + 9.4″ ceil/floor/trunc/nearest 全收官）
 - [ ] 9.5 **convert/trunc**（int 与 float 互转）
 - [ ] 9.6 **多参与多返回**
 - [x] 9.7–9.9 **溶解**（2026-11-25 纯三值拍板 + 三次澄清，WASM_ROUTE_A
