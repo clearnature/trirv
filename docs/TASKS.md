@@ -594,7 +594,8 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 停留——已回滚绿态；修复批必须包含：store8→i32.load 往返、data 段
 >121 字节 load、负值 store→load 往返、跨宽度别名四个新契约用例
 （全部在本轮证伪过）。
-- [ ] 9.4 **浮点剩余运算**（min、max、neg、abs、ceil、floor、trunc、nearest、copysign）
+- [ ] 9.4 **浮点剩余运算**（ceil、floor、trunc、nearest 剩余；min、max、
+  neg、abs、copysign ✓ 2026-11-25 9.4′）
 - [ ] 9.5 **convert/trunc**（int 与 float 互转）
 - [ ] 9.6 **多参与多返回**
 - [x] 9.7–9.9 **溶解**（2026-11-25 纯三值拍板 + 三次澄清，WASM_ROUTE_A
@@ -609,6 +610,16 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 - [ ] 9.4′ **浮点 = 原生 TF**（§九 浮点注记推翻 §八 soft-float）：
   min/max/abs/neg = TF sign-trit 操作；ceil/floor/trunc = 基 3 阶码操作；
   IEEE↔TF 只在数据边界。spec 浮点断言 = 定义性 NS。
+  - [x] **sign/trit 族收官** ✓（2026-11-25，94-signops-wip）：abs/neg/
+    copysign/min/max × f64/f32 全绿（e2e 117/0，含 ±0 字节级、NaN 传染、
+    copysign(NaN,−5) 号保持），py VM + CVM 双侧 parity。**判号原语 =
+    SLTU t2, raw, ps**（raw < ps ⟺ 正；raw = ps 即 −0 归负侧，无边界
+    假阳）——带符号视图探针作废：本 TF45 布局负数 s=1（raw = ps +
+    payload），payload 小于半点时带符号视图为正（−1.0/−0.0 带符号视图
+    为正），SLT 判号有结构性假阳。教训：早期 min/max 用 SLT 幅探针
+    +ADD MOD45「归一化」（mod 下恒等操作）= 双重无效但恰被单向用例
+    掩盖；f32 裸发 FEQ/FLT 缺 .S 后缀 = TF20 raw 按 TF45 解码比较错。
+    剩余：ceil/floor/trunc/nearest（基 3 阶码）。
 - [ ] 9.10′ **结构面基线更新**，批次 9 收官（spec 刻度 = 结构子集：
   block/loop/br/br_table/if/call/call_indirect/table/局部变量/select；
   整数算术与字节边界断言 = 定义性 NS 记账）
