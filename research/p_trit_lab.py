@@ -144,139 +144,6 @@ def build_kernel_asm(n, edges, sweeps, noise_len):
     return "\n".join(A) + "\n", CNT
 
 
-# ------------------------------------------------------------ TriRV 执行
-def run_on_trirv(n, edges, sweeps, noise):
-    """装配内核 → PyVM 执行 → (最终自旋数组, 冲突数, halted)。"""
-    asm, cnt_off = build_kernel_asm(n, edges, sweeps, len(noise))
-    E_n = len(edges)
-    S = sweeps * E_n
-    segs = {0: bytes(noise)}
-    eb = bytearray()
-    for ni, nj in edges:
-        eb += bytes([ni, nj])
-    segs[S + n] = bytes(eb)
-    prog, _ = trirv_asm.assemble(asm)
-    v = trirv_vm.VM(prog, mem_init={a: bytes(b) for a, b in segs.items()})
-    v.run(max_steps=2000000)
-    spins = [v.mem[S + k] for k in range(n)]
-    return spins, v.mem[cnt_off], v.halted
-
-
-# ------------------------------------------------------------ 主实验
-DEMO_EDGES = [(0, 1), (0, 2), (1, 3), (2, 3), (1, 2),
-              (3, 4), (2, 4), (0, 4), (4, 5), (3, 5), (0, 5)]
-
-
-def main():
-    n = 6
-    print("== p-trit 三值热力学修复退火（图 3-着色，q=3 Potts）==")
-    noise = trit_noise(seed=42, n=400)
-    c, chi2 = noise_quality(noise)
-    print(f"噪声三桶频数 {c}  χ²={chi2:.2f}（df=2 95% 阈值 5.99）→ "
-          + ("均匀 ✓" if chi2 < 5.99 else "偏斜 ✗"))
-    spins, conf = ref_repair(n, DEMO_EDGES, sweeps=40, noise=noise)
-    print(f"Python 参考：最终自旋 {spins}  冲突 {conf}")
-    tspins, tcnt, halted = run_on_trirv(n, DEMO_EDGES, sweeps=40, noise=noise)
-    same = (tspins == spins and tcnt == conf)
-    print(f"TriRV 内核：最终自旋 {tspins}  冲突 {tcnt}  halted={halted}")
-    print("差分：", "逐位一致 ✓" if same else "不一致 ✗")
-    return 0 if same and conf == 0 else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
-
-# ------------------------------------------------------------ 收敛率统计
-def gen_3partite(groups, p, seed):
-    """三部分图生成器：组内无边、组间以概率 p 连边——构造性 3-可着色。"""
-    rng = random.Random(seed)
-    ids = []
-    start = 0
-    for g in range(3):
-        ids.append(list(range(start, start + groups[g])))
-        start += groups[g]
-    edges = []
-    for g1 in range(3):
-        for g2 in range(g1 + 1, 3):
-            for i in ids[g1]:
-                for j in ids[g2]:
-                    if rng.random() < p:
-                        edges.append((i, j))
-    return ids, edges
-
-
-def convergence_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweep_grid=(20, 40, 80, 160)):
-    """多种子收敛率：{sweeps: 成功数/seeds}——「能 achieving 到吗」的定量答案。"""
-    rows = []
-    for sweeps in sweep_grid:
-        ok = 0
-        for sd in range(seeds):
-            _, edges = gen_3partite(groups, p, seed=1000 + sd)
-            noise = trit_noise(seed=sd, n=sweeps * len(edges))
-            _, conf = ref_repair(sum(groups), edges, sweeps, noise)
-            ok += (conf == 0)
-        rows.append((sweeps, ok, seeds))
-        print(f"  sweeps={sweeps:4d}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
-    return rows
-
-
-def stats_main():
-    print("== 收敛率统计（三部分图 n=24, p=0.3, 50 种子）==")
-    rows = convergence_stats()
-    return rows
-
-
-if __name__ == "__main__":
-    pass
-
-
-def conflicts_of(spins, edges):
-    return sum(1 for ni, nj in edges if spins[ni] == spins[nj])
-
-
-# ------------------------------------------------------------ 顶点热浴动力学（Glauber）
-def heatbath_repair(n, edges, sweeps, noise):
-    """顶点热浴：每顶点取冲突最小色（平票噪声破缺）——p-bit/Ising 机的
-    Glauber 动力学三值版。返回 (最终自旋, 冲突数, 收敛所用 sweep 数)。"""
-    adj = [[] for _ in range(n)]
-    for ni, nj in edges:
-        adj[ni].append(nj)
-        adj[nj].append(ni)
-    spins = [0] * n
-    nit = 0
-    done_at = None
-    for sweep in range(sweeps):
-        for v in range(n):
-            cnt = [0, 0, 0]
-            for nb in adj[v]:
-                cnt[spins[nb] % 3] += 1
-            cur = cnt[spins[v]]
-            best = min(range(3), key=lambda c: (cnt[c], c))
-            t = noise[nit % len(noise)]
-            nit += 1
-            if cnt[best] < cur:
-                spins[v] = best
-            elif cnt[best] == cur and best != spins[v] and t == 0:
-                spins[v] = best                 # 平票噪声游走（避免死锁）
-        if done_at is None and conflicts_of(spins, edges) == 0:
-            done_at = sweep + 1
-            break
-    return spins, conflicts_of(spins, edges), done_at
-
-
-def heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweeps=40):
-    ok = 0
-    for sd in range(seeds):
-        _, edges = gen_3partite(groups, p, seed=1000 + sd)
-        noise = trit_noise(seed=sd, n=sweeps * (sum(groups) + len(edges)) + 16)
-        _, conf, _ = heatbath_repair(sum(groups), edges, sweeps, noise)
-        ok += (conf == 0)
-    print(f"  热浴 sweeps={sweeps}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
-    return ok, seeds
-
-
-# ------------------------------------------------------------ 热浴 VM 内核（CSR 布局）
 def li_lines(rd, v):
     """大常数分段装载（trirv_cc load_imm128 同款）：|v|≤1093 一条 ADDI；
     否则按 2187 分段、每段三补码归位（±1093）的 LUI/ADDI 链。
@@ -430,15 +297,14 @@ def build_heatbath_asm(n, edges, sweeps, noise_len):
     add("    ADDI s3, s2, 1")
     add("    ADDI t2, zero, %d" % EDGE)
     add("    ADD s3, t2, s3")
-    add("    LBU t2, 0(s3)")                       # edges[s2+1] = nj
+    add("    LBU t5, 0(s3)")                       # edges[s2+1] = nj（t5——基址寄存器不复用）
     add("    ADDI t2, zero, %d" % SPINS)
     add("    ADD s3, t2, t1")
     add("    LBU t3, 0(s3)")                       # spin[ni]
     add("    ADDI t2, zero, %d" % SPINS)
-    add("    ADD s3, t2, t2")
+    add("    ADD s3, t2, t5")
     add("    LBU t4, 0(s3)")                       # spin[nj]
     add("    SUB s3, t3, t4")
-    ok = "__cne"
     add("    BNE s3, zero, __cne")
     A.extend(li_lines("t1", CCNT))
     add("    LBU t3, 0(t1)")
@@ -462,3 +328,180 @@ def build_heatbath_asm(n, edges, sweeps, noise_len):
     add("    LBU a0, 0(t1)")
     return "\n".join(A) + "\n", dict(NL=NL, SPINS=SPINS, CSR=CSR,
                                       FLAT=FLAT, EDGE=EDGE, CNT=CNT, CCNT=CCNT)
+
+# ------------------------------------------------------------ TriRV 执行
+
+def run_on_trirv(n, edges, sweeps, noise):
+    """装配内核 → PyVM 执行 → (最终自旋数组, 冲突数, halted)。"""
+    asm, cnt_off = build_kernel_asm(n, edges, sweeps, len(noise))
+    E_n = len(edges)
+    S = sweeps * E_n
+    segs = {0: bytes(noise)}
+    eb = bytearray()
+    for ni, nj in edges:
+        eb += bytes([ni, nj])
+    segs[S + n] = bytes(eb)
+    prog, _ = trirv_asm.assemble(asm)
+    v = trirv_vm.VM(prog, mem_init={a: bytes(b) for a, b in segs.items()})
+    v.run(max_steps=2000000)
+    spins = [v.mem[S + k] for k in range(n)]
+    return spins, v.mem[cnt_off], v.halted
+
+
+# ------------------------------------------------------------ 主实验
+DEMO_EDGES = [(0, 1), (0, 2), (1, 3), (2, 3), (1, 2),
+              (3, 4), (2, 4), (0, 4), (4, 5), (3, 5), (0, 5)]
+
+
+def main():
+    n = 6
+    print("== p-trit 三值热力学修复退火（图 3-着色，q=3 Potts）==")
+    noise = trit_noise(seed=42, n=400)
+    c, chi2 = noise_quality(noise)
+    print(f"噪声三桶频数 {c}  χ²={chi2:.2f}（df=2 95% 阈值 5.99）→ "
+          + ("均匀 ✓" if chi2 < 5.99 else "偏斜 ✗"))
+    spins, conf = ref_repair(n, DEMO_EDGES, sweeps=40, noise=noise)
+    print(f"Python 参考：最终自旋 {spins}  冲突 {conf}")
+    tspins, tcnt, halted = run_on_trirv(n, DEMO_EDGES, sweeps=40, noise=noise)
+    same = (tspins == spins and tcnt == conf)
+    print(f"TriRV 内核：最终自旋 {tspins}  冲突 {tcnt}  halted={halted}")
+    print("差分：", "逐位一致 ✓" if same else "不一致 ✗")
+    hb_ok = heatbath_demo()
+    return 0 if (same and conf == 0 and hb_ok) else 1
+
+
+
+
+# ------------------------------------------------------------ 热浴内核差分（§九 100% 收敛动力学的 VM 移植）
+def run_heatbath_on_trirv(n, edges, sweeps, seed=0):
+    """热浴内核执行。布局一致性定版（段重叠破案 2026-11-25）：
+    噪声长度必须 = 内核 NL（sweeps×n+16）——旧 runner 生成超长噪声罩住
+    自旋段 [NL,+n)，自旋写入腐蚀噪声读出（差分分歧实证）。
+    返回 (最终自旋, 冲突数, halted)。"""
+    noise = trit_noise(seed, sweeps * n + 16)
+    asm, lay = build_heatbath_asm(n, edges, sweeps, len(noise))
+    adj = [[] for _ in range(n)]
+    for ni, nj in edges:
+        adj[ni].append(nj); adj[nj].append(ni)
+    csr, flat = bytearray(), bytearray()
+    for v in range(n):
+        csr.append(len(flat))
+        flat += bytes(adj[v])
+    csr.append(len(flat))
+    segs = {0: bytes(noise), lay["SPINS"]: bytes(n),
+            lay["CSR"]: bytes(csr), lay["FLAT"]: bytes(flat)}
+    prog, _ = trirv_asm.assemble(asm)
+    v = trirv_vm.VM(prog, mem_init={a: bytes(b) for a, b in segs.items()})
+    v.run(max_steps=2000000)
+    spins = [v.mem[lay["SPINS"] + k] for k in range(n)]
+    return spins, v.mem[lay["CCNT"]], v.halted
+
+
+
+
+
+# ------------------------------------------------------------ 收敛率统计
+def gen_3partite(groups, p, seed):
+    """三部分图生成器：组内无边、组间以概率 p 连边——构造性 3-可着色。"""
+    rng = random.Random(seed)
+    ids = []
+    start = 0
+    for g in range(3):
+        ids.append(list(range(start, start + groups[g])))
+        start += groups[g]
+    edges = []
+    for g1 in range(3):
+        for g2 in range(g1 + 1, 3):
+            for i in ids[g1]:
+                for j in ids[g2]:
+                    if rng.random() < p:
+                        edges.append((i, j))
+    return ids, edges
+
+
+def convergence_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweep_grid=(20, 40, 80, 160)):
+    """多种子收敛率：{sweeps: 成功数/seeds}——「能 achieving 到吗」的定量答案。"""
+    rows = []
+    for sweeps in sweep_grid:
+        ok = 0
+        for sd in range(seeds):
+            _, edges = gen_3partite(groups, p, seed=1000 + sd)
+            noise = trit_noise(seed=sd, n=sweeps * len(edges))
+            _, conf = ref_repair(sum(groups), edges, sweeps, noise)
+            ok += (conf == 0)
+        rows.append((sweeps, ok, seeds))
+        print(f"  sweeps={sweeps:4d}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
+    return rows
+
+
+def stats_main():
+    print("== 收敛率统计（三部分图 n=24, p=0.3, 50 种子）==")
+    rows = convergence_stats()
+    return rows
+
+
+def heatbath_demo():
+    n = 6
+    print("== 热浴内核差分（Glauber 三值版 VM 移植）==")
+    vspins, vcnt, halted = run_heatbath_on_trirv(n, DEMO_EDGES, sweeps=40, seed=0)
+    vconf = sum(1 for ni, nj in DEMO_EDGES if vspins[ni] == vspins[nj])
+    # 参考侧：同 seed 噪声 + 同语义热浴
+    noise = trit_noise(0, 40 * n + 16)
+    rspins, rconf, _ = heatbath_repair(n, DEMO_EDGES, 40, noise)
+    same = (vspins == rspins and vconf == rconf)
+    print(f"TriRV 内核：自旋 {vspins} 冲突 {vconf} halted={halted}")
+    print(f"Python 参考：自旋 {rspins} 冲突 {rconf}")
+    print("差分：", "逐位一致 ✓" if same else "不一致 ✗")
+    return same
+
+
+if __name__ == "__main__":
+    pass
+
+
+def conflicts_of(spins, edges):
+    return sum(1 for ni, nj in edges if spins[ni] == spins[nj])
+
+
+# ------------------------------------------------------------ 顶点热浴动力学（Glauber）
+def heatbath_repair(n, edges, sweeps, noise):
+    """顶点热浴：每顶点取冲突最小色（平票噪声破缺）——p-bit/Ising 机的
+    Glauber 动力学三值版。返回 (最终自旋, 冲突数, 收敛所用 sweep 数)。"""
+    adj = [[] for _ in range(n)]
+    for ni, nj in edges:
+        adj[ni].append(nj)
+        adj[nj].append(ni)
+    spins = [0] * n
+    nit = 0
+    done_at = None
+    for sweep in range(sweeps):
+        for v in range(n):
+            cnt = [0, 0, 0]
+            for nb in adj[v]:
+                cnt[spins[nb] % 3] += 1
+            cur = cnt[spins[v]]
+            best = min(range(3), key=lambda c: (cnt[c], c))
+            t = noise[nit % len(noise)]
+            nit += 1
+            if cnt[best] < cur:
+                spins[v] = best
+            elif cnt[best] == cur and best != spins[v] and t == 0:
+                spins[v] = best                 # 平票噪声游走（避免死锁）
+        if done_at is None and conflicts_of(spins, edges) == 0:
+            done_at = sweep + 1
+            break
+    return spins, conflicts_of(spins, edges), done_at
+
+
+def heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweeps=40):
+    ok = 0
+    for sd in range(seeds):
+        _, edges = gen_3partite(groups, p, seed=1000 + sd)
+        noise = trit_noise(seed=sd, n=sweeps * (sum(groups) + len(edges)) + 16)
+        _, conf, _ = heatbath_repair(sum(groups), edges, sweeps, noise)
+        ok += (conf == 0)
+    print(f"  热浴 sweeps={sweeps}: 收敛 {ok}/{seeds} = {100 * ok / seeds:.0f}%")
+    return ok, seeds
+
+
+# ------------------------------------------------------------ 热浴 VM 内核（CSR 布局）

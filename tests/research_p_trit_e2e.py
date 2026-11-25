@@ -44,6 +44,13 @@ def main():
     # 热浴动力学收敛（Glauber 三值版）：n=24 三部分图 10 种子全收敛
     ok10, seeds10 = lab.heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=10, sweeps=40)
     check(f"热浴动力学收敛 {ok10}/{seeds10}（n=24, sweeps=40）", ok10 == seeds10)
+    # 热浴内核 VM 差分（Glauber 三值版跑在三值虚拟硬件上，逐位对拍）
+    vsp, vcnt, halted = lab.run_heatbath_on_trirv(n, lab.DEMO_EDGES, sweeps=40, seed=0)
+    noise = lab.trit_noise(0, 40 * n + 16)
+    rsp, rconf, _ = lab.heatbath_repair(n, lab.DEMO_EDGES, 40, noise)
+    vconf = sum(1 for ni, nj in lab.DEMO_EDGES if vsp[ni] == vsp[nj])
+    check(f"热浴内核 VM 差分（自旋 {vsp} 冲突 {vconf}=={rconf}）",
+          halted and vsp == rsp and vconf == rconf)
     print(f"\np-trit 契约：{passed} PASS / {failed} FAIL")
     sys.exit(1 if failed else 0)
 
