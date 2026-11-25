@@ -21,7 +21,28 @@ import trirv_wasm
 import trirv_float as tf
 from trirv_wasm import compile_wasm, build_trv, Unsupported
 
-M32 = 2 ** 32
+M32 = 2 ** 32                          # 历史名（仅个别残留；§九 后不参与语义）
+MOD45 = 3 ** 45
+
+
+def s45(v):
+    """45-trit word 的带符号视图（原生 word 语义，§九）。"""
+    v %= MOD45
+    return v - MOD45 if v >= MOD45 // 2 else v
+
+
+def tritwise(a, b, fn):
+    """45-trit 逐 trit：fn(ta,tb)∈[0,2] → word。and=min, or=max, xor=(ta-tb)%3。"""
+    ua, ub = a % MOD45, b % MOD45
+    out = 0
+    pw = 1
+    for _ in range(45):
+        t = fn(ua % 3, ub % 3)
+        ua //= 3
+        ub //= 3
+        out += t * pw
+        pw *= 3
+    return out
 M45 = 3 ** 45
 
 
@@ -202,20 +223,14 @@ class Ref:
         return i - 243 if i > 121 else i
 
     def ld32(self, a):
-        v, p = 0, 1
-        for k in range(4):
-            v += self.sty(self.tryte(a + k)) * p
-            p *= 243
-        return s32(v)
+        u = sum(self.tryte(a + k) * 3 ** (5 * k) for k in range(9))
+        return u - MOD45 if u >= MOD45 // 2 else u
 
     def st32(self, a, v):
-        v = s32(v)
-        for k in range(4):
-            d = v % 243
-            if d > 121:
-                d -= 243
-            self.mem[a + k] = d % 243
-            v = (v - d) // 243
+        # §九：i32.store = 原生 word（9 tryte，= VM _store_word 口径）
+        v %= MOD45
+        for k in range(9):
+            self.mem[a + k] = (v // 3 ** (5 * k)) % 243
 
     def ld_raw(self, a):
         """9 tryte 小端 → TF raw（P3：f32/f64 的 raw 都占 9 tryte 槽）。"""
@@ -350,63 +365,53 @@ class Ref:
                     st.append(tf.f_cmp(b2, a2, F, opn))
                 else:
                     st.append(tf.f_cmp(a2, b2, F, opn))
-            elif op == 0x6A:
-                b = st.pop(); a = st.pop(); st.append(s32(a + b))
+            elif op == 0x6A:                       # §九：原生 word，无回绕
+                b = st.pop(); a = st.pop(); st.append(s45(a + b))
             elif op == 0x6B:
-                b = st.pop(); a = st.pop(); st.append(s32(a - b))
+                b = st.pop(); a = st.pop(); st.append(s45(a - b))
             elif op == 0x6C:
-                b = st.pop(); a = st.pop(); st.append(s32(a * b))
-            elif op in (0x6D, 0x6E, 0x6F, 0x70):
+                b = st.pop(); a = st.pop(); st.append(s45(a * b))
+            elif op in (0x6D, 0x6E):               # div/rem 有符号截断（div 零=trap）
                 b = st.pop(); a = st.pop()
                 if b == 0:
-                    raise RuntimeError("除零")
-                if op == 0x6D:
-                    q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
-                    st.append(s32(q))
-                elif op == 0x6E:
-                    st.append(s32(u32(a) // u32(b)))
-                elif op == 0x6F:
-                    q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
-                    st.append(s32(a - q * b))
-                else:
-                    st.append(s32(u32(a) % u32(b)))
-            elif op in (0x71, 0x72, 0x73):
+                    raise RuntimeError("trap: 除零")
+                q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
+                st.append(s45(q) if op == 0x6D else s45(a - q * b))
+            elif op in (0x6F, 0x70):
+                raise RuntimeError("div_u/rem_u：§九 无符号视图已删")
+            elif op in (0x71, 0x72, 0x73):         # 逐 trit：TAND/TOR/XOR
                 b = st.pop(); a = st.pop()
-                x, y = u32(a), u32(b)
-                r = (x & y) if op == 0x71 else (x | y) if op == 0x72 else (x ^ y)
-                st.append(s32(r))
-            elif op in (0x74, 0x75, 0x76, 0x77, 0x78):
+                fn = {0x71: min, 0x72: max,
+                      0x73: lambda x, y: (x + y) % 3}[op]   # ISA XOR=(ta+tb)%3 非自反
+                st.append(tritwise(a, b, fn))
+            elif op in (0x74, 0x75):               # 原生三进移位：×3^k / ÷3^k 截断
                 b = st.pop(); a = st.pop()
-                k = u32(b) % 32
+                k = b % (3 ** 7)
                 if op == 0x74:
-                    st.append(s32(u32(a) << k))
-                elif op == 0x75:
-                    st.append(s32(a >> k))          # Python 的 >> 对负数是向下取整
-                elif op == 0x76:
-                    st.append(s32(u32(a) >> k))
-                elif op == 0x77:
-                    st.append(s32(((u32(a) << k) | (u32(a) >> (32 - k))) & (M32 - 1)))
+                    st.append(s45(a * pow(3, k, MOD45)))
                 else:
-                    st.append(s32(((u32(a) >> k) | (u32(a) << (32 - k))) & (M32 - 1)))
+                    av = s45(a)
+                    if k >= 45:
+                        st.append(0)
+                    else:
+                        q = abs(av) // (3 ** k)
+                        st.append(s45(q if av >= 0 else -q))
+            elif op in (0x76, 0x77, 0x78):
+                raise RuntimeError("shr_u/rotl/rotr：§九 删")
             elif op in (0x67, 0x68, 0x69):
-                x = u32(st.pop())
-                if op == 0x67:
-                    st.append(32 - x.bit_length())
-                elif op == 0x68:
-                    st.append(32 if x == 0 else (x & -x).bit_length() - 1)
-                else:
-                    st.append(bin(x).count("1"))
+                raise RuntimeError("clz/ctz/popcnt：§九 删")
             elif op == 0x45:
                 st.append(1 if st.pop() == 0 else 0)
             elif op in (0x46, 0x47):
                 b = st.pop(); a = st.pop()
                 st.append(1 if (a == b) == (op == 0x46) else 0)
             elif 0x48 <= op <= 0x4F:
+                if op in (0x49, 0x4B, 0x4D, 0x4F):
+                    raise RuntimeError("无符号比较：§九 删")
                 b = st.pop(); a = st.pop()
-                uns = op in (0x49, 0x4B, 0x4D, 0x4F)
-                x, y = (u32(a), u32(b)) if uns else (a, b)
-                r = {0x48: x < y, 0x49: x < y, 0x4A: x > y, 0x4B: x > y,
-                     0x4C: x <= y, 0x4D: x <= y, 0x4E: x >= y, 0x4F: x >= y}[op]
+                x, y = s45(a), s45(b)
+                r = {0x48: x < y, 0x4A: x > y,
+                     0x4C: x <= y, 0x4E: x >= y}[op]
                 st.append(1 if r else 0)
             elif op == 0x1A:
                 st.pop()
@@ -418,7 +423,7 @@ class Ref:
                 st.append(self.ld_raw(st.pop() + off))
             elif op in (0x38, 0x39):               # f32.store / f64.store
                 _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
-                v = st.pop(); a = st.pop()
+                a = st.pop(); v = st.pop()   # wasm 规范：address 在顶
                 self.st_raw(a + off, v)
             elif op == 0x28:
                 _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
@@ -429,11 +434,11 @@ class Ref:
                 st.append(self.sty(t) if op == 0x2C else t)
             elif op == 0x36:
                 _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
-                v = st.pop(); a = st.pop()
+                a = st.pop(); v = st.pop()   # wasm 规范：address 在顶
                 self.st32(a + off, v)
             elif op == 0x3A:
                 _, pc = trirv_wasm.uleb(body, pc); off, pc = trirv_wasm.uleb(body, pc)
-                v = st.pop(); a = st.pop()
+                a = st.pop(); v = st.pop()   # wasm 规范：address 在顶
                 self.mem[a + off] = v % 243
             else:
                 raise RuntimeError(f"参考解释器未实现 0x{op:02x}")
@@ -524,8 +529,8 @@ def float_suite():
         tp = w.type([I32, I32], [])
         tm = w.type([], [I32])
         imp = w.imp("env", "print", tp)
-        # body 产出浮点 raw 后 FSTORE64(0)，再打印 9 tryte
-        fn = w.func(tm, I32C(PRINT_ADDR) + body + FSTORE64(0) +
+        # §九 规范序：value（body 结果）先压、address 后压在顶
+        fn = w.func(tm, body + I32C(PRINT_ADDR) + FSTORE64(0) +
                     I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
         w.export("run", 0, fn)
         w.mems.append(b"\x00")
@@ -595,16 +600,16 @@ def float_suite():
     tm = w.type([], [I32])
     imp = w.imp("env", "print", tp)
     body = (F64C(5.0) + LSET(0) +                       # local 0 ← 5.0
-            I32C(PRINT_ADDR) + LGET(0) + F64C(3.0) + F64ADD +   # 5.0 + 3.0
-            FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
+            LGET(0) + F64C(3.0) + F64ADD +                      # 5.0 + 3.0
+            I32C(PRINT_ADDR) + FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
     fn = w.func(tm, body, nlocals=1, local_types=[F64])
     w.export("run", 0, fn); w.mems.append(b"\x00")
     a, b, s = run_float_case("wasm f64 局部变量 set/get", w, "run", near(8.0))
     ok += a; fail += b; skip += s
 
     body32 = (F32C(4.0) + LSET(0) +
-              I32C(PRINT_ADDR) + LGET(0) + F32C(2.0) + F32MUL +
-              FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
+              LGET(0) + F32C(2.0) + F32MUL +
+              I32C(PRINT_ADDR) + FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
     w2 = W(); tp2 = w2.type([I32, I32], []); tm2 = w2.type([], [I32])
     imp2 = w2.imp("env", "print", tp2)
     fn2 = w2.func(tm2, body32, nlocals=1, local_types=[F32])
@@ -617,11 +622,11 @@ def float_suite():
     tp = w.type([I32, I32], [])
     tm = w.type([], [I32])
     imp = w.imp("env", "print", tp)
-    f64 = w.func(tm, I32C(PRINT_ADDR) + F64C(1.5) + F64C(2.25) + F64ADD +
-                 FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) +
+    f64 = w.func(tm, F64C(1.5) + F64C(2.25) + F64ADD +
+                 I32C(PRINT_ADDR) + FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) +
                  CALL(imp) + I32C(0) + END)
-    f32 = w.func(tm, I32C(PRINT_ADDR) + F32C(3.0) + F32C(2.0) + F32MUL +
-                 FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) +
+    f32 = w.func(tm, F32C(3.0) + F32C(2.0) + F32MUL +
+                 I32C(PRINT_ADDR) + FSTORE64(0) + I32C(PRINT_ADDR) + I32C(9) +
                  CALL(imp) + I32C(0) + END)
     w.export("run", 0, f64)                    # 入口跑 f64 档
     w.mems.append(b"\x00")
@@ -655,17 +660,17 @@ def main():
         case(f"阶乘 {n}", wrap1(fact, [n], nlocals=2))
 
     # 3) 内存读写（含负数）
-    mem = (I32C(0) + LGET(0) + STORE() +
-           I32C(4) + LGET(1) + STORE() +
+    mem = (LGET(0) + I32C(0) + STORE() +
+           LGET(1) + I32C(9) + STORE() +
            I32C(0) + LOAD() + LSET(2) +
-           I32C(4) + LOAD() + LGET(2) + SUB + END)
+           I32C(9) + LOAD() + LGET(2) + SUB + END)
     for a, b in ((1000, 234), (-234, 1000), (1743392200, -1743392200)):
         case(f"内存 {a}-({b})", wrap1(mem, [a, b], nlocals=1))
 
     # 4) 单字节存取
-    mem8 = (I32C(100) + LGET(0) + STORE8() + I32C(100) + LOAD8U() + END)
+    mem8 = (LGET(0) + I32C(100) + STORE8() + I32C(100) + LOAD8U() + END)
     case("store8/load8_u 200", wrap1(mem8, [200]))
-    case("store8/load8_s 200", wrap1(I32C(100) + LGET(0) + STORE8() +
+    case("store8/load8_s 200", wrap1(LGET(0) + I32C(100) + STORE8() +
                                     I32C(100) + LOAD8S() + END, [200]))
 
     # 5) 除 / 余
@@ -717,18 +722,20 @@ def main():
     for nm2, op, a in cnt:
         case(f"bit {nm2}", wrap1(LGET(0) + op + END, [a]))
 
-    # 6c) 端到端：FNV-1a 哈希一段内存字节 —— load8_u + xor + mul + 循环 一起走
+    # 6c) 端到端：三值 FNV 变体哈希内存 tryte —— load8_u + xor + mul + 循环
+    #     （§九：无 2^32 回绕/xor 语义，FNV 常数三值化：hash = (hash XOR
+    #     trit) × 16777619 原生 word 运算；load8_u 读 tryte 0..242）
     blob = b"ternary wasm on trirv"
-    fnv = (I32C(s32(2166136261)) + LSET(2) +
+    fnv = (I32C(2166136261) + LSET(2) +
            BLOCK + LOOP +
-           LGET(1) + LGET(0) + GEU + IF + BR(2) + END +
+           LGET(0) + LGET(1) + GTS + IF + BR(2) + END +
            LGET(2) + LGET(1) + LOAD8U() + BXOR + LSET(2) +
            LGET(2) + I32C(16777619) + MUL + LSET(2) +
            LGET(1) + I32C(1) + ADD + LSET(1) +
            BR(0) + END + END + LGET(2) + END)
     w = wrap1(fnv, [0, len(blob)], nlocals=1)
     w.data(0, blob)
-    case("FNV-1a 哈希内存字节", w)
+    case("三值FNV 哈希内存 tryte", w)
 
     # 7) 递归调用：fib
     w = W()
