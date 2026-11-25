@@ -596,7 +596,18 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 （全部在本轮证伪过）。
 - [x] 9.4 **浮点剩余运算** ✓（2026-11-25：9.4′ min/max/neg/abs/copysign
   + 9.4″ ceil/floor/trunc/nearest 全收官）
-- [ ] 9.5 **convert/trunc**（int 与 float 互转）
+- [x] 9.5 **convert/trunc** ✓（2026-11-25）trunc_f32/f64_s（0xA8/0xAA，
+  i64 变体 §九 同语义）= f_trunc_s 整数面：payload ≥ (bias+44)·PM +
+  ceil(HALF/3^(44−k1)) 灰带 e=44 精确阈值（e ≤ 43 恒界内 / e ≥ 45 恒越界 /
+  NaN·Inf 同捕）→ __wasm_trap exit 134；e ≥ k1 整乘 ×3 ≤10 次、e < k1
+  den 循环除 ≤33 次——不发 FCVT（VM FCVT 钉 TF45 且 NaN/Inf int() 崩）。
+  convert_i32_s（0xB4/0xB9，i64 同）= f_convert 整数域归一化（÷3 rem=2
+  进位 round-half-up，三进制无平票 ⇒ 与 half-even 等价；×3 降指数）——
+  encode() 的 double 往返 |v| > 2^53 不可信，参考同构对拍。u 变体 = §九
+  无符号视图删（诚实 Unsupported）。电池 +23 例（trunc 10 + trap 6 ×
+  双 VM exit 134 + convert 7）→ e2e **173 PASS / 0 FAIL**；坑：整数
+  常量驻留寄存器不落槽（浮点常量才走常量段），int 操作数必须 read()
+  勿裸 LW。
 - [ ] 9.6 **多参与多返回**
 - [x] 9.7–9.9 **溶解**（2026-11-25 纯三值拍板 + 三次澄清，WASM_ROUTE_A
   §九）：原生 word 覆盖 64 位值域（i64 无独立类型）；小类型 = tryte

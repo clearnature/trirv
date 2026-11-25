@@ -195,6 +195,9 @@ F64ABS, F64NEG, F64MIN, F64MAX, F64CPS = (bytes([x]) for x in (0x99, 0x9a, 0xa4,
 F32ABS, F32NEG, F32MIN, F32MAX, F32CPS = (bytes([x]) for x in (0x8b, 0x8c, 0x96, 0x97, 0x98))
 F64CEIL, F64FLOOR, F64TRUNC, F64NEAR = (bytes([x]) for x in (0x9b, 0x9c, 0x9d, 0x9e))
 F32CEIL, F32FLOOR, F32TRUNC, F32NEAR = (bytes([x]) for x in (0x8d, 0x8e, 0x8f, 0x90))
+I32TRUNCF32, I32TRUNCF64 = b"\xa8", b"\xaa"
+F32CONVERT, F64CONVERT = b"\xb4", b"\xb9"
+I32STORE = b"\x36"
 F64EQ, F64NE, F64LT, F64GT, F64LE, F64GE = (bytes([x]) for x in range(0x61, 0x67))
 F32EQ, F32NE, F32LT, F32GT, F32LE, F32GE = (bytes([x]) for x in range(0x5b, 0x61))
 def FLOAD64(off=0): return b"\x2b" + u(0) + u(off)
@@ -395,6 +398,51 @@ class Ref:
                         st.append(F.ZERO_NEG if sgn < 0 else F.ZERO_POS)
                     else:
                         st.append(F.encode(sgn * float(q)))
+            elif op in (0xA8, 0xAA, 0xB0, 0xB1):
+                # i32/i64.trunc_f32/f64_s（9.5，§九 i64=word 同语义）：向零截断
+                # → 原生 word；NaN/Inf/|v| ≥ 3^45/2 → trap。灰带 e=44 精确：
+                # trap ⟺ M ≥ ceil(HALF / 3^(44−k1))。
+                F = tf.TF20 if op in (0xA8, 0xB0) else tf.TF45
+                raw = st.pop()
+                s_, E_, M_ = F.parts(raw)
+                if E_ == F.max_exp:
+                    raise RuntimeError("trap: trunc NaN/Inf")
+                e = E_ - F.bias
+                k1 = F.mant_trits - 1
+                half = 3 ** 45 // 2
+                if e >= 45 or (e == 44 and M_ >= -(-half // 3 ** (44 - k1))):
+                    raise RuntimeError("trap: trunc 溢出")
+                if e >= k1:
+                    q = M_ * 3 ** (e - k1)
+                else:
+                    q = M_ // 3 ** (k1 - e)
+                st.append((-q) % MOD45 if s_ else q)
+            elif op in (0xA9, 0xAB, 0xB2, 0xB3):
+                raise RuntimeError("trunc_u：§九 无符号视图已删")
+            elif op in (0xB4, 0xB6, 0xB9, 0xBB):
+                # f32/f64.convert_i32/i64_s（9.5）：word → TF，整数域归一化
+                # （÷3 rem=2 进位 round-half-up；无平票 ⇒ 与 half-even 等价）
+                F = tf.TF20 if op in (0xB4, 0xB6) else tf.TF45
+                sv = s45(st.pop())
+                sgn = -1 if sv < 0 else 1
+                mag = abs(sv)
+                if mag == 0:
+                    st.append(0)
+                else:
+                    j = 0
+                    while mag >= F.P_MANT:
+                        q2, r2 = divmod(mag, 3)
+                        if r2 * 2 >= 3:
+                            q2 += 1
+                        mag = q2
+                        j += 1
+                    while mag < F.P_NORM:
+                        mag *= 3
+                        j -= 1
+                    st.append((1 if sgn < 0 else 0) * F.P_SIGN +
+                              (F.bias + F.mant_trits - 1 + j) * F.P_MANT + mag)
+            elif op in (0xB5, 0xB7, 0xBA, 0xBC):
+                raise RuntimeError("convert_i32/i64_u：§九 无符号视图已删")
             elif 0x5B <= op <= 0x66:              # f32/f64 比较
                 b2 = st.pop(); a2 = st.pop()
                 F = tf.TF20 if op <= 0x60 else tf.TF45
@@ -720,6 +768,90 @@ def float_suite():
         ("wasm f32 ceil(NaN)=NaN", F32NAN + F32CEIL, is_nanf(F20)),
     ]
     for name, body, chk in cases32:
+        a, b, s = run_float_case(name, mk(body), "run", chk)
+        ok += a; fail += b; skip += s
+
+    # -- 9.5 convert/trunc：int ↔ float（FCVT 面）--
+    def mki(body):
+        w = W()
+        tp = w.type([I32, I32], [])
+        tm = w.type([], [I32])
+        imp = w.imp("env", "print", tp)
+        fn = w.func(tm, body + I32C(PRINT_ADDR) + I32STORE + u(0) + u(0) +
+                    I32C(PRINT_ADDR) + I32C(9) + CALL(imp) + I32C(0) + END)
+        w.export("run", 0, fn)
+        w.mems.append(b"\x00")
+        return w
+
+    def run_trap_case(name, w):
+        """trap 用例：Ref 必须 raise；py/c exit == 134（__wasm_trap）。"""
+        nonlocal ok, fail, skip
+        data = w.build()
+        try:
+            asm, segs, _ = compile_wasm(data, "run")
+        except Unsupported as e:
+            print(f"SKIP  {name}: {e}")
+            skip += 1
+            return
+        mod = trirv_wasm.parse_module(data)
+        ref = Ref(mod, segs)
+        trapped = False
+        try:
+            ref.run(mod["exports"][0]["run"])
+        except RuntimeError:
+            trapped = True
+        py_exit, _, _ = run_py_vm(asm, segs)
+        c_exit, _ = run_c_vm(asm, segs)
+        if trapped and py_exit == 134 and c_exit == 134:
+            print(f"PASS  {name:32s} = trap(134) 双 VM")
+            ok += 1
+            return
+        print(f"FAIL  {name:32s} trapped={trapped} py_exit={py_exit} "
+              f"c_exit={c_exit}")
+        fail += 1
+
+    trunc_cases = [
+        ("wasm f64→i32 trunc(3.7)=3", F64C(3.7) + I32TRUNCF64, is_raw(3)),
+        ("wasm f64→i32 trunc(-3.7)=-3", F64C(-3.7) + I32TRUNCF64,
+         is_raw(MOD45 - 3)),
+        ("wasm f64→i32 trunc(0.9)=0", F64C(0.9) + I32TRUNCF64, is_raw(0)),
+        ("wasm f64→i32 trunc(-0.9)=0", F64C(-0.9) + I32TRUNCF64, is_raw(0)),
+        ("wasm f64→i32 trunc(5.0)=5", F64C(5.0) + I32TRUNCF64, is_raw(5)),
+        ("wasm f64→i32 trunc(-5.0)=-5", F64C(-5.0) + I32TRUNCF64,
+         is_raw(MOD45 - 5)),
+        ("wasm f64→i32 trunc(1e20)", F64C(1e20) + I32TRUNCF64, None),
+        ("wasm f32→i32 trunc(3.7)=3", F32C(3.7) + I32TRUNCF32, is_raw(3)),
+        ("wasm f32→i32 trunc(-3.7)=-3", F32C(-3.7) + I32TRUNCF32,
+         is_raw(MOD45 - 3)),
+        ("wasm f32→i32 trunc(0.4)=0", F32C(0.4) + I32TRUNCF32, is_raw(0)),
+    ]
+    for name, body, chk in trunc_cases:
+        a, b, s = run_float_case(name, mki(body), "run", chk)
+        ok += a; fail += b; skip += s
+
+    trap_cases = [
+        ("wasm f64→i32 trunc(NaN) trap", F64NAN + I32TRUNCF64),
+        ("wasm f64→i32 trunc(+Inf) trap", F64C(float("inf")) + I32TRUNCF64),
+        ("wasm f64→i32 trunc(1e30) trap", F64C(1e30) + I32TRUNCF64),
+        ("wasm f64→i32 trunc(2e21) trap", F64C(2e21) + I32TRUNCF64),
+        ("wasm f32→i32 trunc(NaN) trap", F32NAN + I32TRUNCF32),
+        ("wasm f32→i32 trunc(-Inf) trap", F32C(float("-inf")) + I32TRUNCF32),
+    ]
+    for name, body in trap_cases:
+        run_trap_case(name, mki(body))
+
+    conv_cases = [
+        ("wasm i32→f64 convert(5)=5.0", I32C(5) + F64CONVERT, near(5.0)),
+        ("wasm i32→f64 convert(-7)=-7.0", I32C(-7) + F64CONVERT, near(-7.0)),
+        ("wasm i32→f64 convert(0)=+0", I32C(0) + F64CONVERT, is_raw(0)),
+        ("wasm i32→f64 convert(1e18)≈", I32C(10 ** 18) + F64CONVERT,
+         lambda raw: abs(tf.TF45.decode(raw) - 1e18) <= 1e5),
+        ("wasm i32→f32 convert(5)=5.0", I32C(5) + F32CONVERT, near32(5.0)),
+        ("wasm i32→f32 convert(-7)=-7.0", I32C(-7) + F32CONVERT, near32(-7.0)),
+        ("wasm i32→f32 convert(123456789)≈", I32C(123456789) + F32CONVERT,
+         lambda raw: abs(tf.TF20.decode(raw) - 123456789) <= 500),
+    ]
+    for name, body, chk in conv_cases:
         a, b, s = run_float_case(name, mk(body), "run", chk)
         ok += a; fail += b; skip += s
 

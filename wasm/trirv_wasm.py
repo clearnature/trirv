@@ -973,6 +973,160 @@ class Gen:
         self.vtype[i0] = vt
         self.h += 1
 
+    def f_trunc_s(self, vt):
+        """i32/i64.trunc_f32_s/f64_s（9.5，§九 i64=原生 word 同语义）：float
+        → word 向零截断。NaN/Inf/|v| ≥ 3^45/2 → __wasm_trap（exit 134）。
+        越界阈值精确到灰带 e=44：THRESH = (bias+44)·PM + ceil(HALF/3^(44−k1))
+        （e ≤ 43 恒 < HALF 恒界内；e ≥ 45 恒越界；NaN E=max_exp 同捕）。
+        e ≥ k1 整乘 ≤10 次 ×3；e < k1 den 循环除 ≤33 次——纯整数面，
+        不发 FCVT（VM FCVT 钉 TF45 且 NaN/Inf int() 崩）。"""
+        k1 = 33 if vt == F64 else 13
+        bias = 29524 if vt == F64 else 121
+        ET = 10 if vt == F64 else 5
+        PS = 3 ** (k1 + 1 + ET)
+        PM = 3 ** (k1 + 1)
+        BK1 = bias + k1
+        HALF = (3 ** 45) // 2
+        T = -(-HALF // 3 ** (44 - k1))            # ceil(HALF / 3^(44−k1))
+        THRESH = (bias + 44) * PM + T
+        self.h -= 1
+        i0 = self.h
+        self.L(f"    LW t0, {self.slot(i0)}(s0)")
+        self.li("s6", PS)
+        self.L("    SLTU t4, t0, s6")             # 1 ⟺ 正
+        posp = self.lab("tr")
+        idn = self.lab("tr")
+        self.L(f"    BNE t4, zero, {posp}")
+        self.L("    SUB t1, t0, s6")              # payload（负）
+        self.L(f"    JAL zero, {idn}")
+        self.L(f"{posp}:")
+        self.L("    ADD t1, t0, zero")            # payload（正）
+        self.L(f"{idn}:")
+        self.li("t2", THRESH)
+        self.L("    SLTU t2, t1, t2")             # 1 ⟺ 界内
+        self.jnot("t2", "__wasm_trap")            # NaN/Inf/溢出 → trap
+        self.li("t2", PM)
+        self.L("    DIV t3, t1, t2")              # E
+        self.L("    MUL t5, t3, t2")
+        self.L("    SUB t1, t1, t5")              # M
+        self.li("t5", BK1)
+        self.L("    SLT t2, t3, t5")              # 1 ⟺ E < BK1 ⟺ e < k1
+        lo = self.lab("tr")
+        sk = self.lab("tr")
+        self.L(f"    BNE t2, zero, {lo}")
+        # e ≥ k1：q = M × 3^(E−BK1)（界内 ⟹ E−BK1 ≤ 10）
+        self.L("    SUB s3, t3, t5")              # 计数 = E − BK1
+        hil = self.lab("tr")
+        hid = self.lab("tr")
+        self.L(f"{hil}:")
+        self.L(f"    BEQ s3, zero, {hid}")
+        self.L("    ADD t5, t1, t1")
+        self.L("    ADD t1, t5, t1")              # M ×3（经临时）
+        self.L("    ADDI s3, s3, -1")
+        self.L(f"    JAL zero, {hil}")
+        self.L(f"{hid}:")
+        self.L("    ADD s5, t1, zero")            # q（正）
+        self.L(f"    JAL zero, {sk}")
+        self.L(f"{lo}:")
+        self.L("    SUB s3, t5, t3")              # sh = BK1 − E
+        self.li("t3", 1)                          # den
+        dnl = self.lab("tr")
+        dne = self.lab("tr")
+        self.L(f"{dnl}:")
+        self.L(f"    BEQ s3, zero, {dne}")
+        self.L("    ADD t5, t3, t3")
+        self.L("    ADD t3, t5, t3")              # den ×3
+        self.L("    ADDI s3, s3, -1")
+        self.L(f"    JAL zero, {dnl}")
+        self.L(f"{dne}:")
+        self.L("    DIV s5, t1, t3")              # q = M // den（向零）
+        self.L(f"{sk}:")
+        skd = self.lab("tr")
+        self.L(f"    BNE t4, zero, {skd}")
+        self.L("    SUB s5, zero, s5")            # 负 → 取负（mod）
+        self.L(f"{skd}:")
+        self.L(f"    SW s5, {self.slot(i0)}(s0)")
+        self.kill(i0)
+        self.set(i0, "s5")
+        self.vtype[i0] = 0x7F                     # 结果 = i32
+        self.h += 1
+
+    def f_convert(self, vt):
+        """f32/f64.convert_i32_s（9.5；§九 i64=word 同语义）：word → TF。
+        整数域归一化：÷3 带进位（rem=2 进位 = round-half-up；三进制无平票
+        ⇒ 与 half-even 等价）直到 < PM，×3 降指数直到 ≥ PN；E = BK1 + j。
+        参考同构对拍（encode() 的 double 往返在 |v| > 2^53 不可信）。"""
+        k1 = 33 if vt == F64 else 13
+        bias = 29524 if vt == F64 else 121
+        ET = 10 if vt == F64 else 5
+        PS = 3 ** (k1 + 1 + ET)
+        PM = 3 ** (k1 + 1)
+        PN = 3 ** k1
+        BK1 = bias + k1
+        HALF = (3 ** 45) // 2
+        self.h -= 1
+        i0 = self.h
+        t0 = self.read(i0, "t0")                  # 整数常量驻留寄存器，勿裸 LW
+        self.li("s6", PS)
+        self.li("t2", HALF)
+        self.L(f"    SLTU t4, t2, {t0}")          # 1 ⟺ ≥ HALF ⟺ 负
+        negp = self.lab("cv")
+        zq = self.lab("cv")
+        self.L(f"    BNE t4, zero, {negp}")
+        self.L(f"    ADD t1, {t0}, zero")         # mag（正）
+        self.L(f"    JAL zero, {zq}")
+        self.L(f"{negp}:")
+        self.L(f"    SUB t1, zero, {t0}")         # mag = −v（mod 取负）
+        self.L(f"{zq}:")
+        nz = self.lab("cv")
+        self.L(f"    BNE t1, zero, {nz}")
+        self.L("    ADD t0, zero, zero")          # int 0 → +0
+        st = self.lab("cv")
+        self.L(f"    JAL zero, {st}")
+        self.L(f"{nz}:")
+        self.li("t3", PM)
+        self.li("t2", PN)
+        self.li("s3", 3)
+        self.li("s4", 0)                          # j
+        dn = self.lab("cv")
+        dne = self.lab("cv")
+        self.L(f"{dn}:")
+        self.L("    SLTU t5, t1, t3")             # 1 ⟺ mag < PM → 出口
+        self.L(f"    BNE t5, zero, {dne}")
+        self.L("    REM t5, t1, s3")              # rem（除前取）
+        self.L("    DIV t1, t1, s3")              # mag //= 3
+        self.L("    ADD t5, t5, t5")              # 2·rem
+        self.L("    SLTU t5, s3, t5")             # 1 ⟺ rem = 2 → 进位
+        dnn = self.lab("cv")
+        self.L(f"    BEQ t5, zero, {dnn}")
+        self.L("    ADDI t1, t1, 1")
+        self.L(f"{dnn}:")
+        self.L("    ADDI s4, s4, 1")
+        self.L(f"    JAL zero, {dn}")
+        self.L(f"{dne}:")
+        up = self.lab("cv")
+        upe = self.lab("cv")
+        self.L(f"{up}:")
+        self.L("    SLTU t5, t1, t2")             # 1 ⟺ mag < PN
+        self.L(f"    BEQ t5, zero, {upe}")
+        self.L("    ADD t5, t1, t1")
+        self.L("    ADD t1, t5, t1")              # ×3
+        self.L("    ADDI s4, s4, -1")
+        self.L(f"    JAL zero, {up}")
+        self.L(f"{upe}:")
+        self.li("t2", BK1)
+        self.L("    ADD t2, t2, s4")              # E = BK1 + j
+        self.L("    MUL t5, t2, t3")              # E·PM
+        self.L("    ADD t0, t1, t5")              # + M
+        self.L(f"    BEQ t4, zero, {st}")
+        self.L("    ADD t0, t0, s6")              # 负（t4=1）→ +PS
+        self.L(f"{st}:")
+        self.kill(i0)                             # 释放输入驻留寄存器（read 系）
+        self.L(f"    SW t0, {self.slot(i0)}(s0)")
+        self.vs.pop(i0, None)
+        self.vtype[i0] = vt
+        self.h += 1
+
     # -- 二进制视图 --------------------------------------------------
     # 三进制寄存器里**不存在二进制位**。第 k 位只能这样取：
     #     残差 r 从值本身出发，拿 2^k 逐个比；r >= 2^k 该位为 1，同时 r -= 2^k。
@@ -1436,6 +1590,16 @@ class Gen:
         if op in (0x90, 0x9E):                    # nearest
             self.f_round("nearest", F32 if op == 0x90 else F64)
             return p
+        if op in (0xA8, 0xAA, 0xB0, 0xB1):        # i32/i64.trunc_f32/f64_s（9.5）
+            self.f_trunc_s(F32 if op in (0xA8, 0xB0) else F64)
+            return p
+        if op in (0xA9, 0xAB, 0xB2, 0xB3):
+            raise Unsupported("i32/i64.trunc_f*_u：§九 无符号视图已删")
+        if op in (0xB4, 0xB6, 0xB9, 0xBB):        # f32/f64.convert_i32/i64_s
+            self.f_convert(F32 if op in (0xB4, 0xB6) else F64)
+            return p
+        if op in (0xB5, 0xB7, 0xBA, 0xBC):
+            raise Unsupported("convert_i32/i64_u：§九 无符号视图已删")
         if op in (0x92, 0x93, 0x94, 0x95):        # f32.add/sub/mul/div
             self.f_arith({0x92:"FADD",0x93:"FSUB",0x94:"FMUL",0x95:"FDIV"}[op], F32)
             return p
