@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""research p-trit 三值热力学计算契约（研究课题三值化 · 批次 ②）。
+
+钉三件事（WASM_ROUTE_A §三谱系的三值化实证）：
+  1. 三电平量化噪声均匀性（χ² < 5.99，df=2）
+  2. Python 参考修复退火收敛（图 3-着色冲突 = 0）
+  3. TriRV VM 内核与 Python 参考逐位一致（自旋数组 + 冲突数）
+     ——三值热力学计算内核跑在三值虚拟硬件上
+"""
+import sys
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "research"))
+
+import p_trit_lab as lab
+
+passed = 0
+failed = 0
+
+
+def check(name, good):
+    global passed, failed
+    if good:
+        passed += 1
+        print(f"PASS {name}")
+    else:
+        failed += 1
+        print(f"FAIL {name}")
+
+
+def main():
+    n, sweeps = 6, 40
+    noise = lab.trit_noise(seed=42, n=400)
+    c, chi2 = lab.noise_quality(noise)
+    check(f"噪声三桶均匀 χ²={chi2:.2f}<5.99", chi2 < 5.99)
+    spins, conf = lab.ref_repair(n, lab.DEMO_EDGES, sweeps, noise)
+    check(f"Python 参考收敛 冲突={conf}==0", conf == 0)
+    tspins, tcnt, halted = lab.run_on_trirv(n, lab.DEMO_EDGES, sweeps, noise)
+    check("TriRV 内核 halted", bool(halted))
+    check(f"差分逐位一致（自旋 {tspins} 冲突 {tcnt}）",
+          tspins == spins and tcnt == conf)
+    print(f"\np-trit 契约：{passed} PASS / {failed} FAIL")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

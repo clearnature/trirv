@@ -174,6 +174,7 @@ SUITES = [
     ("trirv_time_e2e.py",          "time 日历/strftime/时钟 14 项", False, None),
     ("trirv_trv2_relax_e2e.py",    "TRV2 长分支弛豫 10 项",     False, None),
     ("trirv_wasm_spec_smoke.py",   "wasm spec 冒烟 5 文件",     False, None),
+    ("research_p_trit_e2e.py",     "p-trit 三值热力学契约 4 项", False, None),
     ("trirv_cc_py_fnptr_e2e.py",  "py fn-ptr 双后端同构 12 项", False, None),
     ("trirv_trv2_e2e.py",         "TRV2 打包正式化 50 项",    False, None),
     ("trirv_tcjump_e2e.py",       "TC sf5 C-J/C-JAL 12 项",   False, None),
