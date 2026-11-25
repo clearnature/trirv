@@ -640,10 +640,10 @@ def main():
     # 1) 基本算术与回绕
     body = LGET(0) + LGET(1) + ADD + END
     case("i32.add 3+4", wrap1(body, [3, 4]))
-    case("i32.add 溢出 (2^31-1)+1", wrap1(body, [2**31 - 1, 1]))
-    case("i32.add 下溢 (-2^31)+(-1)", wrap1(body, [-(2**31), -1]))
+    case("i32.add 大数 (2^31-1)+1", wrap1(body, [2**31 - 1, 1]))
+    case("i32.add 大负数 (-2^31)+(-1)", wrap1(body, [-(2**31), -1]))
     case("i32.sub 小值", wrap1(LGET(0) + LGET(1) + SUB + END, [100, 234]))
-    case("i32.mul 溢出 65536*65536", wrap1(LGET(0) + LGET(1) + MUL + END, [65536, 65536]))
+    case("i32.mul 65536*65536", wrap1(LGET(0) + LGET(1) + MUL + END, [65536, 65536]))
     case("i32.mul 负数", wrap1(LGET(0) + LGET(1) + MUL + END, [-1234, 567]))
 
     # 2) 阶乘：循环 + 比较 + 乘法回绕
