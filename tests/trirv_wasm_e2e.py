@@ -197,6 +197,7 @@ F64CEIL, F64FLOOR, F64TRUNC, F64NEAR = (bytes([x]) for x in (0x9b, 0x9c, 0x9d, 0
 F32CEIL, F32FLOOR, F32TRUNC, F32NEAR = (bytes([x]) for x in (0x8d, 0x8e, 0x8f, 0x90))
 I32TRUNCF32, I32TRUNCF64 = b"\xa8", b"\xaa"
 F32CONVERT, F64CONVERT = b"\xb4", b"\xb9"
+F32DEMOTE, F64PROMOTE = b"\xb8", b"\xbd"
 I32STORE = b"\x36"
 F64EQ, F64NE, F64LT, F64GT, F64LE, F64GE = (bytes([x]) for x in range(0x61, 0x67))
 F32EQ, F32NE, F32LT, F32GT, F32LE, F32GE = (bytes([x]) for x in range(0x5b, 0x61))
@@ -443,6 +444,56 @@ class Ref:
                               (F.bias + F.mant_trits - 1 + j) * F.P_MANT + mag)
             elif op in (0xB5, 0xB7, 0xBA, 0xBC):
                 raise RuntimeError("convert_i32/i64_u：§九 无符号视图已删")
+            elif op == 0xB8:                       # f32.demote_f64（9.6′）
+                # TF45→TF20 整数域重归一：e45 ≥ 122 → ±Inf（min-v=3^122 >
+                # TF20max）；e45 ≤ −121 → ±0（v ≤ 3^−121 < 半最小正规）；
+                # 其余 e20 = e45，M20 = round(M45/3^20)（rem·2 ≥ P20 进位，
+                # 3^20 奇无平票）——q 进位到 3^14 → e20+1（3^14/3=3^13 精确），
+                # E20 ≥ 242 → ±Inf。
+                raw = st.pop()
+                s_, E_, M_ = tf.TF45.parts(raw)
+                F = tf.TF20
+                if E_ == tf.TF45.max_exp:
+                    st.append(F.NAN if M_ else
+                              (F.INF_NEG if s_ else F.INF_POS))
+                elif E_ == 0 and M_ == 0:
+                    st.append(F.ZERO_NEG if s_ else F.ZERO_POS)
+                else:
+                    e45 = E_ - tf.TF45.bias
+                    p20 = 3 ** 20
+                    sgn = -1 if s_ else 1
+                    if e45 >= 122:
+                        st.append(F.INF_NEG if s_ else F.INF_POS)
+                    elif e45 <= -121:
+                        st.append(F.ZERO_NEG if s_ else F.ZERO_POS)
+                    else:
+                        e20 = e45
+                        q, r = divmod(M_, p20)
+                        if r * 2 >= p20:
+                            q += 1
+                        if q >= F.P_MANT:
+                            q = F.P_NORM
+                            e20 += 1
+                        if e20 + F.bias >= F.max_exp:
+                            st.append(F.INF_NEG if s_ else F.INF_POS)
+                        else:
+                            st.append((1 if s_ else 0) * F.P_SIGN +
+                                      (e20 + F.bias) * F.P_MANT + q)
+            elif op == 0xBD:                       # f64.promote_f32（9.6′）
+                # TF20→TF45 精确加宽：M45 = M20·3^20，E45 = E20 + 29403；
+                # NaN/Inf/±0 → 宽档等价（NaN canon）。
+                raw = st.pop()
+                s_, E_, M_ = tf.TF20.parts(raw)
+                F45 = tf.TF45
+                if E_ == tf.TF20.max_exp:
+                    st.append(F45.NAN if M_ else
+                              (F45.INF_NEG if s_ else F45.INF_POS))
+                elif E_ == 0 and M_ == 0:
+                    st.append(F45.ZERO_NEG if s_ else F45.ZERO_POS)
+                else:
+                    st.append((1 if s_ else 0) * F45.P_SIGN +
+                              (E_ + F45.bias - tf.TF20.bias) * F45.P_MANT +
+                              M_ * 3 ** 20)
             elif 0x5B <= op <= 0x66:              # f32/f64 比较
                 b2 = st.pop(); a2 = st.pop()
                 F = tf.TF20 if op <= 0x60 else tf.TF45
@@ -852,6 +903,49 @@ def float_suite():
          lambda raw: abs(tf.TF20.decode(raw) - 123456789) <= 500),
     ]
     for name, body, chk in conv_cases:
+        a, b, s = run_float_case(name, mk(body), "run", chk)
+        ok += a; fail += b; skip += s
+
+    # -- 9.6′ demote/promote：float ↔ float 跨档 --
+    dem_cases = [
+        ("wasm f64→f32 demote(1.5)=1.5", F64C(1.5) + F32DEMOTE, near32(1.5)),
+        ("wasm f64→f32 demote(-3.7)≈", F64C(-3.7) + F32DEMOTE, near32(-3.7)),
+        ("wasm f64→f32 demote(0.9)≈", F64C(0.9) + F32DEMOTE, near32(0.9)),
+        ("wasm f64→f32 demote(+0)=+0", F64C(0.0) + F32DEMOTE, is_raw(0)),
+        ("wasm f64→f32 demote(-0)=-0", F64C(-0.0) + F32DEMOTE,
+         is_raw(F20.ZERO_NEG)),
+        ("wasm f64→f32 demote(NaN)=NaN", F64NAN + F32DEMOTE, is_nanf(F20)),
+        ("wasm f64→f32 demote(+Inf)=+Inf", F64C(float("inf")) + F32DEMOTE,
+         is_raw(F20.INF_POS)),
+        ("wasm f64→f32 demote(-Inf)=-Inf", F64C(float("-inf")) + F32DEMOTE,
+         is_raw(F20.INF_NEG)),
+        ("wasm f64→f32 demote(1e60)=+Inf", F64C(1e60) + F32DEMOTE,
+         is_raw(F20.INF_POS)),
+        ("wasm f64→f32 demote(1e-80)=+0", F64C(1e-80) + F32DEMOTE, is_raw(0)),
+        ("wasm f64→f32 demote(3^120) finite", F64C(3.0 ** 120) + F32DEMOTE,
+         lambda raw: raw < F20.INF_POS),
+        ("wasm f64→f32 demote(3^121)=+Inf", F64C(3.0 ** 121) + F32DEMOTE,
+         is_raw(F20.INF_POS)),
+    ]
+    for name, body, chk in dem_cases:
+        a, b, s = run_float_case(name, mk(body), "run", chk)
+        ok += a; fail += b; skip += s
+
+    prom_cases = [
+        ("wasm f32→f64 promote(1.5)=1.5", F32C(1.5) + F64PROMOTE, near(1.5)),
+        ("wasm f32→f64 promote(-3.7)=-3.7", F32C(-3.7) + F64PROMOTE,
+         near(-3.7)),
+        ("wasm f32→f64 promote(0.1)≈", F32C(0.1) + F64PROMOTE, near(0.1)),
+        ("wasm f32→f64 promote(+0)=+0", F32C(0.0) + F64PROMOTE, is_raw(0)),
+        ("wasm f32→f64 promote(-0)=-0", F32C(-0.0) + F64PROMOTE,
+         is_raw(F45.ZERO_NEG)),
+        ("wasm f32→f64 promote(NaN)=NaN", F32NAN + F64PROMOTE, is_nanf(F45)),
+        ("wasm f32→f64 promote(+Inf)=+Inf", F32C(float("inf")) + F64PROMOTE,
+         is_raw(F45.INF_POS)),
+        ("wasm f32→f64 promote(-Inf)=-Inf", F32C(float("-inf")) + F64PROMOTE,
+         is_raw(F45.INF_NEG)),
+    ]
+    for name, body, chk in prom_cases:
         a, b, s = run_float_case(name, mk(body), "run", chk)
         ok += a; fail += b; skip += s
 

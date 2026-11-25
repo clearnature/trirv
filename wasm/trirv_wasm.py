@@ -1127,6 +1127,179 @@ class Gen:
         self.vtype[i0] = vt
         self.h += 1
 
+    def f_demote(self):
+        """f32.demote_f64（9.6′）：TF45→TF20 整数域重归一。
+        NaN/Inf/±0 → 窄档等价（NaN canon）；e45 ≥ 121 → ±Inf（E20 ≥ 242 =
+        Inf/NaN 面，encode 同规）；e45 ≤ −121 → ±0（v < 半最小正规）；
+        其余 M20 = round(M45/3^20)（rem·2 ≥ P20 进位，3^20 奇无平票），
+        q 进位到 3^14 → E20+1（3^14/3=3^13 精确）。参考同构对拍。"""
+        PS45 = 3 ** 44
+        PM45 = 3 ** 34
+        INF45 = 59048 * 3 ** 34
+        BK45 = 29524
+        PS20 = 3 ** 19
+        PM20 = 3 ** 14
+        PN20 = 3 ** 13
+        P20 = 3 ** 20
+        INF20 = 242 * 3 ** 14
+        NAN20 = INF20 + 1
+        self.h -= 1
+        i0 = self.h
+        self.L(f"    LW t0, {self.slot(i0)}(s0)")
+        self.li("s6", PS45)
+        self.L("    SLTU t4, t0, s6")             # 1 ⟺ 正
+        posp = self.lab("dm")
+        idn = self.lab("dm")
+        sig = self.lab("dm")                      # 尾：负 → +PS20；落 SW
+        self.L(f"    BNE t4, zero, {posp}")
+        self.L("    SUB t1, t0, s6")              # payload（负）
+        self.L(f"    JAL zero, {idn}")
+        self.L(f"{posp}:")
+        self.L("    ADD t1, t0, zero")
+        self.L(f"{idn}:")
+        self.li("s4", PS20)
+        self.li("s5", INF45)
+        nzp = self.lab("dm")
+        self.L(f"    BNE t1, zero, {nzp}")
+        self.L("    ADD t0, zero, zero")          # ±0（负侧 sig 补 PS20）
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{nzp}:")
+        self.L("    SLTU t2, s5, t1")             # payload > INF45 → NaN
+        ic = self.lab("dm")
+        self.L(f"    BEQ t2, zero, {ic}")
+        self.li("t0", NAN20)
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{ic}:")
+        self.L("    SLTU t2, t1, s5")             # payload < INF45 → finite
+        fin = self.lab("dm")
+        self.L(f"    BNE t2, zero, {fin}")
+        self.li("t0", INF20)
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{fin}:")
+        self.li("t2", PM45)
+        self.L("    DIV t3, t1, t2")              # E45
+        self.L("    MUL t5, t3, t2")
+        self.L("    SUB t1, t1, t5")              # M45
+        self.li("s3", BK45 - 121)                 # 29403：e45 ≤ −121 ⟺ E45 < 29403
+        self.L("    SLTU t2, t3, s3")
+        low = self.lab("dm")
+        self.L(f"    BEQ t2, zero, {low}")
+        self.L("    ADD t0, zero, zero")          # 下溢 → ±0
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{low}:")
+        self.li("s3", BK45 + 121)                 # 29645：e45 ≥ 121 ⟺ E45 ≥ 29645
+        self.L("    SLTU t2, t3, s3")
+        ovf = self.lab("dm")
+        self.L(f"    BNE t2, zero, {ovf}")
+        self.li("t0", INF20)                      # 上溢 → ±Inf
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{ovf}:")
+        self.li("s3", BK45 - 121)
+        self.L("    SUB t3, t3, s3")              # E20 = e45 + 121（∈[1,241]）
+        self.li("t2", PM20)
+        self.li("s3", P20)
+        self.L("    REM t5, t1, s3")              # rem（除前取）
+        self.L("    DIV t1, t1, s3")              # M45 //= 3^20
+        self.L("    ADD t5, t5, t5")              # 2·rem
+        self.L("    SLTU t5, t5, s3")             # 1 ⟺ 2rem < P20 → 不进位
+        cr = self.lab("dm")
+        self.L(f"    BEQ t5, zero, {cr}")
+        ncr = self.lab("dm")
+        self.L(f"    JAL zero, {ncr}")
+        self.L(f"{cr}:")
+        self.L("    ADDI t1, t1, 1")              # 进位
+        self.L(f"{ncr}:")
+        self.L("    SLTU t5, t1, t2")             # 1 ⟺ q < PM20 ✓
+        ncd = self.lab("dm")
+        self.L(f"    BNE t5, zero, {ncd}")
+        self.li("t5", PN20)                       # q == PM20 → 归一
+        self.L("    ADD t1, t5, zero")
+        self.L("    ADDI t3, t3, 1")              # E20 += 1
+        self.L(f"{ncd}:")
+        self.li("t5", 242)
+        self.L("    SLTU t5, t3, t5")             # 1 ⟺ E20 < 242 ✓
+        oki = self.lab("dm")
+        self.L(f"    BNE t5, zero, {oki}")
+        self.li("t0", INF20)                      # E20 ≥ 242 → ±Inf
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{oki}:")
+        self.L("    MUL t5, t3, t2")              # E20·PM20
+        self.L("    ADD t0, t1, t5")              # + M20
+        self.L(f"{sig}:")
+        sigd = self.lab("dm")
+        self.L(f"    BNE t4, zero, {sigd}")       # t4=1⟺正 → 跳过号加
+        self.L("    ADD t0, t0, s4")              # 负 → +PS20
+        self.L(f"{sigd}:")
+        self.L(f"    SW t0, {self.slot(i0)}(s0)")
+        self.vs.pop(i0, None)
+        self.vtype[i0] = F32
+        self.h += 1
+
+    def f_promote(self):
+        """f64.promote_f32（9.6′）：TF20→TF45 精确加宽：M45 = M20·3^20
+        （一条 MUL），E45 = E20 + 29403；NaN/Inf/±0 → 宽档等价（NaN canon）。
+        无舍入（宽尾码严格包含窄尾码）。参考同构对拍。"""
+        PS20 = 3 ** 19
+        PM20 = 3 ** 14
+        INF20 = 242 * 3 ** 14
+        PS45 = 3 ** 44
+        PM45 = 3 ** 34
+        INF45 = 59048 * 3 ** 34
+        NAN45 = INF45 + 1
+        self.h -= 1
+        i0 = self.h
+        self.L(f"    LW t0, {self.slot(i0)}(s0)")
+        self.li("s6", PS20)
+        self.L("    SLTU t4, t0, s6")             # 1 ⟺ 正
+        posp = self.lab("pr")
+        idn = self.lab("pr")
+        sig = self.lab("pr")
+        self.L(f"    BNE t4, zero, {posp}")
+        self.L("    SUB t1, t0, s6")              # payload
+        self.L(f"    JAL zero, {idn}")
+        self.L(f"{posp}:")
+        self.L("    ADD t1, t0, zero")
+        self.L(f"{idn}:")
+        self.li("s4", PS45)                       # sig 号加常量（宽档）
+        self.li("s5", INF20)
+        nzp = self.lab("pr")
+        self.L(f"    BNE t1, zero, {nzp}")
+        self.L("    ADD t0, zero, zero")          # ±0
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{nzp}:")
+        self.L("    SLTU t2, s5, t1")             # payload > INF20 → NaN
+        ic = self.lab("pr")
+        self.L(f"    BEQ t2, zero, {ic}")
+        self.li("t0", NAN45)
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{ic}:")
+        self.L("    SLTU t2, t1, s5")             # payload < INF20 → finite
+        fin = self.lab("pr")
+        self.L(f"    BNE t2, zero, {fin}")
+        self.li("t0", INF45)
+        self.L(f"    JAL zero, {sig}")
+        self.L(f"{fin}:")
+        self.li("t2", PM20)
+        self.L("    DIV t3, t1, t2")              # E20
+        self.L("    MUL t5, t3, t2")
+        self.L("    SUB t1, t1, t5")              # M20
+        self.li("s3", 29403)                      # bias45 − bias20
+        self.L("    ADD t3, t3, s3")              # E45
+        self.li("t2", PM45)
+        self.L("    MUL t5, t3, t2")              # E45·PM45
+        self.li("s3", 3 ** 20)
+        self.L("    MUL t1, t1, s3")              # M45 = M20·3^20
+        self.L("    ADD t0, t1, t5")
+        self.L(f"{sig}:")
+        sigd = self.lab("pr")
+        self.L(f"    BNE t4, zero, {sigd}")       # t4=1⟺正 → 跳过号加
+        self.L("    ADD t0, t0, s4")              # 负 → +PS45
+        self.L(f"{sigd}:")
+        self.L(f"    SW t0, {self.slot(i0)}(s0)")
+        self.vs.pop(i0, None)
+        self.vtype[i0] = F64
+        self.h += 1
+
     # -- 二进制视图 --------------------------------------------------
     # 三进制寄存器里**不存在二进制位**。第 k 位只能这样取：
     #     残差 r 从值本身出发，拿 2^k 逐个比；r >= 2^k 该位为 1，同时 r -= 2^k。
@@ -1600,6 +1773,12 @@ class Gen:
             return p
         if op in (0xB5, 0xB7, 0xBA, 0xBC):
             raise Unsupported("convert_i32/i64_u：§九 无符号视图已删")
+        if op == 0xB8:                            # f32.demote_f64（9.6′）
+            self.f_demote()
+            return p
+        if op == 0xBD:                            # f64.promote_f32
+            self.f_promote()
+            return p
         if op in (0x92, 0x93, 0x94, 0x95):        # f32.add/sub/mul/div
             self.f_arith({0x92:"FADD",0x93:"FSUB",0x94:"FMUL",0x95:"FDIV"}[op], F32)
             return p

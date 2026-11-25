@@ -596,6 +596,14 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
 （全部在本轮证伪过）。
 - [x] 9.4 **浮点剩余运算** ✓（2026-11-25：9.4′ min/max/neg/abs/copysign
   + 9.4″ ceil/floor/trunc/nearest 全收官）
+- [x] 9.6′ **demote/promote** ✓（2026-11-25）f32.demote_f64（0xB8）/
+  f64.promote_f32（0xBD）整数面跨档：demote = e45 ≥ 121 → ±Inf（E20 ≥ 242
+  = Inf/NaN 面，encode 同规）/ e45 ≤ −121 → ±0（v < 半最小正规）/
+  M20 = round(M45/3^20)（rem·2 ≥ P20 进位，3^20 奇无平票；q 进位到
+  3^14 → E20+1 = 3^14/3=3^13 精确）；promote 精确加宽（M45 = M20·3^20
+  一条 MUL，E45 = E20 + 29403，无舍入）。电池 +20 例（含 3^120/121
+  边界、1e60 上溢、1e−80 下溢、±0/NaN/±Inf）→ e2e **193 PASS / 0 FAIL**；
+  坑：sig 尾极性三犯（t4=1⟺正 → 跳号加用 BNE 勿 BEQ）。
 - [x] 9.5 **convert/trunc** ✓（2026-11-25）trunc_f32/f64_s（0xA8/0xAA，
   i64 变体 §九 同语义）= f_trunc_s 整数面：payload ≥ (bias+44)·PM +
   ceil(HALF/3^(44−k1)) 灰带 e=44 精确阈值（e ≤ 43 恒界内 / e ≥ 45 恒越界 /
