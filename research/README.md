@@ -90,3 +90,20 @@ n=48，p_out 弃用，边概率 p 为梯度）
 三值热力学计算的收敛率曲线 = **结构决定论**：3 部图 1 sweep 即解
 （确定性贪心），planted 随机图密度反转（密易疏难）+ 局部极小饱和
 （55%/15%）。曲线钉进 `research_p_trit_e2e.py` 契约（种子确定性）。
+
+## 见证数据源：律算合一 GF(3) 形式化库（2026-11-26）
+
+参照库 `~/work/discrete-mathematics`（Agda 律算合一形式化验证，
+464 文件 0 错误）的**已证恒等式 = TriRV 机检见证数据**（witness-sat
+形态：闭式见证 + 有限群归纳——生成元封闭 + 全枚举 = 全称）：
+
+| 参照库来源（Agda 已证） | 见证内容 | TriRV 机检 |
+|---|---|---|
+| Sovereign/Base/Trit.agda | GF(3) ⊕/⊗ 全表 9+9 格、T₁⊕T₂≡T₀、T₂⊗T₂≡T₁、⊕-inverse | research/gf3_witness_tri.c §1–2（原生 word 低 trit 语义） |
+| Sovereign/Algebra/GroupTheory/DuodecClock.agda ZeroOblivion | mulAlpha⁴=1（⟨α⟩=C4）、tritCycle ⊕³=0、jointCycle¹²=id（C12）、C12 ≅ C3×C4 CRT 分解 | 同文件 §3–5（结合律 12³=1728 格全枚举、生成元走钟、CRT 12/12 往返） |
+
+契约 tests/trirv_gf3_witness_e2e.py **7 PASS / 0 FAIL**（py VM + CVM
+双跑，bad=0 零失配）。纪律：参照库只读引用（数据/恒等式），不运行
+其门禁（Agda 门禁在本机不可运行）。后续可挖：T⁶ 环面 144×46=6624
+FULL_TOUR、46 驻波点、纳音孤子 C3 1500 步 ρ=0.38、CRT 谐波谱——
+均具备「闭式见证 + 有限枚举」形态，按需逐层接入。

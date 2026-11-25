@@ -658,6 +658,20 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
   ——基线注记：trirv_cc 已含 TC 35.2% + TRV2 节省 8.5%，≤1.3× 更紧
 - [ ] 10.5 **GO/NO-GO 结论追加到 ADR-18**，批次 10 收官
 
+#### GF(3)/C12 见证机检批（2026-11-26，witness-sat 形态：闭式见证 + 归纳）
+
+- 数据源 = 离散数学参照库 `~/work/discrete-mathematics`（律算合一
+  GF(3) 形式化验证，Agda 已证，只读引用）——Sovereign/Base/Trit.agda
+  GF(3) 全表 + DuodecClock.agda ZeroOblivion（mulAlpha⁴=1/tritCycle
+  ⊕³=0/jointCycle¹²=id/C12≅C3×C4）
+- research/gf3_witness_tri.c：见证机检（TriRV 原生整数运算）——
+  GF(3) ⊕/⊗ 全表 18 格、tritCycle/inverse 逐 x、结合律 12³=1728 格
+  全枚举、生成元走钟 12 步、CRT 往返 12/12
+- 契约 trirv_gf3_witness_e2e **7 PASS / 0 FAIL** 入册 → **fast=75 套**
+  （py VM + CVM 双跑）
+- 数据源映射记 research/README.md 见证节；后续可挖：T⁶ 环面
+  144×46=6624 FULL_TOUR、46 驻波点、纳音孤子（均同形态）
+
 #### bignum_tri 无限精度库落地 + 梅森素数 oracle 文档（2026-11-26，用户课题续）
 
 - docs/MERSENNE-PRIMES.md：**梅森素数 oracle 数据集**（Tier-1 原生
