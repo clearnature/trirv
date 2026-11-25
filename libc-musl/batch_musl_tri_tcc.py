@@ -46,6 +46,21 @@ TRI_REWRITE = {
     "ecvt.c": "musl_tri/ecvt_tri.c",
     "fcvt.c": "musl_tri/ecvt_tri.c",
     "gcvt.c": "musl_tri/ecvt_tri.c",
+    "isalnum.c": "musl_tri/ctype_tri.c",
+    "isalpha.c": "musl_tri/ctype_tri.c",
+    "isascii.c": "musl_tri/ctype_tri.c",
+    "isblank.c": "musl_tri/ctype_tri.c",
+    "iscntrl.c": "musl_tri/ctype_tri.c",
+    "isdigit.c": "musl_tri/ctype_tri.c",
+    "isgraph.c": "musl_tri/ctype_tri.c",
+    "islower.c": "musl_tri/ctype_tri.c",
+    "isprint.c": "musl_tri/ctype_tri.c",
+    "ispunct.c": "musl_tri/ctype_tri.c",
+    "isspace.c": "musl_tri/ctype_tri.c",
+    "isupper.c": "musl_tri/ctype_tri.c",
+    "isxdigit.c": "musl_tri/ctype_tri.c",
+    "tolower.c": "musl_tri/ctype_tri.c",
+    "toupper.c": "musl_tri/ctype_tri.c",
 }
 
 # musl 内部 typedef shim——tcc 的 typedef 不跨 TU，必须前置进每个 pp 文件

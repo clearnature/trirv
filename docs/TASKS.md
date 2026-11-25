@@ -658,6 +658,26 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
   ——基线注记：trirv_cc 已含 TC 35.2% + TRV2 节省 8.5%，≤1.3× 更紧
 - [ ] 10.5 **GO/NO-GO 结论追加到 ADR-18**，批次 10 收官
 
+#### ADR-38 M3 ctype 查表化收官（2026-11-26，e9f8d65 警示录同源批）
+
+- libc-musl/musl_tri/ctype_tri.c：15 窄字符函数（isalnum/alpha/ascii/
+  blank/cntrl/digit/graph/lower/print/punct/space/upper/xdigit + tolower/
+  toupper）= **3^k 旗标查表**（upper=3 lower=9 digit=27 space=81 cntrl=
+  243 punct=729 xdigit-AF=2187 xdigit-af=6561；每字符一字，类测试 =
+  单/多 trit 掩码「任一置位」——警示录范式的实证应用）；tolower/
+  toupper = 算术映射（ternary-safe 先例 mbwc_tri 同款）。上游三坑实证：
+  isalpha (unsigned)c|32（无符号视图已删+TOR≠置位）、tolower c|32、
+  isascii !(c&~0x7f)。
+- TRI_REWRITE 接线 15 文件 → ctype_tri.c（多 TU 去重单实例）——批跑
+  管线里 atoi/isspace 等 stdlib 调用方自此吃到修正版。
+- 契约 trirv_ctype_e2e.py **12 PASS / 0 FAIL**（差分矩阵 13 函数 ×
+  c=0..127 全值 + 越界探针 -5/200 全 0 + tolower/toupper 全映射 +
+  5 spot；char 矩阵 + 魔数哨兵自定位；py VM + CVM 双跑）入册 →
+  **fast=72 套**。坑：①全局 int 矩阵 2110×9 trytes 越数据区（改 char
+  1 tryte/格）；②`*(整数表达式)` 绝对地址存储依赖链接布局不可靠
+  （全局数组+哨兵定位替代）；③host 探针读映射勿拿 c 当裸偏移
+  （c=200 读成 col200 跨行——5 例假失配逐一可解释）。
+
 #### 三值语义警示录（2026-11-26，用户实证捕获）
 
 `x & 255` 类二进制掩码惯用法在三值容器下 TAND 逐 trit min 塌 0
