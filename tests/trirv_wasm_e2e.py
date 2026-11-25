@@ -21,7 +21,15 @@ import trirv_wasm
 import trirv_float as tf
 from trirv_wasm import compile_wasm, build_trv, Unsupported
 
-M32 = 2 ** 32                          # 历史名（仅个别残留；§九 后不参与语义）
+M32 = 2 ** 32
+
+
+def _tf_is_nan(F, raw):
+    """TF raw → NaN 判定（E 全 1 且 mant ≠ 0）。"""
+    rest = raw % F.P_SIGN
+    E = rest // F.P_MANT
+    M = rest % F.P_MANT
+    return E == F.max_exp and M != 0                          # 历史名（仅个别残留；§九 后不参与语义）
 MOD45 = 3 ** 45
 
 
@@ -183,6 +191,8 @@ def F32C(v): return b"\x43" + struct.pack("<f", v)
 F64ADD, F64SUB, F64MUL, F64DIV = b"\xa0", b"\xa1", b"\xa2", b"\xa3"
 F32ADD, F32SUB, F32MUL, F32DIV = b"\x92", b"\x93", b"\x94", b"\x95"
 F64SQRT, F32SQRT = b"\x9f", b"\x91"
+F64ABS, F64NEG, F64MIN, F64MAX, F64CPS = (bytes([x]) for x in (0x99, 0x9a, 0xa4, 0xa5, 0xa6))
+F32ABS, F32NEG, F32MIN, F32MAX, F32CPS = (bytes([x]) for x in (0x8b, 0x8c, 0x96, 0x97, 0x98))
 F64EQ, F64NE, F64LT, F64GT, F64LE, F64GE = (bytes([x]) for x in range(0x61, 0x67))
 F32EQ, F32NE, F32LT, F32GT, F32LE, F32GE = (bytes([x]) for x in range(0x5b, 0x61))
 def FLOAD64(off=0): return b"\x2b" + u(0) + u(off)
@@ -379,6 +389,29 @@ class Ref:
                 st.append(s45(q) if op == 0x6D else s45(a - q * b))
             elif op in (0x6F, 0x70):
                 raise RuntimeError("div_u/rem_u：§九 无符号视图已删")
+            elif op in (0x8B, 0x8C, 0x99, 0x9A):   # abs / neg（TF raw 符号 trit）
+                v = st.pop()
+                F = tf.TF45 if op in (0x99, 0x9A) else tf.TF20
+                ps = F.P_SIGN
+                st.append(v % ps if op in (0x8B, 0x99) else (v + ps if v < ps else v - ps))
+            elif op in (0x98, 0xA6):               # copysign：幅 a、号 b
+                b = st.pop(); a = st.pop()
+                F = tf.TF45 if op == 0xA6 else tf.TF20
+                ps = F.P_SIGN
+                st.append((a % ps) + (b // ps) * ps)
+            elif op in (0x96, 0x97, 0xA4, 0xA5):   # min / max（NaN 传染 + ±0 号合并）
+                b = st.pop(); a = st.pop()
+                F = tf.TF45 if op in (0xA4, 0xA5) else tf.TF20
+                is_min = op in (0x96, 0xA4)
+                na = _tf_is_nan(F, a); nb = _tf_is_nan(F, b)
+                if na or nb:
+                    st.append(F.NAN)
+                else:
+                    va, vb = F.decode(a), F.decode(b)
+                    if va == 0.0 and vb == 0.0:
+                        st.append(F.P_SIGN if is_min else 0)   # ±0：min −0 / max +0
+                    else:
+                        st.append(a if ((va < vb) == is_min or va == vb) else b)
             elif op in (0x71, 0x72, 0x73):         # 逐 trit：TAND/TOR/XOR
                 b = st.pop(); a = st.pop()
                 fn = {0x71: min, 0x72: max,
@@ -548,6 +581,12 @@ def float_suite():
         ("wasm f64 9.0/2.0=4.5", F64C(9.0) + F64C(2.0) + F64DIV, near(4.5)),
         ("wasm f64 2.25-1.5=0.75", F64C(2.25) + F64C(1.5) + F64SUB, near(0.75)),
         ("wasm f64 sqrt(9)=3", F64C(9.0) + F64SQRT, near(3.0)),
+        ("wasm f64 abs(-3)=3", F64C(-3.0) + F64ABS, near(3.0)),
+        ("wasm f64 neg(3)=-3", F64C(3.0) + F64NEG, near(-3.0)),
+        ("wasm f64 copysign(-3,+5)=3", F64C(-3.0) + F64C(5.0) + F64CPS, near(3.0)),
+        ("wasm f64 min(-3,5)=-3", F64C(-3.0) + F64C(5.0) + F64MIN, near(-3.0)),
+        ("wasm f64 max(-3,5)=5", F64C(-3.0) + F64C(5.0) + F64MAX, near(5.0)),
+        ("wasm f64 min(+5,-3)=-3", F64C(5.0) + F64C(-3.0) + F64MIN, near(-3.0)),
     ]
     for name, body, chk in cases64:
         a, b, s = run_float_case(name, mk(body), "run", chk)
@@ -557,6 +596,8 @@ def float_suite():
         ("wasm f32 1.5+2.25=3.75", F32C(1.5) + F32C(2.25) + F32ADD, near32(3.75)),
         ("wasm f32 3.0*2.0=6.0", F32C(3.0) + F32C(2.0) + F32MUL, near32(6.0)),
         ("wasm f32 sqrt(9)=3", F32C(9.0) + F32SQRT, near32(3.0)),
+        ("wasm f32 abs(-3)=3", F32C(-3.0) + F32ABS, near32(3.0)),
+        ("wasm f32 min(-3,5)=-3", F32C(-3.0) + F32C(5.0) + F32MIN, near32(-3.0)),
     ]
     for name, body, chk in cases32:
         a, b, s = run_float_case(name, mk(body), "run", chk)

@@ -701,6 +701,128 @@ class Gen:
         self.L(f"    FSW {FT0}, {self.slot(i)}(s0)")
         self.vtype[i] = vt
 
+    # -- 9.4′ sign/trit 族（TF raw 整数面，符号 trit 权重 3^(T-1)）----
+    def f_absneg(self, op, vt):
+        """abs/neg：归一化到无符号域（+MOD45 if 负）→ 剥/加符号 trit（T1）。"""
+        T1 = 3 ** 44 if vt == F64 else 3 ** 19
+        MOD45 = 3 ** 45
+        self.h -= 1
+        i0 = self.h
+        self.L(f"    LW t0, {self.slot(i0)}(s0)")
+        self.li("s6", T1)
+        self.li("t6", MOD45)
+        self.L("    ADD s3, t0, s6")               # 探针：+T1 溢出负 → s=1
+        self.L("    SLT t2, s3, zero")
+        sk = self.lab("nm")
+        self.L(f"    BNE t2, zero, {sk}")
+        self.L("    ADD t0, t0, t6")               # 归一化（无符号 raw）
+        self.L(f"{sk}:")
+        if op in (0x8B, 0x99):                     # abs：raw − T1
+            self.L("    SUB t0, t0, s6")
+        else:                                      # neg：raw + T1 mod 3^45
+            self.L("    ADD t0, t0, s6")
+        self.L(f"    SW t0, {self.slot(i0)}(s0)")
+        self.vs.pop(i0, None)
+        self.vtype[i0] = vt
+        self.h += 1
+
+    def f_copysign(self, vt):
+        """copysign：mag = |a|；号 = b（归一化探测）。"""
+        T1 = 3 ** 44 if vt == F64 else 3 ** 19
+        MOD45 = 3 ** 45
+        self.h -= 2
+        ia, ib = self.h, self.h + 1
+        self.L(f"    LW t0, {self.slot(ia)}(s0)")
+        self.L(f"    LW t1, {self.slot(ib)}(s0)")
+        self.li("s6", T1)
+        self.li("t6", MOD45)
+        self.L("    ADD s3, t0, s6")
+        self.L("    SLT t2, s3, zero")
+        sk = self.lab("cp")
+        self.L(f"    BNE t2, zero, {sk}")
+        self.L("    ADD t0, t0, t6")
+        self.L(f"{sk}:")
+        self.L("    SUB t0, t0, s6")               # mag_a
+        self.L("    ADD s3, t1, s6")               # b 探针
+        self.L("    SLT t2, s3, zero")
+        negp = self.lab("cp")
+        self.L(f"    BNE t2, zero, {negp}")
+        self.L(f"    JAL zero, {negp}d")
+        self.L(f"{negp}:")
+        self.L("    ADD t0, t0, s6")               # 号 1
+        self.L(f"{negp}d:")
+        self.L(f"    SW t0, {self.slot(ia)}(s0)")
+        self.set(ia)
+        self.vtype[ia] = vt
+        self.h += 1
+
+    def f_minmax(self, op, vt):
+        """min/max：NaN（幅 > INF_POS）传染 canon；FEQ 等值 → TOR/TAND
+        （min 保 −0 / max 保 +0）；FLT 数值选边（原 raw 直传，符号随行）。"""
+        is_min = op in (0x96, 0xA4)
+        T1 = 3 ** 44 if vt == F64 else 3 ** 19
+        EMAX = 59048 if vt == F64 else 242
+        MB = 34 if vt == F64 else 14
+        INF_POS = EMAX * (3 ** MB)
+        NANR = INF_POS + 1
+        self.h -= 2
+        i0, i1 = self.h, self.h + 1
+        self.L(f"    LW t0, {self.slot(i0)}(s0)")   # orig a
+        self.L(f"    LW t1, {self.slot(i1)}(s0)")   # orig b
+        self.li("s6", T1)
+        self.li("t6", 3 ** 45)
+        self.li("s5", INF_POS)
+        # mag_a → s3（s8 不用；t0/t1 保全 raw）
+        self.L("    ADD s3, t0, s6")
+        self.L("    SLT t2, s3, zero")
+        n1 = self.lab("nm")
+        self.L(f"    BNE t2, zero, {n1}")
+        self.L("    ADD s3, s3, t6")
+        self.L(f"{n1}:")
+        self.L("    SUB s3, s3, s6")
+        # mag_b → s4
+        self.L("    ADD s4, t1, s6")
+        self.L("    SLT t2, s4, zero")
+        n2 = self.lab("nm")
+        self.L(f"    BNE t2, zero, {n2}")
+        self.L("    ADD s4, s4, t6")
+        self.L(f"{n2}:")
+        self.L("    SUB s4, s4, s6")
+        # NaN 探测：幅 > INF_POS
+        self.L("    SLT t5, s5, s3")
+        self.L("    SLT t4, s5, s4")
+        self.L("    TOR t5, t5, t4")
+        # 数值比较（TF 原生 FEQ/FLT：±0 等值 ✓ NaN 全假 ✓）
+        self.L(f"    FLW {FT0}, {self.slot(i0)}(s0)")
+        self.L(f"    FLW {FT1}, {self.slot(i1)}(s0)")
+        self.L(f"    FEQ t2, {FT0}, {FT1}")
+        self.L(f"    FLT t3, {FT0}, {FT1}")
+        self.L(f"    FLT t4, {FT1}, {FT0}")
+        merge = "TOR" if is_min else "TAND"         # min 保 −0 / max 保 +0
+        nn = self.lab("nn")
+        eq = self.lab("eq")
+        lt = self.lab("lt")
+        gt = self.lab("gt")
+        wr = self.lab("wr")
+        self.L(f"    BNE t5, zero, {nn}")
+        self.L(f"    BNE t2, zero, {eq}")
+        self.L(f"    BNE t3, zero, {lt}")
+        self.L(f"    BNE t4, zero, {gt}")
+        self.L(f"    {merge} t0, t0, t1")           # 数值等值（±0/全等）
+        self.L(f"    JAL zero, {wr}")
+        self.L(f"{nn}:")
+        self.li("t0", NANR)
+        self.L(f"    JAL zero, {wr}")
+        self.L(f"{lt}:")                             # t0 = orig a
+        self.L(f"    JAL zero, {wr}")
+        self.L(f"{gt}:")
+        self.L("    ADD t0, t1, zero")               # orig b
+        self.L(f"{wr}:")
+        self.L(f"    SW t0, {self.slot(i0)}(s0)")
+        self.vs.pop(i0, None)
+        self.vtype[i0] = vt
+        self.h += 1
+
     # -- 二进制视图 --------------------------------------------------
     # 三进制寄存器里**不存在二进制位**。第 k 位只能这样取：
     #     残差 r 从值本身出发，拿 2^k 逐个比；r >= 2^k 该位为 1，同时 r -= 2^k。
@@ -1157,6 +1279,17 @@ class Gen:
             return p
         if op in (0xA0, 0xA1, 0xA2, 0xA3):        # f64.add/sub/mul/div
             self.f_arith({0xA0:"FADD",0xA1:"FSUB",0xA2:"FMUL",0xA3:"FDIV"}[op], F64)
+            return p
+
+        # ---- 9.4′ 浮点 sign/trit 族（TF raw 整数面，1 op ≈ 10 条）----
+        if op in (0x8B, 0x8C, 0x99, 0x9A):        # abs / neg
+            self.f_absneg(op, F32 if op in (0x8B, 0x8C) else F64)
+            return p
+        if op in (0x98, 0xA6):                    # copysign
+            self.f_copysign(F32 if op == 0x98 else F64)
+            return p
+        if op in (0x96, 0x97, 0xA4, 0xA5):        # min / max
+            self.f_minmax(op, F32 if op in (0x96, 0x97) else F64)
             return p
 
         if op in (0x6A, 0x6B):                    # add / sub
