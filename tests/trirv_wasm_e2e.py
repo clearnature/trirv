@@ -332,7 +332,7 @@ class Ref:
             elif op == 0x24:
                 i, pc = trirv_wasm.uleb(body, pc); self.glob[i] = st.pop()
             elif op == 0x41:
-                v, pc = trirv_wasm.sleb(body, pc); st.append(s32(v))
+                v, pc = trirv_wasm.sleb(body, pc); st.append(v)   # §九：原生 word 无 s32 截断
             elif op == 0x43:                       # f32.const：IEEE → TF20 raw
                 v = struct.unpack("<f", body[pc:pc + 4])[0]; pc += 4
                 st.append(tf.TF20.encode(v))
@@ -729,9 +729,9 @@ def main():
     fnv = (I32C(2166136261) + LSET(2) +
            BLOCK + LOOP +
            LGET(0) + LGET(1) + GTS + IF + BR(2) + END +
-           LGET(2) + LGET(1) + LOAD8U() + BXOR + LSET(2) +
+           LGET(2) + LGET(0) + LOAD8U() + BXOR + LSET(2) +
            LGET(2) + I32C(16777619) + MUL + LSET(2) +
-           LGET(1) + I32C(1) + ADD + LSET(1) +
+           LGET(0) + I32C(1) + ADD + LSET(0) +
            BR(0) + END + END + LGET(2) + END)
     w = wrap1(fnv, [0, len(blob)], nlocals=1)
     w.data(0, blob)
