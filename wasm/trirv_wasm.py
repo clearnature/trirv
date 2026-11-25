@@ -808,7 +808,8 @@ class Gen:
         self.L(f"    BNE t2, zero, {eq}")
         self.L(f"    BNE t3, zero, {lt}")
         self.L(f"    BNE t4, zero, {gt}")
-        self.L(f"    {merge} t0, t0, t1")           # 数值等值（±0/全等）
+        self.L(f"{eq}:")                             # 等值入口（±0/全等：号合并）
+        self.L(f"    {merge} t0, t0, t1")           # min=TOR 保 −0 / max=TAND 保 +0
         self.L(f"    JAL zero, {wr}")
         self.L(f"{nn}:")
         self.li("t0", NANR)
