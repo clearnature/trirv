@@ -504,4 +504,137 @@ def heatbath_stats(groups=(8, 8, 8), p=0.3, seeds=50, sweeps=40):
     return ok, seeds
 
 
+def heatbath_curve(sweep_grad=(5, 10, 20, 40), size_grad=(12, 24, 48),
+                   seeds=20, p=0.3):
+    """收敛率曲线：sweeps × n 梯度 × 多种子（Glauber 三值版）。
+    返回 {(n, sweeps): 收敛率}，并打印表（README/契约的数据源）。"""
+    rates = {}
+    for n in size_grad:
+        groups = (n // 3, n // 3, n // 3)
+        for sw in sweep_grad:
+            ok = 0
+            for sd in range(seeds):
+                _, edges = gen_3partite(groups, p, seed=1000 + sd)
+                noise = trit_noise(seed=sd, n=sw * (n + len(edges)) + 16)
+                _, conf, _ = heatbath_repair(n, edges, sw, noise)
+                ok += (conf == 0)
+            rates[(n, sw)] = ok / seeds
+    print(f"  收敛率曲线（Glauber 三值版，{seeds} 种子/格，p={p}）")
+    print("  %-10s" % "n\\sweeps" + "".join("%-12s" % s for s in sweep_grad))
+    for n in size_grad:
+        cells = "".join("%-12s" % ("%d%%" % (100 * rates[(n, sw)]))
+                        for sw in sweep_grad)
+        print("  %-10s%s" % (n, cells))
+    return rates
+
+
+def heatbath_density_curve(n=48, p_grad=(0.3, 0.6, 0.9),
+                           sweep_grad=(1, 2, 3, 5), seeds=20):
+    """密度梯度 × sweeps 梯度：收敛率 + 中位收敛 sweep（done_at 统计）。
+    顺序更新（Gauss-Seidel 型）在稀疏图上极快，密度梯度找退化点。"""
+    groups = (n // 3, n // 3, n // 3)
+    rows = {}
+    for p in p_grad:
+        for sw in sweep_grad:
+            ok = 0
+            dones = []
+            for sd in range(seeds):
+                _, edges = gen_3partite(groups, p, seed=1000 + sd)
+                noise = trit_noise(seed=sd, n=sw * (n + len(edges)) + 16)
+                _, conf, done = heatbath_repair(n, edges, sw, noise)
+                ok += (conf == 0)
+                if done is not None:
+                    dones.append(done)
+            dones.sort()
+            med = dones[len(dones) // 2] if dones else None
+            rows[(p, sw)] = (ok / seeds, med)
+    print(f"  密度梯度收敛率（n={n}，{seeds} 种子/格；格 = 收敛率%/中位sweep）")
+    print("  %-10s" % "p\\sweeps" + "".join("%-14s" % s for s in sweep_grad))
+    for p in p_grad:
+        cells = "".join("%-14s" % ("%d%%/%s" % (100 * rows[(p, sw)][0],
+                                                rows[(p, sw)][1]))
+                        for sw in sweep_grad)
+        print("  %-10s%s" % (p, cells))
+    return rows
+
+
+def gen_rand_graph(n, p, seed):
+    """随机图（Erdős–Rényi，含奇环——贪心一遍不可解，噪声多轮才有意义）。"""
+    rng = random.Random(seed)
+    edges = [(i, j) for i in range(n) for j in range(i + 1, n)
+             if rng.random() < p]
+    return n, edges
+
+
+def heatbath_rand_curve(n=48, p_grad=(0.05, 0.1, 0.2),
+                        sweep_grad=(5, 10, 20, 40), seeds=20):
+    """随机图（奇环）收敛率曲线：退化点搜寻——非部图上贪心一遍不再
+    保证解，噪声驱动多轮热浴的真正战场。p ≥ 0.1 的 0% = 图本身不可
+    3-着色（色数 > 3），非动力学失败——见 heatbath_planted_curve。"""
+    rows = {}
+    for p in p_grad:
+        for sw in sweep_grad:
+            ok = 0
+            dones = []
+            for sd in range(seeds):
+                _, edges = gen_rand_graph(n, p, seed=1000 + sd)
+                noise = trit_noise(seed=sd, n=sw * (n + len(edges)) + 16)
+                _, conf, done = heatbath_repair(n, edges, sw, noise)
+                ok += (conf == 0)
+                if done is not None:
+                    dones.append(done)
+            dones.sort()
+            med = dones[len(dones) // 2] if dones else None
+            rows[(p, sw)] = (ok / seeds, med)
+    print(f"  随机图收敛率（n={n}，{seeds} 种子/格；格 = 收敛率%/中位sweep）")
+    print("  %-10s" % "p\\sweeps" + "".join("%-14s" % s for s in sweep_grad))
+    for p in p_grad:
+        cells = "".join("%-14s" % ("%d%%/%s" % (100 * rows[(p, sw)][0],
+                                                rows[(p, sw)][1]))
+                        for sw in sweep_grad)
+        print("  %-10s%s" % (p, cells))
+    return rows
+
+
+def gen_planted_3col(n, p, seed=0):
+    """planted 3-coloring（标准构造）：先随机染一个 proper 3-着色，
+    只在不同色顶点间以概率 p 加边——着色必存在、奇环遍布、贪心一遍
+    不再保证解 = 动力学真考场。"""
+    rng = random.Random(seed)
+    col = [rng.randrange(3) for _ in range(n)]
+    edges = [(i, j) for i in range(n) for j in range(i + 1, n)
+             if col[i] != col[j] and rng.random() < p]
+    return n, edges
+
+
+def heatbath_planted_curve(n=48, p_in_grad=(0.1, 0.3, 0.6),
+                           sweep_grad=(1, 2, 5, 10, 20, 40), seeds=20):
+    """planted 3-col 密度梯度 × sweeps：真收敛率曲线（解保证存在，
+    曲线衡量动力学自身的解算能力）。"""
+    rows = {}
+    for p_in in p_in_grad:
+        for sw in sweep_grad:
+            ok = 0
+            dones = []
+            for sd in range(seeds):
+                _, edges = gen_planted_3col(n, p_in, seed=1000 + sd)
+                noise = trit_noise(seed=sd, n=sw * (n + len(edges)) + 16)
+                _, conf, done = heatbath_repair(n, edges, sw, noise)
+                ok += (conf == 0)
+                if done is not None:
+                    dones.append(done)
+            dones.sort()
+            med = dones[len(dones) // 2] if dones else None
+            rows[(p_in, sw)] = (ok / seeds, med)
+    print(f"  planted 3-col 收敛率（n={n}，{seeds} 种子/格；"
+          "格 = 收敛率%/中位sweep）")
+    print("  %-10s" % "p\\sw" + "".join("%-14s" % s for s in sweep_grad))
+    for p_in in p_in_grad:
+        cells = "".join("%-14s" % ("%d%%/%s" % (100 * rows[(p_in, sw)][0],
+                                                rows[(p_in, sw)][1]))
+                        for sw in sweep_grad)
+        print("  %-10s%s" % (p_in, cells))
+    return rows
+
+
 # ------------------------------------------------------------ 热浴 VM 内核（CSR 布局）
