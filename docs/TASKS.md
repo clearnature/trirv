@@ -484,10 +484,10 @@
       过时）。余 15 文件四类：sizeof 支持（×2 编译器特性）/复合字面量
       数组（×4 重写层）/getc_unlocked 宏包含形（×2 重写层）/杂项调查
       （×7：ofl prev、__stdout_write、fopencookie ret 等）
-- [ ] 6.4 **写路径**（fwrite、fflush）。验收：缓冲写与直接写结果一致
-- [ ] 6.5 **读路径**（fread、ungetc、fflush 读侧）。验收：跨缓冲边界读回一致
-- [ ] 6.6 **打开关闭**（fopen 族、fclose、fmemopen、open_memstream）
-- [ ] 6.7 **定位**（fseek、ftell、rewind、fsetpos、fgetpos）
+- [x] 6.4 **写路径**（fwrite、fflush）。验收：缓冲写与直接写结果一致 ✓（6.10 自包含 tri_stdio.c 路线兑现 + stdio 行为契约 28 项；原 musl 拼接路线诚实退役）
+- [x] 6.5 **读路径**（fread、ungetc、fflush 读侧）。验收：跨缓冲边界读回一致 ✓（6.10 自包含 tri_stdio.c 路线兑现 + stdio 行为契约 28 项；原 musl 拼接路线诚实退役）
+- [x] 6.6 **打开关闭**（fopen 族、fclose、fmemopen、open_memstream） ✓（6.10 自包含 tri_stdio.c 路线兑现 + stdio 行为契约 28 项；原 musl 拼接路线诚实退役）
+- [x] 6.7 **定位**（fseek、ftell、rewind、fsetpos、fgetpos） ✓（6.10 自包含 tri_stdio.c 路线兑现 + stdio 行为契约 28 项；原 musl 拼接路线诚实退役）
 - [x] 6.8 **vfprintf 可行性探针**：musl 原生版经预处理后能否编译。✓ printf/fprintf/sprintf 自包含实现（tri_stdio.c 变参+tri_d2s 格式化引擎）+ 4 项双 VM 契约。原探针结论：结论记录
 - [x] 6.9 **按 6.8 结论落地 vfprintf**，vfscanf 同法。✓ printf/fprintf/sprintf 自包含实现（tri_stdio.c 变参+tri_d2s 格式化引擎）+ 4 项双 VM 契约。原探针结论：现有 fmt_e2e 全过
 - [x] 6.10 **批量编译 stdio 目录** ✓ 方案演进：拼接上游→自包含 tri_stdio.c
@@ -554,7 +554,7 @@
   br_table.wast 主模块为类型化引用形态（function-references 提案）诚实
   tskip，语义由 br.wast as-br_table-* 断言覆盖。冒烟门禁
   trirv_wasm_spec_smoke.py 6 文件入 fast。
-- [ ] 9.4 **浮点剩余运算** → **P4 soft-float 架构已裁定**（WASM_ROUTE_A §八，
+- [x] 9.4 **浮点剩余运算** ✓（路线演进：P4 soft-float 裁定 → §九 浮点注记推翻 → 9.4′/9.4″ 原生 TF 整数面全收官，2026-11-25）原裁定存档（WASM_ROUTE_A §八，
   提交 9f8b4e8）：定义层发现=浮点值是二进有理数、TF 不可精确表示、spec
   断言要求 IEEE 位级精确 ⇒ soft-float（位模式作 i32 + 整数 ALU 模拟）。
   分批：P4a 位操作九件（下一任务，Gen 浮点槽位改位模式的迁移点已标注）→
@@ -626,7 +626,7 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
   ADD/SUB/MUL/TAND/TOR/XOR/SLL/SRA（每 op 1 条，仿真层整体删除）；
   访存 = 原生 SW/LW/SB/LBU（每 op 1 条）。clz/ctz/popcnt/rotl/rotr =
   二进制位概念，方言删。
-- [ ] 9.4′ **浮点 = 原生 TF**（§九 浮点注记推翻 §八 soft-float）：
+- [x] 9.4′ **浮点 = 原生 TF** ✓（2026-11-25 全收官：sign/trit 族 + ceil/floor/trunc/nearest round 族，e2e 150/0）：
   min/max/abs/neg = TF sign-trit 操作；ceil/floor/trunc = 基 3 阶码操作；
   IEEE↔TF 只在数据边界。spec 浮点断言 = 定义性 NS。
   - [x] **sign/trit 族收官** ✓（2026-11-25，94-signops-wip）：abs/neg/
@@ -639,7 +639,7 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
     +ADD MOD45「归一化」（mod 下恒等操作）= 双重无效但恰被单向用例
     掩盖；f32 裸发 FEQ/FLT 缺 .S 后缀 = TF20 raw 按 TF45 解码比较错。
     剩余：ceil/floor/trunc/nearest（基 3 阶码）。
-- [ ] 9.10′ **结构面基线更新**，批次 9 收官（spec 刻度 = 结构子集：
+- [x] 9.10′ **结构面基线更新** ✓（2026-11-25 全量复验零漂移入 WASM_ROUTE_A §七：pass=620/fail=536=定义性 NS 总量/tskip=408/vskip=58915；spec 刻度 = 结构子集：
   block/loop/br/br_table/if/call/call_indirect/table/局部变量/select；
   整数算术与字节边界断言 = 定义性 NS 记账）
 - [x] 9.11 **二进制语义仿真层归档** ✓（2026-11-25）wasm/legacy/
