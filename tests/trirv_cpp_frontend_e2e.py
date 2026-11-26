@@ -60,6 +60,7 @@ BEHAVIOR = [
     ("test20_static.cpp", 9),
     ("test21_fwd.cpp", 17),
     ("test22_nested.cpp", 17),
+    ("test23_ops_ptr.cpp", 118),     # 需链 libc（new/delete）
 ]
 # (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [
@@ -72,8 +73,8 @@ os.makedirs(TMP, exist_ok=True)
 LIBC_Tinyin = None
 LIBC_SRC = os.path.join(ROOT, "cc", "trirv_libc.c")
 LIBC_TVO = os.path.join(TMP, "trirv_libc.trvo")
-_needs_libc = any(f in ("test15_new.cpp", "test19_dtor.cpp")
-                  for f, _w in BEHAVIOR)
+_needs_libc = any(f in ("test15_new.cpp", "test19_dtor.cpp",
+                        "test23_ops_ptr.cpp") for f, _w in BEHAVIOR)
 if _needs_libc and not os.path.exists(LIBC_TVO):
     r = subprocess.run([CC, LIBC_SRC, LIBC_TVO], capture_output=True, text=True)
     assert r.returncode == 0, f"libc trvo 构建失败: {r.stderr[:120]}"
@@ -88,7 +89,7 @@ for fn, want in BEHAVIOR:
     if r.returncode != 0:
         check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
         continue
-    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp") else []),
+    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp") else []),
                        capture_output=True, text=True)
     if r.returncode != 0:
         check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")

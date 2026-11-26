@@ -180,7 +180,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.20 | **static 成员**：类内声明 `static int count;` + 类外定义 `int Counter::count = 0;`（C++ 法）→ 全局 `Counter_count`；static 方法（无 this，is_static 守卫：引用非静态成员/this=E0）→ `_ZN7Counter5totalEv`（static 与成员同编码，Itanium 口径）；双调用形态 `Counter::total()`（限定）/ `a.total()`（经实例省 receiver） | ✓ 已验证（e2e 49 项：21 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.21 | **前向声明 + 指针成员/形参解锁**：`class B;`（不完整类型，注册期 incomplete 标记+完整定义填充）→ `B* p` 成员（decl_class 成员类型渲染）+ `f(B* q)` 指针形参（0.0.15 守卫解除）+ `&lvalue` 一元取址（指针实参面，&lvalue→TPtr）+ 指针成员穿透 `peer->get()`（member_obj/recv_expr/form_is_ptr 三通道）；类型渲染 type_c TPtr `struct B *` | ✓ 已验证（e2e 51 项：23 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.22 | **嵌套类 + friend no-op**：`class Outer { class Inner {…}; }`——键 `Outer::Inner`（ns 机制同构：限定键/组件 mangle `_ZN5Outer5Inner3getEv`/扁平结构体 `Outer_Inner` 全复用）+ 外层体内裸名可见（resolve 回退 cur_cls 键）+ friend 解析为语义 no-op（子集无访问控制强制，诚实注明） | ✓ 已验证（e2e 53 项：25 行为 + 1 N8 + 7 ADT，双 VM） |
-| **0.0.23** | **+ 类特性带续（前向声明成员/多继承前置 0.1.0 盘点）** | **下一个** |
+| 0.0.23 | **指针/算子面收尾**：一元 `*` 解引用（读+写穿——对象左值，结构体赋值通道；int 语义写=非法 C++ 由混算 E0 拦）+ 算子表扩 operator-（mi）/<（lt）/>（gt）/!=（ne） | ✓ 已验证（e2e 55 项：27 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.24** | **+ 虚函数 vtable 预研（0.1.0 多继承前置：this 调整/base 偏移布局）** | **下一个** |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |

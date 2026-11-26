@@ -378,6 +378,8 @@ def expr(e, ctx, scope):
     if isinstance(e, Un):
         if e.op == "&":
             return f"&({expr(e.e, {'value'}, scope)})"
+        if e.op == "*":
+            return f"*({expr(e.e, {'value'}, scope)})"
         return f"({e.op}{expr(e.e, {'value'}, scope)})"
     raise AssertionError(f"lower: 未知表达式 {type(e).__name__}")
 

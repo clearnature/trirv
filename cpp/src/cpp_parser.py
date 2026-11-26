@@ -471,9 +471,10 @@ class Parser:
         """operator 后接算子（限算术：+/==）→ 'operator+' 名。"""
         self.expect("KW", "operator")
         t = self.next()
-        if t[0] == "PUNCT" and t[1] in ("+", "=="):
+        if t[0] == "PUNCT" and t[1] in ("+", "==", "-", "<", ">", "!="):
             return "operator" + t[1]
-        raise ParseError(f"L{t[2]}: 操作符 {t[1]!r} 子集外（限算术：+/==）")
+        raise ParseError(f"L{t[2]}: 操作符 {t[1]!r} 子集外"
+                         f"（限算术：+ == - < > !=）")
 
     def methoddef(self):
         ty = self.parse_type()
@@ -640,8 +641,8 @@ class Parser:
             self.next()                      # 消费 &（缺它=无限递归）
             return Un("&", self.unary())     # 0.0.21：&lvalue（指针实参面）
         if t[0] == "PUNCT" and t[1] == "*":
-            raise ParseError(
-                f"L{t[2]}: 一元 * 暂不支持（解引用经 ->/引用通道）")
+            self.next()
+            return Un("*", self.unary())   # 0.0.23：解引用（读+写穿）
         return self.postfix()
 
     def postfix(self):

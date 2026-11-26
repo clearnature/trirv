@@ -679,9 +679,10 @@ class Sema:
             lcls = e.l.ty.kind == "class"
             rcls = e.r.ty.kind == "class"
             if lcls or rcls:
-                if e.op not in ("+", "=="):
+                if e.op not in ("+", "==", "-", "<", ">", "!="):
                     raise SemaError("E0",
-                                    f"操作符 {e.op} 对象子集外（限算术：+/==）")
+                                    f"操作符 {e.op} 对象子集外"
+                                    f"（限算术：+ == - < > !=）")
                 if not (lcls and rcls):
                     raise SemaError("E0",
                                     f"{e.op} 运算对象类型不匹配"
@@ -696,6 +697,11 @@ class Sema:
                     raise SemaError("E0", "& 操作数须为左值")
                 from cpp_types import TPtr as _TP
                 e.ty, e.lval = _TP(ut), False     # &x → 指针右值
+            elif e.op == "*":
+                from cpp_types import TPtr as _TP2
+                if not isinstance(ut, _TP2):
+                    raise SemaError("E0", "* 操作数须为指针")
+                e.ty, e.lval = ut.pointee, True   # 解引用=左值（读+写穿）
             else:
                 e.ty, e.lval = tval("int"), False
         else:
