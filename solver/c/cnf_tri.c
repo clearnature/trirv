@@ -2,6 +2,29 @@
  * flat = ±1..±nv 文字流（DIMACS 惯例），clstart = 各子句起点。
  * 搜索序：变量升序、赋值 0→1 升序——与 py/cnf.py 逐位一致。
  * 容量：nv ≤ 32、ncl ≤ 128、每子句 ≤ 16 文字、flat ≤ 511 文字。 */
+
+/* ---- Z3 输出独立复验（产品核心能力，对外 ABI）---- */
+int cnf_verify_assign(int ncl, int *flat, int *clstart, int *assign) {
+    int ci = 0;
+    while (ci < ncl) {
+        int sat = 0;
+        int j = clstart[ci];
+        while (flat[j] != 0) {
+            int lit = flat[j];
+            int var = lit > 0 ? lit : 0 - lit;
+            int val = assign[var - 1];
+            if ((lit > 0 && val == 1) || (lit < 0 && val == 0)) {
+                sat = 1;
+                break;
+            }
+            j = j + 1;
+        }
+        if (sat == 0) return 1;
+        ci = ci + 1;
+    }
+    return 0;
+}
+
 int CLFLAT[512];
 int CLSTART[130];
 int ASN[32];

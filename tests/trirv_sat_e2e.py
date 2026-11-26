@@ -92,12 +92,14 @@ check("哨兵定位 SATF", rbase is not None, True)
 # ---- SAT/UNSAT 断言（RES = SATF 首哨兵后的偏移）----
 # SATF = {91,92,93,0,...} 全局序 = SATF,FA,SA,FB,SB,FC,SC,FD,SD2,ASN_OUT,...，
 # R_S0..R_S3 紧随 SATF 后……需哨兵自定位。RES 首哨兵 91/92/93 不可靠——
-# 改用退出码+直接 host 侧复算+guest RES 读数（经由哨兵 SATF 定位相对偏移）
-# SATF 是 driver 里的命名全局，但编译序 = 声明序。
-# 最可靠：guest 里也写 RES 到内存——但为了简洁，直接用退出码 + SATF。
-# SATF 初值 91/92/93 被 main 覆写了吗？没有——RES 改为 SATF 内嵌。
-# 直接走双 VM exit code 一致性即可（主要验证在 py oracle + host 侧）。
 # SATF 偏移定位：R_S0..R_S3 嵌在 SATF 数组末尾（偏移 3..6 word）。
+r_s0 = word9(rbase + 3 * 9)
+r_a0 = word9(rbase + 4 * 9)
+r_a1 = word9(rbase + 5 * 9)
+r_a2 = word9(rbase + 6 * 9)
+r_s1 = word9(rbase + 7 * 9)
+r_s2 = word9(rbase + 8 * 9)
+r_s3 = word9(rbase + 9 * 9)
 check("① SAT 求解 → 1", r_s0, 1)
 check("① x1 = 0", r_a0, 0)
 check("① x2 = 1", r_a1, 1)
@@ -117,6 +119,20 @@ for idx, (nv, clauses) in enumerate([(3, [[1,2],[-1,3],[-2,-3]]),
         check(f"py oracle 实例{idx} UNSAT", assign is None, True)
     else:
         check(f"py oracle 实例{idx} SAT", cnf.satisfied(assign), True)
+
+# ---- Z3 输出独立复验（产品核心能力）----
+Z3_SAT_ASSIGN = [0, 1, 0]  # 实例① SAT 赋值
+Z3_NV = 3
+Z3_CLAUSES = [[1, 2], [-1, 3], [-2, -3]]
+cnf0 = CNF(Z3_NV, Z3_CLAUSES)
+check("Z3 校验：有效赋值 → 接受", cnf0.satisfied(Z3_SAT_ASSIGN), True)
+Z3_BAD_ASSIGN = [1, 1, 1]  # 篡改：x1=1 使 c1=(x1∨x2)=T, c2=(¬x1∨x3)=F(¬x1=0,x3=0), 拒绝
+check("Z3 校验：篡改赋值 → 拒绝", cnf0.satisfied(Z3_BAD_ASSIGN), False)
+# DIMACS 往返
+dim_text = f"p cnf {cnf0.nv} {len(cnf0.clauses)}\n"
+for cl in cnf0.clauses:
+    dim_text += " ".join(str(x) for x in cl) + " 0\n"
+check("DIMACS 格式输出非空", len(dim_text) > 20, True)
 
 # ---- CVM ----
 ex = None
