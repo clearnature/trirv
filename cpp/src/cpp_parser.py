@@ -25,6 +25,7 @@ Type = CType            # 兼容旧引用名（ADT 基类）
 class ClassDecl:
     def __init__(self, name, base):
         self.name, self.base = name, base
+        self.ns = None             # 所属命名空间（0.0.13）
         self.members = []          # [(name, Type)]
         self.ctors = []            # [CtorDecl]
         self.methods = []          # [MethodDecl]
@@ -167,7 +168,9 @@ class Parser:
         classes, funcs, main = [], [], None
         while self.peek()[0] != "EOF":
             t = self.peek()
-            if t[0] == "KW" and t[1] in ("class", "struct"):
+            if t[0] == "KW" and t[1] == "namespace":
+                ns_name = self.nsdef(classes, funcs)
+            elif t[0] == "KW" and t[1] in ("class", "struct"):
                 classes.append(self.classdef())
             elif t[0] == "KW" and t[1] == "int" and \
                     self.peek(1)[1] == "main":
@@ -180,6 +183,36 @@ class Parser:
             else:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
         return classes, funcs, main
+
+    def nsdef(self, classes, funcs):
+        """namespace ID { class/func }——嵌套 ns/using=拒绝（扁平子集）。"""
+        self.expect("KW", "namespace")
+        ns = self.expect("ID")[1]
+        self.expect("PUNCT", "{")
+        while not self.accept("PUNCT", "}"):
+            t = self.peek()
+            if t[0] == "KW" and t[1] == "namespace":
+                raise ParseError(f"L{t[2]}: 嵌套命名空间=子集外（扁平化）")
+            if t[0] == "KW" and t[1] in ("class", "struct"):
+                cd = self.classdef()
+                cd.ns = ns
+                classes.append(cd)
+            elif t[0] == "KW" and t[1] in ("void", "bool", "const", "int", "char") or \
+                    t[0] == "ID":
+                f = self.funcdef()
+                f.ns = ns
+                funcs.append(f)
+            else:
+                raise ParseError(f"L{t[2]}: 命名空间内不支持 {t[1]!r}")
+        return ns
+
+    def qual_name(self, first):
+        """ID (:: ID)* → 'a::b' 限定名拼接。"""
+        nm = first
+        while self.peek()[1] == "::" and self.peek()[0] == "PUNCT":
+            self.next()
+            nm += "::" + self.expect("ID")[1]
+        return nm
 
     def funcdef(self):
         """自由函数：Type name(params) { body }——const 后缀非法（C++ 法）。"""
@@ -195,6 +228,7 @@ class Parser:
         body = self.block()
         fd = MethodDecl(nm, ty, params, False, body)
         fd.defaults = defaults
+        fd.ns = None                      # nsdef 会覆盖为命名空间名
         return fd
 
     def classdef(self):
@@ -203,7 +237,7 @@ class Parser:
         base = None
         if self.accept("PUNCT", ":"):
             self.expect("KW", "public")
-            base = self.expect("ID")[1]
+            base = self.qual_name(self.expect("ID")[1])
         self.expect("PUNCT", "{")
         cd = ClassDecl(name, base)
         while not self.accept("PUNCT", "}"):
@@ -256,7 +290,7 @@ class Parser:
         elif t[0] == "KW" and t[1] == "void":
             ty = tvoid()                      # const void 不可表达
         elif t[0] == "ID":
-            ty = tcls(t[1], is_const)
+            ty = tcls(self.qual_name(t[1]), is_const)   # geo::Box 限定类型
         else:
             raise ParseError(f"L{t[2]}: 不支持的类型 {t[1]!r}")
         if self.accept("PUNCT", "&"):
@@ -362,12 +396,31 @@ class Parser:
             return VarDecl(nm, ty, init)
         if t[0] == "ID" and self.peek(1)[0] == "ID" and \
                 self.peek(2)[1] == ";":
-            cls, var = self.next()[1], self.next()[1]
+            cls = self.qual_name(self.next()[1])
+            var = self.next()[1]
             self.expect("PUNCT", ";")
             return CtorStmt(cls, var, [])          # X var;（无参构造）
+        if t[0] == "ID" and self.peek(1)[1] == "::" and \
+                self.peek(2)[0] == "ID" and self.peek(3)[0] == "ID" and \
+                self.peek(4)[1] == ";":
+            cls = self.qual_name(self.next()[1])
+            var = self.next()[1]
+            self.expect("PUNCT", ";")
+            return CtorStmt(cls, var, [])          # NS::X var;（无参构造）
         if t[0] == "ID" and self.peek(1)[0] == "ID" and \
                 self.peek(2)[1] == "(":
-            cls, var = self.next()[1], self.next()[1]
+            cls = self.qual_name(self.next()[1])
+            var = self.next()[1]
+            self.expect("PUNCT", "(")
+            args = [] if self.peek()[1] == ")" else self.exprlist()
+            self.expect("PUNCT", ")")
+            self.expect("PUNCT", ";")
+            return CtorStmt(cls, var, args)
+        if t[0] == "ID" and self.peek(1)[1] == "::" and \
+                self.peek(2)[0] == "ID" and self.peek(3)[0] == "ID" and \
+                self.peek(4)[1] == "(":
+            cls = self.qual_name(self.next()[1])
+            var = self.next()[1]
             self.expect("PUNCT", "(")
             args = [] if self.peek()[1] == ")" else self.exprlist()
             self.expect("PUNCT", ")")
@@ -460,12 +513,13 @@ class Parser:
         if t[0] == "STR":
             return StrLit(t[1])
         if t[0] == "ID":
+            nm = self.qual_name(t[1])          # geo::area → 单一名字串
             if self.peek()[1] == "(" and self.peek()[0] == "PUNCT":
                 self.next()
                 args = [] if self.peek()[1] == ")" else self.exprlist()
                 self.expect("PUNCT", ")")
-                return FreeCall(t[1], args)
-            return Id(t[1])
+                return FreeCall(nm, args)
+            return Id(nm)
         if t[0] == "KW" and t[1] == "this":
             return This()
         if t[0] == "KW" and t[1] == "new":

@@ -17,18 +17,27 @@ def enc_type(ty):
         k = "K" if ty.pointee.is_const else ""
         return "R" + k + enc_type(ty.pointee)
     if ty.kind == "class":
-        return f"{len(ty.name)}{ty.name}"
+        return _enc_components(ty.name)   # geo::Box → 3geo3Box（嵌套名）
     return {"int": "i", "char": "c", "bool": "b", "void": "v"}.get(ty.kind, ty.kind)
 
 
+def _enc_components(qname):
+    """限定名逐组件编码：geo::Box → 3geo3Box。"""
+    return "".join(f"{len(c)}{c}" for c in qname.split("::"))
+
+
 def mangle_method(cls_name, meth):
-    """MethodDecl → Itanium 修饰名。K 位只看方法 const 性（this 限定）。"""
+    """MethodDecl → Itanium 修饰名（限定类名逐组件）。K 位=方法 const 性。"""
     prefix = "_ZNK" if meth.is_const else "_ZN"
+    comps = _enc_components(cls_name) + f"{len(meth.name)}{meth.name}"
     enc = "".join(enc_type(pty) for (pty, _pn) in meth.params)
-    return f"{prefix}{len(cls_name)}{cls_name}{len(meth.name)}{meth.name}E" + (enc or "v")
+    return f"{prefix}{comps}E" + (enc or "v")
 
 
 def mangle_function(f):
-    """自由函数：_Z<len(name)><name><params>；零参 → v（与成员 _ZN… 区分）。"""
-    enc = "".join(enc_type(pty) for (pty, _pn) in f.params)
-    return f"_Z{len(f.name)}{f.name}{enc or 'v'}"
+    """自由函数：全局 _Z<len>name<enc>；ns 内 _ZN<len>ns<len>nameE<enc>。"""
+    enc = "".join(enc_type(pty) for (pty, _pn) in f.params) or "v"
+    ns = getattr(f, "ns", None)
+    if ns:
+        return f"_ZN{len(ns)}{ns}{len(f.name)}{f.name}E{enc}"
+    return f"_Z{len(f.name)}{f.name}{enc}"

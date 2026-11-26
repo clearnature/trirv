@@ -129,7 +129,7 @@ typedef struct ClassInfo {
 | `virtual void f()` | vtable 槽位 + `(*this_->__vtbl->f)(this_)` | v2 |
 | `new X(args)` | `struct X *p = malloc(sizeof(struct X)); X_ctor(p, args);` | |
 | `delete p` | `X_dtor(p); free(p);` | |
-| `namespace NS {}` | 前缀 `NS_`（扁平化，非嵌套作用域） | |
+| `namespace geo { … }` | 结构体扁平 `struct geo_Box`；函数全 Itanium 嵌套 `_ZN3geo4areaEii` | 0.0.13：ns 内裸名解析（sema 注册期规范化），外部必须限定；嵌套 ns/using=拒绝 |
 | `int add(int,int)` 自由函数 | `int _Z3addii(int a, int b)` | 0.0.12 透传：引用/物化/默认全通道同享 |
 | `int f(Box& b)` 自由函数对象引用 | `int _Z1fR3Box(struct Box *b)` | 接收者指针形态（sema 引用穿透） |
 | `int add(int,int)` 重载 | `_Z3addii`（Itanium mangling） | |
@@ -164,8 +164,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.10 | **生命周期扩展**：const T& 绑临时量→调用者作用域具名物化（sema bind='mat' 通道 + 后序改写器逐语句 hoists，声明序=依赖序）；引用局部声明 `const int& r = 42` 延寿；VALUE 返回值/嵌套物化；调用初始化两步发射（I1 撤销）。已知偏差：循环条件物化=单次求值（子集文档化）。非 const T& 绑临时量保持 N8 永久拒绝 | ✓ 已验证（e2e 29 项：9 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.11 | **默认参数**：调用点文本补全（默认表达式=调用者语境求值）+ 全默认 ctor 兼任无参构造 + 后缀规则/常量表达式限制/非 const REF 与对象形参默认拒绝 + 同 mangling 重定义守卫 + 重载歧义检测。mangling 不含默认值（Itanium 口径） | ✓ 已验证（e2e 31 项：10 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.12 | **自由函数透传**：`_Z<len>name<params>` mangling + FreeCall 解析（默认/物化/引用转发全通道同享）+ 对象引用形参 + 方法内裸调自由函数（隐式 this 判定集=本类链方法名，不误绑）+ 引用穿透接收者（ref→pointee 查类）+ 自由函数重载/歧义/重定义守卫 | ✓ 已验证（e2e 33 项：12 行为 + 1 N8 + 7 ADT，双 VM） |
-| **0.0.13** | **+ 命名空间（前缀扁平化）** | **下一个** |
-| 0.0.14 | + extern "C" 块 | |
+| 0.0.13 | **命名空间**：`::` 限定名 parser 拼接（复用全通道）+ sema 注册期短名→限定键规范化（ns 内裸名解析/外部必须限定=C++ 作用域法则）+ mangle 逐组件编码（_ZN3geo3Box3getEv）+ C 结构体扁平名（geo_Box）+ 同名类异 ns 共存 + ns 内裸调自由函数 | ✓ 已验证（e2e 35 项：13 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.14** | **+ extern "C" 块** | **下一个** |
 | 0.0.15 | + new/delete（malloc/free + ctor/dtor） | |
 | 0.0.16 | + 操作符重载（operator+/==/<< 限算术） | |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |

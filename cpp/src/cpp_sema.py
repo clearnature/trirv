@@ -16,7 +16,8 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
 from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
-from cpp_types import tint, tchar, tbool, tvoid, tcls, tref, type_name
+from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, type_name,
+                        TRef, TClass)
 from cpp_mangle import mangle_method, mangle_function
 
 
@@ -69,29 +70,126 @@ class Sema:
         self.classes = {}
         self.cur_method = None
         self.cur_cls = None
+        self.cur_ns = None
 
     # ============ 类表 ============
+    def _cur_key(self):
+        """当前类规范键（ClassDecl.key，回退 name 兼容）。"""
+        return getattr(self.cur_cls, "key", None) or self.cur_cls.name
+
+    def resolve_class_name(self, name, ns):
+        """短名/限定名 → 规范键；找不到返回 None。"""
+        if name in self.classes:
+            return name
+        if ns and f"{ns}::{name}" in self.classes:
+            return f"{ns}::{name}"
+        return None
+
+    def canon_ty(self, ty, ns):
+        """TClass 短名 → 限定键（仅当该 ns 内确有此名——外部裸名保持）。"""
+        if isinstance(ty, TRef):
+            self.canon_ty(ty.pointee, ns)
+        elif isinstance(ty, TClass) and "::" not in ty.name:
+            r = self.resolve_class_name(ty.name, ns)
+            if r:
+                ty.name = r
+
+    def canon_stmt(self, s, ns):
+        """body 内 VarDecl 类型 / CtorStmt 类名规范化。"""
+        if isinstance(s, VarDecl):
+            self.canon_ty(s.ty, ns)
+            if s.init is not None:
+                self.canon_expr(s.init, ns)
+        elif isinstance(s, CtorStmt):
+            s.cls = self.resolve_class_name(s.cls, ns) or s.cls
+            for a in s.args:
+                self.canon_expr(a, ns)
+        elif isinstance(s, ExprStmt):
+            self.canon_expr(s.expr, ns)
+        elif isinstance(s, Return):
+            if s.expr is not None:
+                self.canon_expr(s.expr, ns)
+        elif isinstance(s, If):
+            self.canon_expr(s.cond, ns)
+            self.canon_stmt(s.then, ns)
+            if s.els is not None:
+                self.canon_stmt(s.els, ns)
+        elif isinstance(s, While):
+            self.canon_expr(s.cond, ns)
+            self.canon_stmt(s.body, ns)
+        elif isinstance(s, For):
+            if s.init is not None:
+                self.canon_stmt(s.init, ns)
+            if s.cond is not None:
+                self.canon_expr(s.cond, ns)
+            if s.step is not None:
+                self.canon_expr(s.step, ns)
+            self.canon_stmt(s.body, ns)
+        elif isinstance(s, BlockStmt):
+            for x in s.stmts:
+                self.canon_stmt(x, ns)
+
+    def canon_expr(self, e, ns):
+        if isinstance(e, (MethodCall, FreeCall)):
+            if isinstance(e, MethodCall):
+                self.canon_expr(e.obj, ns)
+            for a in e.args:
+                self.canon_expr(a, ns)
+        elif isinstance(e, Bin):
+            self.canon_expr(e.l, ns)
+            self.canon_expr(e.r, ns)
+        elif isinstance(e, Un):
+            self.canon_expr(e.e, ns)
+        elif isinstance(e, Assign):
+            self.canon_expr(e.lhs, ns)
+            self.canon_expr(e.rhs, ns)
+        elif isinstance(e, Member):
+            self.canon_expr(e.obj, ns)
+        # Num/StrLit/Id/This：叶子
+
     def build_classes(self, decls):
+        # Phase A：键注册（ns 类 → ns::name 全局唯一键）
         for cd in decls:
-            if cd.name in self.classes:
-                raise SemaError("E0", f"类 {cd.name} 重复定义")
-            self.classes[cd.name] = ClassInfo(cd.name, cd.base)
+            key = f"{cd.ns}::{cd.name}" if cd.ns else cd.name
+            if key in self.classes:
+                raise SemaError("E0", f"类 {key} 重复定义")
+            cd.key = key
+            self.classes[key] = ClassInfo(cd.name, None)
+        # Phase B：类型/主体规范化（ns 内短名 → 键；基类解析）
         for cd in decls:
-            info = self.classes[cd.name]
-            if cd.base and cd.base not in self.classes:
-                raise SemaError("E0", f"基类 {cd.base} 未定义")
+            ns = cd.ns
+            for meth in cd.methods:
+                self.canon_ty(meth.ret, ns)
+                for (pty, _pn) in meth.params:
+                    self.canon_ty(pty, ns)
+                for ss in meth.body:
+                    self.canon_stmt(ss, ns)
+            for ctor in cd.ctors:
+                for (pty, _pn) in ctor.params:
+                    self.canon_ty(pty, ns)
+                for ss in ctor.body:
+                    self.canon_stmt(ss, ns)
+            if cd.base:
+                bkey = self.resolve_class_name(cd.base, ns)
+                if bkey is None:
+                    raise SemaError("E0", f"基类 {cd.base} 未定义")
+                cd.base_key = bkey
+        # Phase C：完整构建 + mangling 守卫
+        for cd in decls:
+            info = self.classes[cd.key]
+            if cd.base:
+                info.base = getattr(cd, "base_key", None)
             for (mn, mty) in cd.members:
                 info.members[mn] = mty
             info.methods.extend(cd.methods)
             info.ctors.extend(cd.ctors)
-            # 默认实参校验 + mangling 重定义守卫（sema 名字修饰职责，§三）
             seen = {}
             for meth in cd.methods:
                 self.check_defaults(meth)
-                mn2 = mangle_method(cd.name, meth)
+                mn2 = mangle_method(cd.key, meth)
                 if mn2 in seen:
                     raise SemaError("E0",
-                                    f"{cd.name}.{meth.name} 重定义：mangled "
+                                    f"{cd.key}.{meth.name} 重定义：mangled "
                                     f"{mn2} 撞 {seen[mn2]}（默认实参不进签名）")
                 seen[mn2] = meth.name
                 meth.mname = mn2
@@ -139,16 +237,23 @@ class Sema:
         return hits[0] if hits else None
 
     def build_funcs(self, funcs):
-        """自由函数符号表（0.0.12）：同名重载共存，mangle 定名。"""
-        self.funcs = {}            # name → [MethodDecl…]
+        """自由函数符号表：ns 函数以 ns::name 为键（限定调用 + ns 内裸调）。"""
+        self.funcs = {}            # call-name → [MethodDecl…]
         self.funcs_list = funcs
         for f in funcs:
+            for (pty, _pn) in f.params:
+                self.canon_ty(pty, f.ns)
+            self.canon_ty(f.ret, f.ns)
+            for ss in f.body:
+                self.canon_stmt(ss, f.ns)
             self.check_defaults(f)
             fm = mangle_function(f)
             if any(x.mname == fm for lst in self.funcs.values() for x in lst):
                 raise SemaError("E0", f"自由函数重定义：mangled {fm}")
             f.mname = fm
-            self.funcs.setdefault(f.name, []).append(f)
+            key = f"{f.ns}::{f.name}" if f.ns else f.name
+            f.call_key = key
+            self.funcs.setdefault(key, []).append(f)
 
     def visible_method_names(self, cname):
         """本类链全部方法名（隐式 this 改写的判定集）。"""
@@ -159,13 +264,20 @@ class Sema:
         return out
 
     def find_free_func(self, name, nargs):
-        """自由函数解析：默认补全 + 歧义检测。"""
+        """自由函数解析：限定名直查；裸名 → cur_ns::name → 全局。"""
+        tried = [name]
+        if self.cur_ns and "::" not in name:
+            tried.append(f"{self.cur_ns}::{name}")
         cands = []
-        for m in self.funcs.get(name, []):
-            n = len(m.params)
-            if n == nargs or (n > nargs and all(
-                    m.defaults[i] is not None for i in range(nargs, n))):
-                cands.append(m)
+        for key in tried:
+            for m in self.funcs.get(key, []):
+                n = len(m.params)
+                if n == nargs or (n > nargs and all(
+                        m.defaults[i] is not None
+                        for i in range(nargs, n))):
+                    cands.append(m)
+            if cands:
+                break                     # 内层 ns 优先（C++ 查找序）
         if len(cands) > 1:
             raise SemaError("E0",
                             f"自由函数 {name}({nargs} 参) 重载歧义")
@@ -177,7 +289,8 @@ class Sema:
         self.build_funcs(funcs)
         for cd in decls:
             self.cur_cls, self.cur_method = cd, None
-            visible = self.visible_method_names(cd.name)
+            self.cur_ns = cd.ns
+            visible = self.visible_method_names(cd.key)
             for ctor in cd.ctors:
                 rewrite_implicit_this(ctor.body, visible)
             for meth in cd.methods:
@@ -187,10 +300,12 @@ class Sema:
                 for (pty, pn) in ctor.params:
                     sc.declare(pn, pty)
                 for (tgt, args) in ctor.inits:
-                    if tgt == cd.base:
+                    btgt = self.resolve_class_name(tgt, cd.ns) or tgt
+                    if btgt == getattr(cd, "base_key", None):
                         if cd.base is None:
                             raise SemaError("E0", f"{tgt} 不是 {cd.name} 基类")
-                    elif self.find_member(cd.name, tgt) is None:
+                        tgt = btgt           # 规范化为限定键（lower 用）
+                    elif self.find_member(cd.key, tgt) is None:
                         raise SemaError(
                             f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
                     for a in args:
@@ -203,11 +318,13 @@ class Sema:
                 self.check_stmts(meth.body, sc, meth.is_const)
         for f in self.funcs_list:
             self.cur_cls, self.cur_method = None, f
+            self.cur_ns = f.ns
             sc = Scope()
             for (pty, pn) in f.params:
                 sc.declare(pn, pty)
             self.check_stmts(f.body, sc, False)
         self.cur_cls, self.cur_method = None, None
+        self.cur_ns = None
         if main is not None:
             self.check_stmts(main, Scope(), False)
         # 0.0.10 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化
@@ -246,8 +363,10 @@ class Sema:
                 # 调用初始化不再报错——lower 两步发射
             sc.declare(s.name, s.ty)
         elif isinstance(s, CtorStmt):
-            if s.cls not in self.classes:
+            ckey = self.resolve_class_name(s.cls, self.cur_ns)
+            if ckey is None:
                 raise SemaError("E0", f"类 {s.cls} 未定义")
+            s.cls = ckey
             hits = []
             for c in self.classes[s.cls].ctors:
                 n = len(c.params)
@@ -315,13 +434,13 @@ class Sema:
         elif isinstance(e, This):
             if self.cur_cls is None:
                 raise SemaError("E0", "this 在类外")
-            e.ty, e.lval = tobj(self.cur_cls.name, is_const=is_const), True
+            e.ty, e.lval = tobj(self._cur_key(), is_const=is_const), True
         elif isinstance(e, Id):
             vt = sc_find(sc, e.name)
             if vt is not None:
                 e.ref_kind, e.ty, e.lval = "var", vt, True
             elif self.cur_cls is not None:
-                hit = self.find_member_owner(self.cur_cls.name, e.name)
+                hit = self.find_member_owner(self._cur_key(), e.name)
                 if hit is None:
                     raise SemaError("E0", f"未声明标识符 {e.name!r}")
                 mt, owner = hit

@@ -43,42 +43,50 @@ def obj_param_as_ref(ty):
     return tref(ty) if ty.kind == "class" else ty
 
 
+def flat(n):
+    """限定键 → C 标识符：geo::Box → geo_Box（C 无嵌套名空间）。"""
+    return n.replace("::", "_")
+
+
 def type_c(ty):
-    """VALUE 类型 → C 形（class 加 struct 前缀；const 原样传递）。"""
+    """VALUE 类型 → C 形（class 扁平加 struct 前缀；const 原样传递）。"""
     name = type_name(ty)
-    s = f"struct {name}" if ty.kind == "class" else name
+    s = f"struct {flat(name)}" if ty.kind == "class" else name
     return (f"const {s}" if ty.is_const else s)
 
 
 def decl_class(cd):
-    """class → struct（基类嵌入 __base 首成员=upcast 通道）。"""
+    """class → struct（扁平名；基类嵌入 __base 首成员=upcast 通道）。"""
+    cname = flat(getattr(cd, "key", cd.name))
+    bkey = getattr(cd, "base_key", None) or cd.base
     parts = []
-    if cd.base:
-        parts.append(f"struct {cd.base} {BASE_KEY};")
+    if bkey:
+        parts.append(f"struct {flat(bkey)} {BASE_KEY};")
     for (mn, _mt) in cd.members:
         parts.append(f"int {mn};")
     inner = " ".join(parts)
-    return f"struct {cd.name} {{ {inner} }};" if inner \
-        else f"struct {cd.name} {{}};"
+    return f"struct {cname} {{ {inner} }};" if inner \
+        else f"struct {cname} {{}};"
 
 
 def lower_tu(decls, funcs, main, classes_meta):
     for cd in decls:
         for meth in cd.methods:
             if not hasattr(meth, "mname"):
-                meth.mname = mangle_method(cd.name, meth)
+                meth.mname = mangle_method(getattr(cd, "key", cd.name), meth)
     for f in funcs:
         if not hasattr(f, "mname"):
             f.mname = mangle_function(f)
     order, seen = [], set()
 
     def visit(cd):
-        if cd.name in seen:
+        k = getattr(cd, "key", cd.name)
+        if k in seen:
             return
-        seen.add(cd.name)
+        seen.add(k)
         if cd.base:
             for d in decls:
-                if d.name == cd.base:
+                if getattr(d, "key", d.name) == getattr(cd, "base_key", cd.base):
                     visit(d)
         order.append(cd)
 
@@ -98,24 +106,27 @@ def lower_tu(decls, funcs, main, classes_meta):
 # ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
 def lower_ctors(cd):
     out = []
+    cname = flat(getattr(cd, "key", cd.name))
+    bkey = getattr(cd, "base_key", None) or cd.base
     for ctor in cd.ctors:
-        params = [f"struct {cd.name} *this_"]
+        params = [f"struct {cname} *this_"]
         for (pty, pn) in ctor.params:
             params.append(decl_param(pty, pn))
         scope = {pn: obj_param_as_ref(pty) for (pty, pn) in ctor.params}
-        scope["__cls__"], scope["__const__"] = cd.name, False
+        scope["__cls__"] = getattr(cd, "key", cd.name)
+        scope["__const__"] = False
         body = []
         for (tgt, args) in ctor.inits:
             rargs = ", ".join(expr(a, {"value"}, scope) for a in args)
-            if tgt == cd.base:
-                body.append(f"{cd.base}_ctor((struct {cd.base} *)this_, "
+            if bkey and tgt == bkey:
+                body.append(f"{flat(bkey)}_ctor((struct {flat(bkey)} *)this_, "
                             f"{rargs});")
             else:
                 body.append(f"this_->{tgt} = {rargs};")
         body.extend(stmts(ctor.body, scope, False))
-        out.append(f"void {cd.name}_ctor({', '.join(params)}) "
+        out.append(f"void {cname}_ctor({', '.join(params)}) "
                    f"{{ {' '.join(body)} }}" if body else
-                   f"void {cd.name}_ctor({', '.join(params)}) {{ }}")
+                   f"void {cname}_ctor({', '.join(params)}) {{ }}")
     return out
 
 
@@ -134,11 +145,13 @@ def lower_free_func(f):
 def lower_methods(cd):
     out = []
     for meth in cd.methods:
-        this_t = (f"const struct {cd.name} *this_" if meth.is_const
-                  else f"struct {cd.name} *this_")
+        cname = flat(getattr(cd, "key", cd.name))
+        this_t = (f"const struct {cname} *this_" if meth.is_const
+                  else f"struct {cname} *this_")
         params = [this_t] + [decl_param(p, n) for (p, n) in meth.params]
         scope = {n: obj_param_as_ref(p) for (p, n) in meth.params}
-        scope["__cls__"], scope["__const__"] = cd.name, meth.is_const
+        scope["__cls__"] = getattr(cd, "key", cd.name)
+        scope["__const__"] = meth.is_const
         scope["__method__"] = meth
         body = stmts(meth.body, scope, meth.is_const)
         out.append(f"{render_ret(meth.ret)} {meth.mname}({', '.join(params)}) "
@@ -206,9 +219,10 @@ def _stmt(s, scope, is_const):
             return f"{cpre}{base} {s.name} = {c};"
         return f"{cpre}{base} {s.name};"
     if isinstance(s, CtorStmt):
+        cf = flat(s.cls)
         args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
-        call = f"{s.cls}_ctor(&{s.var}{', ' + args if args else ''});"
-        return f"struct {s.cls} {s.var}; {call}"
+        call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
+        return f"struct {cf} {s.var}; {call}"
     if isinstance(s, ExprStmt):
         return f"{expr(s.expr, {'value'}, scope)};"
     if isinstance(s, Return):
@@ -287,7 +301,7 @@ def this_member(name, owner, scope):
     if owner is None or scope.get("__cls__") in (None, owner):
         return f"this_->{name}"
     c = "const " if scope.get("__const__") else ""
-    return f"(({c}struct {owner} *)this_)->{name}"
+    return f"(({c}struct {flat(owner)} *)this_)->{name}"
 
 
 def this_recv(owner, scope):
@@ -295,7 +309,7 @@ def this_recv(owner, scope):
     if owner is None or scope.get("__cls__") in (None, owner):
         return "this_"
     c = "const " if scope.get("__const__") else ""
-    return f"({c}struct {owner} *)this_"
+    return f"({c}struct {flat(owner)} *)this_"
 
 
 def member_obj(o, scope):
