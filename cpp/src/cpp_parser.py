@@ -28,12 +28,20 @@ class ClassDecl:
         self.ns = None             # 所属命名空间（0.0.13）
         self.members = []          # [(name, Type)]
         self.ctors = []            # [CtorDecl]
+        self.dtors = []            # [DtorDecl]（0.0.19，至多一个）
         self.methods = []          # [MethodDecl]
 
 
 class CtorDecl:
     def __init__(self, params, inits, body):
         self.params, self.inits, self.body = params, inits, body
+
+
+class DtorDecl:
+    """~X() { body }——子集无参析构（0.0.19）。"""
+
+    def __init__(self, body):
+        self.body = body
 
 
 class MethodDecl:
@@ -180,9 +188,19 @@ class Parser:
     def parse_tu(self):
         """0.0.12：classes + 自由函数 + main 三类顶层声明。"""
         classes, funcs, main = [], [], None
+        globals_ = []
         while self.peek()[0] != "EOF":
             t = self.peek()
-            if t[0] == "KW" and t[1] == "extern":
+            if t[0] == "KW" and t[1] in ("int", "char") and \
+                    self.peek(1)[0] == "ID" and \
+                    self.peek(2)[1] in (";", "="):
+                ty = tchar() if t[1] == "char" else tint()
+                self.next()
+                nm = self.expect("ID")[1]
+                init = self.expr() if self.accept("PUNCT", "=") else None
+                self.expect("PUNCT", ";")
+                globals_.append((nm, ty, init))
+            elif t[0] == "KW" and t[1] == "extern":
                 self.extern_c(funcs)
             elif t[0] == "KW" and t[1] == "namespace":
                 ns_name = self.nsdef(classes, funcs)
@@ -198,7 +216,7 @@ class Parser:
                 funcs.append(self.funcdef())
             else:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
-        return classes, funcs, main
+        return classes, funcs, globals_, main
 
     def extern_c(self, funcs):
         """extern "C" { fdecl… } / extern "C" int f(params);——裸名链接面。
@@ -306,6 +324,14 @@ class Parser:
                     (t[0] == "ID" and self.peek(1)[0] == "KW" and
                      self.peek(1)[1] == "operator"):
                 cd.methods.append(self.methoddef())
+            elif t[0] == "PUNCT" and t[1] == "~":
+                self.next()
+                dn = self.expect("ID")[1]
+                if dn != name:
+                    raise ParseError(f"L{t[2]}: 析构名 ~{dn} 与类 {name} 不符")
+                self.expect("PUNCT", "(")
+                self.expect("PUNCT", ")")
+                cd.dtors.append(DtorDecl(self.block()))
             else:
                 raise ParseError(f"L{t[2]}: 类体内不支持 {t[1]!r}"
                                  f"（成员限 int；char 成员/访问控制外语法=后续版本）")
@@ -619,5 +645,5 @@ class Block:
 
 
 def parse(src):
-    """源码 → (classes, free_funcs, main_body_stmts)。"""
+    """源码 → (classes, free_funcs, globals, main_body_stmts)。"""
     return Parser(lex(src)).parse_tu()

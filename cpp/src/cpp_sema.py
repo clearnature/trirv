@@ -13,7 +13,7 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (New, DeleteStmt, Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (New, DeleteStmt, DtorDecl, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
@@ -35,6 +35,8 @@ class ClassInfo:
         self.members = {}      # name → Type
         self.methods = []      # MethodDecl
         self.ctors = []        # CtorDecl
+        self.dtor = None       # DtorDecl（0.0.19）
+        self.key = None
 
 
 class Scope:
@@ -164,7 +166,9 @@ class Sema:
             if key in self.classes:
                 raise SemaError("E0", f"类 {key} 重复定义")
             cd.key = key
-            self.classes[key] = ClassInfo(cd.name, None)
+            ci = ClassInfo(cd.name, None)
+            ci.key = key
+            self.classes[key] = ci
         # Phase B：类型/主体规范化（ns 内短名 → 键；基类解析）
         for cd in decls:
             ns = cd.ns
@@ -178,6 +182,9 @@ class Sema:
                 for (pty, _pn) in ctor.params:
                     self.canon_ty(pty, ns)
                 for ss in ctor.body:
+                    self.canon_stmt(ss, ns)
+            for dt in getattr(cd, "dtors", []):
+                for ss in dt.body:
                     self.canon_stmt(ss, ns)
             if cd.base:
                 bkey = self.resolve_class_name(cd.base, ns)
@@ -193,6 +200,10 @@ class Sema:
                 info.members[mn] = mty
             info.methods.extend(cd.methods)
             info.ctors.extend(cd.ctors)
+            if len(getattr(cd, "dtors", [])) > 1:
+                raise SemaError("E0", f"{cd.key} 多个析构（至多一个）")
+            if getattr(cd, "dtors", []):
+                info.dtor = cd.dtors[0]
             seen = {}
             for meth in cd.methods:
                 self.check_defaults(meth)
@@ -310,9 +321,13 @@ class Sema:
         return cands[0] if cands else None
 
     # ============ 主体 ============
-    def check(self, decls, funcs, main):
+    def check(self, decls, funcs, gdecls, main):
         self.build_classes(decls)
         self.build_funcs(funcs)
+        self.gscope = Scope()
+        for (gn, gty, _gi) in gdecls:
+            self.gscope.declare(gn, gty)
+        self.gdecls = gdecls
         for cd in decls:
             self.cur_cls, self.cur_method = cd, None
             self.cur_ns = cd.ns
@@ -321,8 +336,10 @@ class Sema:
                 rewrite_implicit_this(ctor.body, visible)
             for meth in cd.methods:
                 rewrite_implicit_this(meth.body, visible)
+            if self.classes[cd.key].dtor:
+                rewrite_implicit_this(self.classes[cd.key].dtor.body, visible)
             for ctor in cd.ctors:
-                sc = Scope()
+                sc = Scope(self.gscope)
                 for (pty, pn) in ctor.params:
                     sc.declare(pn, pty)
                 for (tgt, args) in ctor.inits:
@@ -338,26 +355,30 @@ class Sema:
                         self.check_stmts(ctor.body, sc, False)
             for meth in cd.methods:
                 self.cur_method = meth
-                sc = Scope()
+                sc = Scope(self.gscope)
                 for (pty, pn) in meth.params:
                     if pty.kind == "ptr":
                         raise SemaError("E0",
                                         "指针形参=后续版本（引用形参同语义）")
                     sc.declare(pn, pty)
                 self.check_stmts(meth.body, sc, meth.is_const)
+            if self.classes[cd.key].dtor:
+                self.cur_method = None
+                sc = Scope(self.gscope)
+                self.check_stmts(self.classes[cd.key].dtor.body, sc, False)
         for f in self.funcs_list:
             self.cur_cls, self.cur_method = None, f
             self.cur_ns = None            # extern "C" 仅全局（子集）
             if f.body is None:
                 continue                  # 原型声明：无体可查
-            sc = Scope()
+            sc = Scope(self.gscope)
             for (pty, pn) in f.params:
                 sc.declare(pn, pty)
             self.check_stmts(f.body, sc, False)
         self.cur_cls, self.cur_method = None, None
         self.cur_ns = None
         if main is not None:
-            self.check_stmts(main, Scope(), False)
+            self.check_stmts(main, Scope(self.gscope), False)
         # 0.0.10 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化
         self._tmpn = 0
         for cd in decls:
@@ -365,6 +386,8 @@ class Sema:
                 self._mat_body(ctor.body)
             for meth in cd.methods:
                 self._mat_body(meth.body)
+            if self.classes[cd.key].dtor:
+                self._mat_body(self.classes[cd.key].dtor.body)
         for f in self.funcs_list:
             if f.body is not None:
                 self._mat_body(f.body)
@@ -425,6 +448,8 @@ class Sema:
                                 "delete 操作数须为对象指针（Box*）——子集内"
                                 "delete 仅回收对象存储（无 dtor 语法）")
             s.ty = et
+            dinfo = self.classes.get(et.pointee.name)
+            s.dtor_key = dinfo.key if (dinfo and dinfo.dtor) else None
         elif isinstance(s, ExprStmt):
             self.check_expr(s.expr, sc, is_const)
         elif isinstance(s, Return):

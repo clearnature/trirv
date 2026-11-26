@@ -71,7 +71,7 @@ def decl_class(cd):
         else f"struct {cname} {{}};"
 
 
-def lower_tu(decls, funcs, main, classes_meta):
+def lower_tu(decls, funcs, gdecls, main, classes_meta):
     for cd in decls:
         for meth in cd.methods:
             if not hasattr(meth, "mname"):
@@ -95,14 +95,25 @@ def lower_tu(decls, funcs, main, classes_meta):
     for cd in decls:
         visit(cd)
     structs = [decl_class(cd) for cd in order]
+    gdecls_c = []
+    for (gn, gty, gi) in gdecls:
+        base = type_name(gty)
+        if gi is not None:
+            gdecls_c.append(f"{base} {gn} = {expr(gi, {'value'}, {})};")
+        else:
+            gdecls_c.append(f"{base} {gn};")
     funcs_c = []
     for cd in decls:
         funcs_c.extend(lower_ctors(cd))
         funcs_c.extend(lower_methods(cd))
+        info = classes_meta.get(getattr(cd, "key", cd.name))
+        if info and info.dtor:
+            funcs_c.extend(lower_dtor(cd, info.dtor))
     for f in funcs:
         funcs_c.extend(lower_free_func(f))
     main_c = lower_main(main) if main is not None else None
-    return {"structs": structs, "funcs": funcs_c, "main": main_c}
+    return {"structs": structs, "globals": gdecls_c, "funcs": funcs_c,
+            "main": main_c}
 
 
 # ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
@@ -142,6 +153,16 @@ def lower_free_func(f):
     scope["__method__"] = f
     body = stmts(f.body, scope, False)
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
+
+
+def lower_dtor(cd, dt):
+    cname = flat(getattr(cd, "key", cd.name))
+    scope = {"__cls__": getattr(cd, "key", cd.name), "__const__": False,
+             "__method__": None}
+    body = stmts(dt.body, scope, False)
+    return [f"void {cname}_dtor(struct {cname} *this_) "
+            f"{{ {' '.join(body)} }}" if body else
+            f"void {cname}_dtor(struct {cname} *this_) {{ }}"]
 
 
 # ============ 方法 ============
@@ -256,8 +277,11 @@ def _stmt(s, scope, is_const):
         call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
         return f"struct {cf} {s.var}; {call}"
     if isinstance(s, DeleteStmt):
-        # 子集无 dtor 语法：delete 仅回收存储（X_dtor 进场后补调用）
-        return f"free({expr(s.expr, {'value'}, scope)});"
+        e = f"free({expr(s.expr, {'value'}, scope)});"
+        dk = getattr(s, "dtor_key", None)
+        if dk:
+            e = f"{flat(dk)}_dtor({expr(s.expr, {'value'}, scope)}); " + e
+        return e
     if isinstance(s, ExprStmt):
         return f"{expr(s.expr, {'value'}, scope)};"
     if isinstance(s, Return):

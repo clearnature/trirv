@@ -128,7 +128,8 @@ typedef struct ClassInfo {
 | `Math m;`（全默认 ctor） | `struct Math m; Math_ctor(&m, 7);` | 全默认构造兼任无参构造 |
 | `virtual void f()` | vtable 槽位 + `(*this_->__vtbl->f)(this_)` | v2 |
 | `Box* p = new Box(5);` | `struct Box *p = malloc(sizeof(struct Box)); Box_ctor(p, 5);` | 0.0.15：§四 规划行落地；指针穿透 `p->get()` 直传 |
-| `delete p;` | `free(p);` | 0.0.15：子集无 dtor 语法，仅回收存储（X_dtor 进场后补） |
+| `delete p;`（有 ~X） | `X_dtor(p); free(p);` | 0.0.19：dtor 对接（X_dtor 约定名，C1/D1 之分=虚基进场再切） |
+| `int g = 5;`（全局） | `int g = 5;` 直发 | 0.0.19：全局变量=dtor 可观测通道（跨函数可见） |
 | `delete p` | `X_dtor(p); free(p);` | |
 | `namespace geo { … }` | 结构体扁平 `struct geo_Box`；函数全 Itanium 嵌套 `_ZN3geo4areaEii` | 0.0.13：ns 内裸名解析（sema 注册期规范化），外部必须限定；嵌套 ns/using=拒绝 |
 | `extern "C" { int f(int); }` | 裸名 `int f(int a);`（不 mangle） | 0.0.14：原型直出对接 C 符号；形参限基本型 |
@@ -175,7 +176,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.16 | **操作符重载**：operator+/==（限算术数值结果——对象返回+显式构造表达式=0.0.17）；成员（1 参）/自由（2 参）两形态；sema Bin→调用节点就地转换（e.call，Type/bind 全通道复用）；Itanium 算子表编码 pl/eq（无长度前缀）；对象临时量绑定=E0（0.0.17 物化） | ✓ 已验证（e2e 41 项：16 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.17 | **显式构造表达式 + 对象临时量物化**：`Vec(x,y)`（FreeCall+类名→ctor 调用，栈临时+取址）；`return Vec(...)` 物化后按值返回（operator 对象返回面补完）；解除 0.0.16 对象临时量 E0。**勘误（0.0.18）**：本版「结构体赋值缺失实证」是探针误判——250=506 mod 256（POSIX 8 位 exit 通道，v0.0.7 已入册的 ABI），trirv_cc 结构体赋值一直可用 | ✓ 已验证（e2e 43 项，双 VM） |
 | 0.0.18 | **调用结果对象绑定（E0 解除）**：类右值一律 bind='mat'（结构体赋值形态 `struct Vec tn; tn = call;`）+ 接收者右值物化（`(c+b)+c` 的 `(c+b)`）；**编译器侧零改动**——0.0.18 实际工作面=解除误判 E0+更正记录 | ✓ 已验证（e2e 45 项：19 行为 + 1 N8 + 7 ADT，双 VM） |
-| **0.0.19** | **+ 下一增量（static 成员/dtor 等 0.0.17–0.0.50 类特性带）** | **下一个** |
+| 0.0.19 | **~X dtor + 全局变量**：`~X() { body }`（至多一个，无参）→ `X_dtor`（约定名）；`delete p` 对接 `X_dtor(p); free(p);`；全局变量通道（带初始化/跨函数可见，探针 16 ✓）=dtor 可观测；gscope 作用域根（方法/自由函数/main 全接线） | ✓ 已验证（e2e 47 项：19 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.20** | **+ static 成员（0.0.13–0.0.50 类特性带续）** | **下一个** |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |

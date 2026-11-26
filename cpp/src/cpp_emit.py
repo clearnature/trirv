@@ -3,7 +3,8 @@
 
 
 def emit(units):
-    parts = list(units["structs"]) + list(units["funcs"])
+    parts = list(units["structs"]) + list(units.get("globals", [])) \
+        + list(units["funcs"])
     if units.get("main"):
         parts.append(units["main"])
     return "\n\n".join(parts) + "\n"
