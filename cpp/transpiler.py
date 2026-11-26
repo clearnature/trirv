@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.5 —— C++ -> C 降级器（单继承 + 引用返回/形参 + 方法参数）。
+"""transpiler v0.0.6 —— C++ -> C 降级器（单继承 + 引用 + const 方法/形参）。
 用法：python3 cpp/transpiler.py input.cpp output.c
 """
 import re, sys
 
-VERSION = "0.0.5"
+VERSION = "0.0.6"
 
 
 def transpile(src):
@@ -29,10 +29,10 @@ def transpile(src):
             for im in re.finditer(r'(\w+)\s*\(\s*(\w+)\s*\)', ctor.group(2)):
                 info["ctor_inits"].append((im.group(1), im.group(2)))
             info["ctor_body"] = ctor.group(3).strip()
-        for mm in re.finditer(r'(int\s*&?|void)\s+(\w+)\s*\(([^)]*)\)\s*\{([^{}]*)\}', body):
+        for mm in re.finditer(r'(int\s*&?|void)\s+(\w+)\s*\(([^)]*)\)\s*(?:const\s*)?\{([^{}]*)\}', body):
             params = []
             for p in mm.group(3).split(","):
-                p = p.strip()
+                p = re.sub(r'^const\s+', '', p.strip())   # const 形参：限定符剥离
                 if not p:
                     continue
                 # 形参：Type name / Type &name / Type& name（引用）
