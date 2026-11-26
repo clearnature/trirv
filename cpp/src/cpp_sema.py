@@ -37,6 +37,7 @@ class ClassInfo:
         self.ctors = []        # CtorDecl
         self.dtor = None       # DtorDecl（0.0.19）
         self.static_members = {}   # name → Type（0.0.20）
+        self.vslots = []           # 虚槽名序（0.0.24，base 先序+override 保位）
         self.key = None
 
 
@@ -228,6 +229,15 @@ class Sema:
                 raise SemaError("E0", f"{cd.key} 多个析构（至多一个）")
             if getattr(cd, "dtors", []):
                 info.dtor = cd.dtors[0]
+            # 0.0.24 vtable 槽序：base 槽拷贝 → 本类虚方法（override 保位/新槽追加）
+            if info.base:
+                info.vslots = list(self.classes[info.base].vslots)
+            for meth in cd.methods:
+                if meth.name in info.vslots:
+                    meth.is_virtual = True   # 重写虚槽=隐式虚（C++ 法）
+                if getattr(meth, "is_virtual", False) and \
+                        meth.name not in info.vslots:
+                    info.vslots.append(meth.name)
             seen = {}
             for meth in cd.methods:
                 self.check_defaults(meth)
@@ -270,19 +280,24 @@ class Sema:
 
     def find_method_owner(self, cname, name, nargs):
         """(MethodDecl, 声明类名)——跨类调用的 cast 喂点。
-        0.0.11：缺省实参可补全（nargs < 参数数且缺位全有默认）；歧义报错。"""
+        0.0.11：缺省实参可补全；歧义报错。
+        0.0.24：override 语义——查找止于首个含该方法名的类（派生遮蔽基类）。"""
         hits = []
         c = cname
         while c:
+            found_here = False
             for m in self.classes[c].methods:
                 if m.name != name:
                     continue
+                found_here = True
                 n = len(m.params)
                 if n == nargs:
                     hits.append((m, c))
                 elif n > nargs and all(
                         m.defaults[i] is not None for i in range(nargs, n)):
                     hits.append((m, c))
+            if found_here and hits:
+                break                     # 本类有声明：遮蔽基类（重载仍同层全查）
             c = self.classes[c].base
         if len(hits) > 1:
             cands = ", ".join(f"{k[1]}::{name}/{len(k[0].params)}参"
@@ -600,6 +615,12 @@ class Sema:
             if hit is None:
                 raise SemaError("E0", f"{ot.name}.{e.name} 无 {len(e.args)} 参重载")
             meth, e.sig_owner = hit
+            if getattr(meth, "is_virtual", False):
+                raise SemaError("E0",
+                                "virtual 调用需 vtable——预研探针矩阵：fn-ptr "
+                                "间接调用/主函数内赋槽 ✓，函数内槽赋值 flaky "
+                                "（p24g✗ p24h✓）+ struct 前向声明不支持；"
+                                "trirv_cc 侧修复=0.025 前置（要么对、要么报错）")
             if getattr(meth, "is_static", False):
                 e.static_call = True
             if is_const and not meth.is_const and is_this_receiver(e.obj):

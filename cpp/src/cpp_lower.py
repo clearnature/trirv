@@ -59,11 +59,16 @@ def type_c(ty):
     return (f"const {s}" if ty.is_const else s)
 
 
-def decl_class(cd):
+def decl_class(cd, classes_meta=None):
     """class → struct（扁平名；基类嵌入 __base 首成员=upcast 通道）。"""
     cname = flat(getattr(cd, "key", cd.name))
     bkey = getattr(cd, "base_key", None) or cd.base
     parts = []
+    info = classes_meta.get(getattr(cd, "key", cd.name))
+    has_virt = info is not None and info.vslots
+    if has_virt:
+        # vtable 指针最前（单继承布局兼容：base 的 vtbl 同在位 0）
+        parts.append(f"struct {cname}_v *__vtbl;")
     if bkey:
         parts.append(f"struct {flat(bkey)} {BASE_KEY};")
     for (mn, mt) in cd.members:
@@ -97,7 +102,8 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     for cd in decls:
         if not getattr(cd, "forward", False):
             visit(cd)
-    structs = [decl_class(cd) for cd in order]
+    structs = [decl_class(cd, classes_meta) for cd in order]
+
     gdecls_c = []
     for (gn, gty, gi) in gdecls:
         base = type_name(gty)
@@ -117,7 +123,7 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     for cd in decls:
         if getattr(cd, "forward", False):
             continue                         # 前向声明：无函数可发射
-        funcs_c.extend(lower_ctors(cd))
+        funcs_c.extend(lower_ctors(cd, classes_meta))
         funcs_c.extend(lower_methods(cd))
         info = classes_meta.get(getattr(cd, "key", cd.name))
         if info and info.dtor:
@@ -130,7 +136,7 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
 
 
 # ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
-def lower_ctors(cd):
+def lower_ctors(cd, classes_meta=None):
     out = []
     cname = flat(getattr(cd, "key", cd.name))
     bkey = getattr(cd, "base_key", None) or cd.base
@@ -166,6 +172,24 @@ def lower_free_func(f):
     scope["__method__"] = f
     body = stmts(f.body, scope, False)
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
+
+
+def find_slot_impl(cd, info, slot, classes_meta):
+    """槽 impl：本类 override → 本类方法；否则沿基类链找。"""
+    for m in cd.methods:
+        if m.name == slot:
+            return m
+    c = info.base
+    while c:
+        bi = classes_meta.get(c)
+        if bi:
+            for m in bi.methods:
+                if m.name == slot:
+                    return m
+            c = bi.base
+        else:
+            break
+    return None
 
 
 def lower_dtor(cd, dt):

@@ -62,9 +62,10 @@ BEHAVIOR = [
     ("test22_nested.cpp", 17),
     ("test23_ops_ptr.cpp", 118),     # 需链 libc（new/delete）
 ]
-# (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
+# (文件, stderr 必含码)——拒绝性用例
 REJECT = [
     ("test08a_n8_ref.cpp", "N8"),
+    ("test24_virtual.cpp", "virtual"),   # vtable 预研：trirv_cc 函数内槽赋值修复后解锁
 ]
 
 os.makedirs(TMP, exist_ok=True)

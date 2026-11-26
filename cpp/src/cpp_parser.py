@@ -325,7 +325,10 @@ class Parser:
                 self.next()
                 self.expect("PUNCT", ":")
             elif t[0] == "KW" and t[1] == "virtual":
-                raise ParseError("L%d: virtual 暂不支持（v2 vtable）" % t[2])
+                self.next()                    # 0.0.24：虚函数标记
+                md = self.methoddef()
+                md.is_virtual = True
+                cd.methods.append(md)
             elif t[0] == "KW" and t[1] == "static":
                 self.next()
                 ty = self.parse_type()
