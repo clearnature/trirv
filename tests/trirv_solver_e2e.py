@@ -18,9 +18,11 @@ import trirv_vm as vm
 HERE = os.path.dirname(os.path.abspath(__file__))
 CC = os.path.join(HERE, "..", "cc", "bin", "trirv_cc")
 CVM = os.path.join(HERE, "..", "vm", "bin", "trirv_vm")
-LIB = os.path.join(HERE, "..", "solver", "c", "color3_solve_tri.c")
-sys.path.insert(0, os.path.join(HERE, "..", "solver", "py"))
-from color3 import color3_solve
+H = open(os.path.join(HERE, "..", "solver", "c", "solver.h")).read()
+GRAPH_C = os.path.join(HERE, "..", "solver", "c", "graph_tri.c")
+COLOR3_C = os.path.join(HERE, "..", "solver", "c", "color3_tri.c")
+sys.path.insert(0, os.path.join(HERE, "..", "solver"))
+from py.color3 import color3_solve
 
 passed = failed = 0
 
@@ -73,16 +75,26 @@ for (n, edges) in INSTS:
         blob += bytes([u, vv])
 
 # ---- 编译 + 链接 + 注入 + 运行 ----
-trvo = tempfile.mktemp(suffix=".trvo")
-r = subprocess.run([CC, LIB, trvo], capture_output=True, text=True)
-check("color3_solve_tri 编译导出", r.returncode, 0)
+gc_src = tempfile.mktemp(suffix=".c")
+with open(gc_src, "w") as f:
+    f.write(H + open(GRAPH_C).read())
+graph_trvo = tempfile.mktemp(suffix=".trvo")
+r = subprocess.run([CC, gc_src, graph_trvo], capture_output=True, text=True)
+check("graph_tri 编译导出", r.returncode, 0)
+cc_src = tempfile.mktemp(suffix=".c")
+with open(cc_src, "w") as f:
+    f.write(H + open(COLOR3_C).read())
+color3_trvo = tempfile.mktemp(suffix=".trvo")
+r = subprocess.run([CC, cc_src, color3_trvo], capture_output=True, text=True)
+check("color3_tri 编译导出（跨 TU 调 g_*）", r.returncode, 0)
 
 cf = tempfile.mktemp(suffix=".c")
 with open(cf, "w") as f:
     f.write(DRIVER)
 trv = tempfile.mktemp(suffix=".trv")
-r = subprocess.run([CC, cf, trv, "-l", trvo], capture_output=True, text=True)
-check("驱动链接", r.returncode, 0)
+r = subprocess.run([CC, cf, trv, "-l", graph_trvo, "-l", color3_trvo],
+                   capture_output=True, text=True)
+check("驱动链接（多 TU：graph + color3）", r.returncode, 0)
 
 data = open(trv, "rb").read()
 prog, mem, _ = _trvio.load_bytes(data)
@@ -146,7 +158,7 @@ if os.path.exists(CVM):
             ex = int(ln.split("exit=")[1].split()[0])
 check("CVM 同跑 exit 一致（return 0）", ex, 0)
 
-for p in (trvo, trv, cf):
+for p in (graph_trvo, color3_trvo, trv, cf):
     if os.path.exists(p):
         os.unlink(p)
 
