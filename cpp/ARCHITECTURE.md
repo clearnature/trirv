@@ -135,6 +135,8 @@ typedef struct ClassInfo {
 | `int add(int,int)` 自由函数 | `int _Z3addii(int a, int b)` | 0.0.12 透传：引用/物化/默认全通道同享 |
 | `int f(Box& b)` 自由函数对象引用 | `int _Z1fR3Box(struct Box *b)` | 接收者指针形态（sema 引用穿透） |
 | `int operator+(const T& r)` | `_ZN3TplERK T…`（成员）/ `_ZplRK…RK…`（自由） | 0.0.16：算子表编码 pl/eq 无长度前缀；成员优先自由兜底；限数值结果 |
+| `return Vec(x + r.x, …)` | `struct Vec __tmp0; Vec_ctor(&__tmp0, …); return __tmp0;` | 0.0.17：显式构造表达式→栈物化+按值返回（无结构体赋值依赖） |
+| `f(Vec(6, 7))` | `struct Vec __tmp1; Vec_ctor(&__tmp1, 6, 7); f(&(__tmp1));` | 0.0.17：对象临时量物化（0.0.16 E0 解除） |
 | `int add(int,int)` 重载 | `_Z3addii`（Itanium mangling） | |
 
 ## 五、Itanium 名字修饰（cpp_mangle）
@@ -171,7 +173,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.14 | **extern "C"**：块/单声明两形态；mangle=裸名直出（C 链接面）；形参/返回限基本型（引用/对象=指针 ABI，后续版本）；无体声明=原型直出（对接既有 C 符号的钥匙）；C 链接无重载（同名=E0） | ✓ 已验证（e2e 37 项：14 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.15 | **new/delete**：`new X(args)`→malloc+ctor（§四 规划行）；`delete p`→free（无 dtor 语法=仅回收存储）；TPtr 指针类型层（ptr-of-ptr/ptr-of-ref 构造层拒绝；mangle P 前缀）；`->` 指针穿透接收者；指针形参=拒绝（引用同语义）；test15 需链 cc/trirv_libc.trvo（malloc/free） | ✓ 已验证（e2e 39 项：15 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.16 | **操作符重载**：operator+/==（限算术数值结果——对象返回+显式构造表达式=0.0.17）；成员（1 参）/自由（2 参）两形态；sema Bin→调用节点就地转换（e.call，Type/bind 全通道复用）；Itanium 算子表编码 pl/eq（无长度前缀）；对象临时量绑定=E0（0.0.17 物化） | ✓ 已验证（e2e 41 项：16 行为 + 1 N8 + 7 ADT，双 VM） |
-| **0.0.17** | **+ 显式构造表达式 `Vec(x,y)` + 对象临时量物化（算术结果对象）** | **下一个** |
+| 0.0.17 | **显式构造表达式 + 对象临时量物化**：`Vec(x,y)`（FreeCall+类名→ctor 调用，栈临时+取址）；`return Vec(...)` 物化后按值返回（operator 对象返回面补完）；解除 0.0.16 对象临时量 E0。边界收紧：**调用结果对象绑定仍 E0**——trirv_cc 结构体赋值缺失实证（探针 250≠511），sret/拷贝构造=0.0.18 | ✓ 已验证（e2e 43 项：17 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.18** | **+ 结构体赋值/sret（调用结果对象绑定解锁前置）** | **下一个** |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |

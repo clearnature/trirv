@@ -302,7 +302,9 @@ class Parser:
             elif (t[0] == "KW" and t[1] in ("char", "void", "bool", "const")) or \
                     (t[0] == "KW" and t[1] == "operator") or \
                     (t[0] == "ID" and self.peek(1)[0] == "ID" and
-                     self.peek(2)[1] == "("):
+                     self.peek(2)[1] == "(") or \
+                    (t[0] == "ID" and self.peek(1)[0] == "KW" and
+                     self.peek(1)[1] == "operator"):
                 cd.methods.append(self.methoddef())
             else:
                 raise ParseError(f"L{t[2]}: 类体内不支持 {t[1]!r}"

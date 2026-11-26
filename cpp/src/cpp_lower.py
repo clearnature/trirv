@@ -15,7 +15,7 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (New, DeleteStmt, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
+from cpp_parser import (New, DeleteStmt, CtorDecl, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
@@ -194,7 +194,13 @@ def hoist_pre(s, scope):
         return ""
     parts = []
     for (tn, e) in hs:
-        if isinstance(e, New):
+        if getattr(e, "ty", None) is not None and e.ty.kind == "class" and \
+                isinstance(e, FreeCall) and isinstance(e.sig, CtorDecl):
+            # 0.0.17 显式构造临时：栈物化（无结构体赋值依赖）
+            cf = flat(e.name)
+            args = ", ".join(expr(a, {"value"}, scope) for a in e.args)
+            parts.append(f"struct {cf} {tn}; {cf}_ctor(&{tn}, {args});")
+        elif isinstance(e, New):
             # 0.0.15：new X(args) → malloc + ctor（§四 规划行落地）
             cf = flat(e.cls)
             args = ", ".join(expr(a, {"value"}, scope) for a in e.args)

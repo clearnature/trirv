@@ -54,6 +54,7 @@ BEHAVIOR = [
     ("test14_externc.cpp", 25),
     ("test15_new.cpp", 57),          # 需链 libc（malloc/free）
     ("test16_operators.cpp", 122),
+    ("test17_ctor_expr.cpp", 44),
 ]
 # (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [

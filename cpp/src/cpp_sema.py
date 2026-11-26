@@ -139,6 +139,10 @@ class Sema:
         elif isinstance(e, (MethodCall, FreeCall)):
             if isinstance(e, MethodCall):
                 self.canon_expr(e.obj, ns)
+            elif isinstance(e, FreeCall):
+                r = self.resolve_class_name(e.name, ns)
+                if r:
+                    e.name = r               # CtorExpr 类名 → 键（lower flat）
             for a in e.args:
                 self.canon_expr(a, ns)
         elif isinstance(e, Bin):
@@ -539,6 +543,20 @@ class Sema:
                     a.bind = "value"
             e.ty, e.lval = tptr(tobj(ckey)), False
         elif isinstance(e, FreeCall):
+            ckey = self.resolve_class_name(e.name, self.cur_ns)
+            if ckey is not None:
+                # 0.0.17 显式构造表达式：Vec(x, y)（类名+括号=ctor 调用）
+                hits = [c for c in self.classes[ckey].ctors
+                        if len(c.params) == len(e.args)]
+                if len(hits) != 1:
+                    raise SemaError("E0",
+                                    f"{ckey} 显式构造：无/多 {len(e.args)} 参构造")
+                e.sig = hits[0]
+                for a in e.args:
+                    self.check_expr(a, sc, is_const)
+                    a.bind = "value"
+                e.ty, e.lval = tobj(ckey), False
+                return e.ty
             f = self.find_free_func(e.name, len(e.args))
             if f is None:
                 raise SemaError("E0",
@@ -629,10 +647,14 @@ class Sema:
             elif pty.kind == "class":
                 if at.kind == "ref" or getattr(a, "lval", False):
                     a.bind = "addr"          # 对象左值取址
+                elif isinstance(a, FreeCall) and \
+                        type(getattr(a, "sig", None)).__name__ == "CtorDecl":
+                    a.bind = "mat"           # 0.0.17：显式构造临时→栈物化
                 else:
                     raise SemaError("E0",
-                                    "对象临时量绑定=0.0.17（算术结果对象"
-                                    "物化）——本版本仅左值对象")
+                                    "调用结果对象绑定需结构体赋值——trirv_cc "
+                                    "不支持（探针 250≠511 实证）；sret/拷贝"
+                                    "构造=0.0.18（要么对、要么报错）")
             else:
                 a.bind = "deref" if at.kind == "ref" else "value"
 
@@ -817,6 +839,14 @@ def _install_mat(cls):
         elif isinstance(s, Return):
             if s.expr is not None:
                 self._mat_expr(s.expr, h)
+                ce = s.expr
+                if isinstance(ce, FreeCall) and \
+                        type(getattr(ce, "sig", None)).__name__ == "CtorDecl":
+                    tn = self._fresh()       # return Vec(...) → 物化后按值返回
+                    h.append((tn, ce))
+                    rid = Id(tn)
+                    rid.ty, rid.lval = ce.ty, True
+                    s.expr = rid
         if h:
             s.hoists = h
 
@@ -845,7 +875,7 @@ def _install_mat(cls):
                     tn = self._fresh()
                     h.append((tn, a))
                     rid = Id(tn)
-                    rid.ty, rid.lval = tval("int"), True
+                    rid.ty, rid.lval = a.ty, True   # 类临时=class VALUE 左值
                     e.args[i] = rid
                     e.args[i].bind = "addr"
         elif isinstance(e, Bin):
