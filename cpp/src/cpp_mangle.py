@@ -37,6 +37,8 @@ def mangle_method(cls_name, meth):
 def mangle_function(f):
     """自由函数：全局 _Z<len>name<enc>；ns 内 _ZN<len>ns<len>nameE<enc>。"""
     enc = "".join(enc_type(pty) for (pty, _pn) in f.params) or "v"
+    if getattr(f, "c_link", False):
+        return f.name                     # C 链接面：裸名直出（不 mangle）
     ns = getattr(f, "ns", None)
     if ns:
         return f"_ZN{len(ns)}{ns}{len(f.name)}{f.name}E{enc}"

@@ -131,14 +131,15 @@ def lower_ctors(cd):
 
 
 def lower_free_func(f):
+    params = [decl_param(p, n) for (p, n) in f.params]
+    sig = f"{render_ret(f.ret)} {f.mname}({', '.join(params)})"
+    if f.body is None:
+        return [sig + ";"]                # extern "C" 原型直出
     scope = {n: obj_param_as_ref(p) for (p, n) in f.params}
     scope["__cls__"], scope["__const__"] = None, False
     scope["__method__"] = f
     body = stmts(f.body, scope, False)
-    params = [decl_param(p, n) for (p, n) in f.params]
-    return [f"{render_ret(f.ret)} {f.mname}({', '.join(params)}) "
-            f"{{ {' '.join(body)} }}" if body else
-            f"{render_ret(f.ret)} {f.mname}({', '.join(params)}) {{ }}"]
+    return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
 
 
 # ============ 方法 ============

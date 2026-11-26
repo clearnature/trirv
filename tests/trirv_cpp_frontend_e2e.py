@@ -51,6 +51,7 @@ BEHAVIOR = [
     ("test11_default.cpp", 69),
     ("test12_freefunc.cpp", 33),
     ("test13_namespaces.cpp", 44),
+    ("test14_externc.cpp", 25),
 ]
 # (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [

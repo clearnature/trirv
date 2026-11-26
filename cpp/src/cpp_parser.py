@@ -168,7 +168,9 @@ class Parser:
         classes, funcs, main = [], [], None
         while self.peek()[0] != "EOF":
             t = self.peek()
-            if t[0] == "KW" and t[1] == "namespace":
+            if t[0] == "KW" and t[1] == "extern":
+                self.extern_c(funcs)
+            elif t[0] == "KW" and t[1] == "namespace":
                 ns_name = self.nsdef(classes, funcs)
             elif t[0] == "KW" and t[1] in ("class", "struct"):
                 classes.append(self.classdef())
@@ -183,6 +185,19 @@ class Parser:
             else:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
         return classes, funcs, main
+
+    def extern_c(self, funcs):
+        """extern "C" { fdecl… } / extern "C" int f(params);——裸名链接面。
+        内限函数（类/namespace=拒绝）；无体声明=原型直出。"""
+        self.expect("KW", "extern")
+        s = self.expect("STR")[1]
+        if s.replace('"', "") != "C":
+            raise ParseError(f'extern 语言链接仅支持 "C"（得 {s}）')
+        if self.accept("PUNCT", "{"):
+            while not self.accept("PUNCT", "}"):
+                funcs.append(self.funcdef(c_link=True))
+        else:
+            funcs.append(self.funcdef(c_link=True))
 
     def nsdef(self, classes, funcs):
         """namespace ID { class/func }——嵌套 ns/using=拒绝（扁平子集）。"""
@@ -214,8 +229,9 @@ class Parser:
             nm += "::" + self.expect("ID")[1]
         return nm
 
-    def funcdef(self):
-        """自由函数：Type name(params) { body }——const 后缀非法（C++ 法）。"""
+    def funcdef(self, c_link=False):
+        """自由函数：Type name(params) [{ body }]——extern "C" 时允许无体
+        （原型直出）；const 后缀非法（C++ 法）。"""
         ty = self.parse_type()
         nm = self.expect("ID")[1]
         if nm == "main":
@@ -225,10 +241,17 @@ class Parser:
         self.expect("PUNCT", ")")
         if self.accept("KW", "const"):
             raise ParseError("自由函数无 const 后缀（const 仅限成员函数）")
-        body = self.block()
+        if any(d is not None for d in defaults):
+            raise ParseError("默认实参暂不支持（后续版本）") if c_link else None
+        if self.peek()[1] == ";" and c_link:
+            self.next()
+            body = None                   # 原型声明（链接面）
+        else:
+            body = self.block()
         fd = MethodDecl(nm, ty, params, False, body)
         fd.defaults = defaults
         fd.ns = None                      # nsdef 会覆盖为命名空间名
+        fd.c_link = c_link
         return fd
 
     def classdef(self):

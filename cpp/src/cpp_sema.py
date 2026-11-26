@@ -241,19 +241,35 @@ class Sema:
         self.funcs = {}            # call-name → [MethodDecl…]
         self.funcs_list = funcs
         for f in funcs:
-            for (pty, _pn) in f.params:
-                self.canon_ty(pty, f.ns)
-            self.canon_ty(f.ret, f.ns)
-            for ss in f.body:
-                self.canon_stmt(ss, f.ns)
-            self.check_defaults(f)
+            clink = getattr(f, "c_link", False)
+            if clink:
+                # C 链接面：引用/对象/默认形参拒绝（ABI=指针，子集先守基本型）
+                if f.ret.kind not in ("int", "char", "bool", "void"):
+                    raise SemaError("E0",
+                                    f'extern "C" {f.name} 返回类型限基本型')
+                for (pty, _pn) in f.params:
+                    if pty.kind not in ("int", "char", "bool"):
+                        raise SemaError("E0",
+                                        f'extern "C" {f.name} 形参限基本型'
+                                        f"（引用/对象=指针 ABI，后续版本）")
+            else:
+                for (pty, _pn) in f.params:
+                    self.canon_ty(pty, f.ns)
+                self.canon_ty(f.ret, f.ns)
+                for ss in f.body or []:
+                    self.canon_stmt(ss, f.ns)
+                self.check_defaults(f)
             fm = mangle_function(f)
             if any(x.mname == fm for lst in self.funcs.values() for x in lst):
                 raise SemaError("E0", f"自由函数重定义：mangled {fm}")
             f.mname = fm
             key = f"{f.ns}::{f.name}" if f.ns else f.name
             f.call_key = key
-            self.funcs.setdefault(key, []).append(f)
+            lst = self.funcs.setdefault(key, [])
+            if clink and lst:
+                raise SemaError("E0",
+                                f'extern "C" {f.name} 重定义（C 链接无重载）')
+            lst.append(f)
 
     def visible_method_names(self, cname):
         """本类链全部方法名（隐式 this 改写的判定集）。"""
@@ -318,7 +334,9 @@ class Sema:
                 self.check_stmts(meth.body, sc, meth.is_const)
         for f in self.funcs_list:
             self.cur_cls, self.cur_method = None, f
-            self.cur_ns = f.ns
+            self.cur_ns = None            # extern "C" 仅全局（子集）
+            if f.body is None:
+                continue                  # 原型声明：无体可查
             sc = Scope()
             for (pty, pn) in f.params:
                 sc.declare(pn, pty)
@@ -335,7 +353,8 @@ class Sema:
             for meth in cd.methods:
                 self._mat_body(meth.body)
         for f in self.funcs_list:
-            self._mat_body(f.body)
+            if f.body is not None:
+                self._mat_body(f.body)
         if main is not None:
             self._mat_body(main)
 

@@ -8,7 +8,7 @@ KEYWORDS = {
     "class", "struct", "public", "private", "protected", "virtual",
     "int", "char", "void", "bool", "const", "unsigned", "static",
     "return", "if", "else", "while", "for", "new", "delete", "this",
-    "namespace", "template", "typename", "try", "catch", "throw",
+    "namespace", "template", "typename", "try", "catch", "throw", "extern",
     "true", "false", "nullptr", "enum", "operator", "friend",
 }
 
