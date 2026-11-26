@@ -17,7 +17,7 @@ from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import tint, tchar, tbool, tvoid, tcls, tref, type_name
-from cpp_mangle import mangle_method
+from cpp_mangle import mangle_method, mangle_function
 
 
 class SemaError(Exception):
@@ -138,15 +138,50 @@ class Sema:
             raise SemaError("E0", f"{name}({nargs} 参) 重载歧义：{cands}")
         return hits[0] if hits else None
 
+    def build_funcs(self, funcs):
+        """自由函数符号表（0.0.12）：同名重载共存，mangle 定名。"""
+        self.funcs = {}            # name → [MethodDecl…]
+        self.funcs_list = funcs
+        for f in funcs:
+            self.check_defaults(f)
+            fm = mangle_function(f)
+            if any(x.mname == fm for lst in self.funcs.values() for x in lst):
+                raise SemaError("E0", f"自由函数重定义：mangled {fm}")
+            f.mname = fm
+            self.funcs.setdefault(f.name, []).append(f)
+
+    def visible_method_names(self, cname):
+        """本类链全部方法名（隐式 this 改写的判定集）。"""
+        out, c = set(), cname
+        while c:
+            out.update(m.name for m in self.classes[c].methods)
+            c = self.classes[c].base
+        return out
+
+    def find_free_func(self, name, nargs):
+        """自由函数解析：默认补全 + 歧义检测。"""
+        cands = []
+        for m in self.funcs.get(name, []):
+            n = len(m.params)
+            if n == nargs or (n > nargs and all(
+                    m.defaults[i] is not None for i in range(nargs, n))):
+                cands.append(m)
+        if len(cands) > 1:
+            raise SemaError("E0",
+                            f"自由函数 {name}({nargs} 参) 重载歧义")
+        return cands[0] if cands else None
+
     # ============ 主体 ============
-    def check(self, decls, main):
+    def check(self, decls, funcs, main):
         self.build_classes(decls)
+        self.build_funcs(funcs)
         for cd in decls:
             self.cur_cls, self.cur_method = cd, None
+            visible = self.visible_method_names(cd.name)
             for ctor in cd.ctors:
-                rewrite_implicit_this(ctor.body)
+                rewrite_implicit_this(ctor.body, visible)
             for meth in cd.methods:
-                rewrite_implicit_this(meth.body)
+                rewrite_implicit_this(meth.body, visible)
             for ctor in cd.ctors:
                 sc = Scope()
                 for (pty, pn) in ctor.params:
@@ -166,6 +201,12 @@ class Sema:
                 for (pty, pn) in meth.params:
                     sc.declare(pn, pty)
                 self.check_stmts(meth.body, sc, meth.is_const)
+        for f in self.funcs_list:
+            self.cur_cls, self.cur_method = None, f
+            sc = Scope()
+            for (pty, pn) in f.params:
+                sc.declare(pn, pty)
+            self.check_stmts(f.body, sc, False)
         self.cur_cls, self.cur_method = None, None
         if main is not None:
             self.check_stmts(main, Scope(), False)
@@ -176,6 +217,8 @@ class Sema:
                 self._mat_body(ctor.body)
             for meth in cd.methods:
                 self._mat_body(meth.body)
+        for f in self.funcs_list:
+            self._mat_body(f.body)
         if main is not None:
             self._mat_body(main)
 
@@ -287,6 +330,8 @@ class Sema:
                 raise SemaError("E0", f"未声明标识符 {e.name!r}")
         elif isinstance(e, Member):
             ot = self.check_expr(e.obj, sc, is_const)
+            if ot.kind == "ref":
+                ot = ot.pointee                  # 引用穿透（C++ 语义）
             if ot.kind != "class":
                 raise SemaError("E0", f"非对象上取成员 {e.name!r}")
             hit = self.find_member_owner(ot.name, e.name)
@@ -296,6 +341,8 @@ class Sema:
             e.ty, e.lval = mt, True
         elif isinstance(e, MethodCall):
             ot = self.check_expr(e.obj, sc, is_const)
+            if ot.kind == "ref":
+                ot = ot.pointee                  # 引用穿透（C++ 语义）
             if ot.kind != "class":
                 raise SemaError("E0", f"非对象上调用 {e.name!r}()")
             hit = self.find_method_owner(ot.name, e.name, len(e.args))
@@ -309,7 +356,14 @@ class Sema:
             self.check_args(e.args, meth, sc, is_const)
             e.sig, e.ty, e.lval = meth, meth.ret, False
         elif isinstance(e, FreeCall):
-            raise SemaError("E0", f"自由函数 {e.name}() 暂不支持（透传=后续版本）")
+            f = self.find_free_func(e.name, len(e.args))
+            if f is None:
+                raise SemaError("E0",
+                                f"自由函数 {e.name} 无 {len(e.args)} 参重载")
+            while len(e.args) < len(f.params):        # 默认补全
+                e.args.append(f.defaults[len(e.args)])
+            self.check_args(e.args, f, sc, is_const)
+            e.sig, e.ty, e.lval = f, f.ret, False
         elif isinstance(e, Assign):
             lt = self.check_expr(e.lhs, sc, is_const)
             rt = self.check_expr(e.rhs, sc, is_const)
@@ -401,75 +455,80 @@ def _fmt(a):
     return type(a).__name__
 
 
-def rewrite_implicit_this(body):
-    """裸 name(args) 在方法内 = this 调用（C++ 隐式 this）——AST 预改写。"""
+def rewrite_implicit_this(body, method_names=None):
+    """裸 name(args) 在方法内 = this 调用（C++ 隐式 this）——AST 预改写。
+    0.0.12：名字不在本类链方法集 → 保留 FreeCall（自由函数）。"""
     for s in body:
-        _rw(s)
+        _rw(s, method_names)
 
 
-def _rw(s):
+def _rw(s, method_names=None):
     if isinstance(s, VarDecl):
         if s.init is not None:
-            _rw_expr(s.init)
+            _rw_expr(s.init, method_names)
     elif isinstance(s, CtorStmt):
         for a in s.args:
-            _rw_expr(a)
+            _rw_expr(a, method_names)
     elif isinstance(s, ExprStmt):
-        _rw_expr(s.expr)
+        _rw_expr(s.expr, method_names)
     elif isinstance(s, Return):
         if s.expr is not None:
-            _rw_expr(s.expr)
+            _rw_expr(s.expr, method_names)
     elif isinstance(s, Assign):
-        _rw_expr(s.lhs)
-        _rw_expr(s.rhs)
+        if isinstance(s.lhs, FreeCall) and method_names and \
+                s.lhs.name in method_names:
+            s.lhs = MethodCall(This(), s.lhs.name, s.lhs.args)
+        else:
+            _rw_expr(s.lhs, method_names)
+        _rw_expr(s.rhs, method_names)
     elif isinstance(s, If):
-        _rw_expr(s.cond)
-        _rw(s.then)
+        _rw_expr(s.cond, method_names)
+        _rw(s.then, method_names)
         if s.els is not None:
-            _rw(s.els)
+            _rw(s.els, method_names)
     elif isinstance(s, While):
-        _rw_expr(s.cond)
-        _rw(s.body)
+        _rw_expr(s.cond, method_names)
+        _rw(s.body, method_names)
     elif isinstance(s, For):
         if s.init is not None:
-            _rw(s.init)
+            _rw(s.init, method_names)
         if s.cond is not None:
-            _rw_expr(s.cond)
+            _rw_expr(s.cond, method_names)
         if s.step is not None:
-            _rw_expr(s.step)
-        _rw(s.body)
+            _rw_expr(s.step, method_names)
+        _rw(s.body, method_names)
     elif isinstance(s, BlockStmt):
         for x in s.stmts:
-            _rw(x)
+            _rw(x, method_names)
 
 
-def _rw_expr(e):
-    """原地改写：FreeCall → MethodCall(This(), …)。子表达式递归。"""
+def _rw_expr(e, method_names=None):
+    """原地改写：FreeCall → MethodCall(This(), …)（仅类方法名）。
+    子表达式递归；Num/StrLit/Id/This 叶子。"""
     if isinstance(e, Bin):
-        _rw_expr(e.l)
-        _rw_expr(e.r)
+        _rw_expr(e.l, method_names)
+        _rw_expr(e.r, method_names)
     elif isinstance(e, Un):
-        _rw_expr(e.e)
+        _rw_expr(e.e, method_names)
     elif isinstance(e, Assign):
-        # 左值是 FreeCall（隐式 this 引用返回）也改写
-        if isinstance(e.lhs, FreeCall):
+        if isinstance(e.lhs, FreeCall) and method_names and \
+                e.lhs.name in method_names:
             e.lhs = MethodCall(This(), e.lhs.name, e.lhs.args)
         else:
-            _rw_expr(e.lhs)
-        _rw_expr(e.rhs)
+            _rw_expr(e.lhs, method_names)
+        _rw_expr(e.rhs, method_names)
     elif isinstance(e, Member):
-        _rw_expr(e.obj)
+        _rw_expr(e.obj, method_names)
     elif isinstance(e, MethodCall):
-        _rw_expr(e.obj)
+        _rw_expr(e.obj, method_names)
         for a in e.args:
-            _rw_expr(a)
+            _rw_expr(a, method_names)
     elif isinstance(e, FreeCall):
-        e.__class__ = MethodCall          # 原地变身：隐式 this
-        e.obj = This()
-    # Num/StrLit/Id/This：叶子
+        if method_names and e.name in method_names:
+            e.__class__ = MethodCall          # 原地变身：隐式 this
+            e.obj = This()
+        # 否则保留 FreeCall——自由函数（sema 解析）
 
-
-# ============ 0.0.10 物化改写（Sema 方法，文件尾追加便于审阅） ============
 def _install_mat(cls):
     def _fresh(self):
         n = f"__tmp{self._tmpn}"
@@ -535,8 +594,9 @@ def _install_mat(cls):
 
     def _mat_expr(self, e, h):
         """后序：内层调用的物化先入 hoists（声明序=依赖序，C 合法）。"""
-        if isinstance(e, MethodCall):
-            self._mat_expr(e.obj, h)
+        if isinstance(e, (MethodCall, FreeCall)):
+            if isinstance(e, MethodCall):
+                self._mat_expr(e.obj, h)     # FreeCall 无接收者
             for a in e.args:
                 self._mat_expr(a, h)
             meth = e.sig

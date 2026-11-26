@@ -163,19 +163,39 @@ class Parser:
 
     # ---- 翻译单元 ----
     def parse_tu(self):
-        classes, main = [], None
+        """0.0.12：classes + 自由函数 + main 三类顶层声明。"""
+        classes, funcs, main = [], [], None
         while self.peek()[0] != "EOF":
             t = self.peek()
             if t[0] == "KW" and t[1] in ("class", "struct"):
                 classes.append(self.classdef())
             elif t[0] == "KW" and t[1] == "int" and \
                     self.peek(1)[1] == "main":
+                if main is not None:
+                    raise ParseError(f"L{t[2]}: main 重定义")
                 main = self.maindef()
+            elif t[0] == "KW" and t[1] in ("void", "bool", "const", "int", "char") or \
+                    t[0] == "ID":
+                funcs.append(self.funcdef())
             else:
-                raise ParseError(
-                    f"L{t[2]}: 暂不支持自由函数/顶层声明 {t[1]!r}"
-                    f"（自由函数透传=后续版本）")
-        return classes, main
+                raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
+        return classes, funcs, main
+
+    def funcdef(self):
+        """自由函数：Type name(params) { body }——const 后缀非法（C++ 法）。"""
+        ty = self.parse_type()
+        nm = self.expect("ID")[1]
+        if nm == "main":
+            raise ParseError("main 必须是 int main()")
+        self.expect("PUNCT", "(")
+        params, defaults = self.parse_params()
+        self.expect("PUNCT", ")")
+        if self.accept("KW", "const"):
+            raise ParseError("自由函数无 const 后缀（const 仅限成员函数）")
+        body = self.block()
+        fd = MethodDecl(nm, ty, params, False, body)
+        fd.defaults = defaults
+        return fd
 
     def classdef(self):
         self.next()                                   # class/struct
@@ -468,5 +488,5 @@ class Block:
 
 
 def parse(src):
-    """源码 → (classes, main_body_stmts)。"""
+    """源码 → (classes, free_funcs, main_body_stmts)。"""
     return Parser(lex(src)).parse_tu()

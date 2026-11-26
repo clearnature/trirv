@@ -26,3 +26,9 @@ def mangle_method(cls_name, meth):
     prefix = "_ZNK" if meth.is_const else "_ZN"
     enc = "".join(enc_type(pty) for (pty, _pn) in meth.params)
     return f"{prefix}{len(cls_name)}{cls_name}{len(meth.name)}{meth.name}E" + (enc or "v")
+
+
+def mangle_function(f):
+    """自由函数：_Z<len(name)><name><params>；零参 → v（与成员 _ZN… 区分）。"""
+    enc = "".join(enc_type(pty) for (pty, _pn) in f.params)
+    return f"_Z{len(f.name)}{f.name}{enc or 'v'}"

@@ -62,11 +62,14 @@ def decl_class(cd):
         else f"struct {cd.name} {{}};"
 
 
-def lower_tu(decls, main, classes_meta):
+def lower_tu(decls, funcs, main, classes_meta):
     for cd in decls:
         for meth in cd.methods:
             if not hasattr(meth, "mname"):
                 meth.mname = mangle_method(cd.name, meth)
+    for f in funcs:
+        if not hasattr(f, "mname"):
+            f.mname = mangle_function(f)
     order, seen = [], set()
 
     def visit(cd):
@@ -82,12 +85,14 @@ def lower_tu(decls, main, classes_meta):
     for cd in decls:
         visit(cd)
     structs = [decl_class(cd) for cd in order]
-    funcs = []
+    funcs_c = []
     for cd in decls:
-        funcs.extend(lower_ctors(cd))
-        funcs.extend(lower_methods(cd))
+        funcs_c.extend(lower_ctors(cd))
+        funcs_c.extend(lower_methods(cd))
+    for f in funcs:
+        funcs_c.extend(lower_free_func(f))
     main_c = lower_main(main) if main is not None else None
-    return {"structs": structs, "funcs": funcs, "main": main_c}
+    return {"structs": structs, "funcs": funcs_c, "main": main_c}
 
 
 # ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
@@ -112,6 +117,17 @@ def lower_ctors(cd):
                    f"{{ {' '.join(body)} }}" if body else
                    f"void {cd.name}_ctor({', '.join(params)}) {{ }}")
     return out
+
+
+def lower_free_func(f):
+    scope = {n: obj_param_as_ref(p) for (p, n) in f.params}
+    scope["__cls__"], scope["__const__"] = None, False
+    scope["__method__"] = f
+    body = stmts(f.body, scope, False)
+    params = [decl_param(p, n) for (p, n) in f.params]
+    return [f"{render_ret(f.ret)} {f.mname}({', '.join(params)}) "
+            f"{{ {' '.join(body)} }}" if body else
+            f"{render_ret(f.ret)} {f.mname}({', '.join(params)}) {{ }}"]
 
 
 # ============ 方法 ============
@@ -252,7 +268,7 @@ def expr(e, ctx, scope):
             form = f"({c}struct {owner} *)this_"   # this->跨类成员 cast 一致
         sep = "->" if form_is_ptr(form, e.obj, scope) else "."
         return f"{form}{sep}{e.name}"
-    if isinstance(e, MethodCall):
+    if isinstance(e, (MethodCall, FreeCall)):
         return call(e, ctx, scope)
     if isinstance(e, Assign):
         lhs = expr(e.lhs, {"value"}, scope)     # REF 左值自然出 (*…)
@@ -310,6 +326,20 @@ def form_is_ptr(form, o, scope):
 
 def call(e, ctx, scope):
     meth = e.sig
+    if not hasattr(e, "obj"):                    # 自由函数（0.0.12）
+        parts = []
+        for a in e.args:
+            bind = getattr(a, "bind", "value")
+            if bind == "addr":
+                parts.append(f"&({expr(a, {'value'}, scope)})")
+            elif bind == "ref":
+                parts.append(expr(a, {"ref"}, scope))
+            else:
+                parts.append(expr(a, {"value"}, scope))
+        s = f"{meth.mname}({', '.join(parts)})"
+        if "ref" in ctx or e.ty.kind != "ref":
+            return s
+        return f"*({s})"
     recv_owner = scope.get("__recv_owner__")
     scope["__recv_owner__"] = getattr(e, "sig_owner", None)
     parts = [recv_expr(e.obj, scope)]

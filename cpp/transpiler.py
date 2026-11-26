@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.11 —— C++ -> C 降级器（sema 重构：五层架构落地）。
+"""transpiler v0.0.12 —— C++ -> C 降级器（sema 重构：五层架构落地）。
 
 用法：python3 cpp/transpiler.py input.cpp output.c
 
@@ -28,14 +28,14 @@ from cpp_lower import lower_tu                         # noqa: E402
 from cpp_emit import emit                              # noqa: E402
 from cpp_types import TypeError_                       # noqa: E402
 
-VERSION = "0.0.11"
+VERSION = "0.0.12"
 
 
 def transpile(src):
-    classes, main = parse(src)
+    classes, funcs, main = parse(src)
     sema = Sema()
-    sema.check(classes, main)
-    return emit(lower_tu(classes, main, sema.classes))
+    sema.check(classes, funcs, main)
+    return emit(lower_tu(classes, funcs, main, sema.classes))
 
 
 def main(argv):
