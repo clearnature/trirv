@@ -58,6 +58,7 @@ BEHAVIOR = [
     ("test18_struct_assign.cpp", 136),
     ("test19_dtor.cpp", 28),         # 需链 libc（new/delete）
     ("test20_static.cpp", 9),
+    ("test21_fwd.cpp", 17),
 ]
 # (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [

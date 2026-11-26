@@ -178,7 +178,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.18 | **调用结果对象绑定（E0 解除）**：类右值一律 bind='mat'（结构体赋值形态 `struct Vec tn; tn = call;`）+ 接收者右值物化（`(c+b)+c` 的 `(c+b)`）；**编译器侧零改动**——0.0.18 实际工作面=解除误判 E0+更正记录 | ✓ 已验证（e2e 45 项：19 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.19 | **~X dtor + 全局变量**：`~X() { body }`（至多一个，无参）→ `X_dtor`（约定名）；`delete p` 对接 `X_dtor(p); free(p);`；全局变量通道（带初始化/跨函数可见，探针 16 ✓）=dtor 可观测；gscope 作用域根（方法/自由函数/main 全接线） | ✓ 已验证（e2e 47 项：19 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.20 | **static 成员**：类内声明 `static int count;` + 类外定义 `int Counter::count = 0;`（C++ 法）→ 全局 `Counter_count`；static 方法（无 this，is_static 守卫：引用非静态成员/this=E0）→ `_ZN7Counter5totalEv`（static 与成员同编码，Itanium 口径）；双调用形态 `Counter::total()`（限定）/ `a.total()`（经实例省 receiver） | ✓ 已验证（e2e 49 项：21 行为 + 1 N8 + 7 ADT，双 VM） |
-| **0.0.21** | **+ 类特性带续（友元/嵌套类/前向声明）** | **下一个** |
+| 0.0.21 | **前向声明 + 指针成员/形参解锁**：`class B;`（不完整类型，注册期 incomplete 标记+完整定义填充）→ `B* p` 成员（decl_class 成员类型渲染）+ `f(B* q)` 指针形参（0.0.15 守卫解除）+ `&lvalue` 一元取址（指针实参面，&lvalue→TPtr）+ 指针成员穿透 `peer->get()`（member_obj/recv_expr/form_is_ptr 三通道）；类型渲染 type_c TPtr `struct B *` | ✓ 已验证（e2e 51 项：23 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.22** | **+ 友元/嵌套类（类特性带续）** | **下一个** |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |

@@ -51,7 +51,9 @@ def flat(n):
 
 
 def type_c(ty):
-    """VALUE 类型 → C 形（class 扁平加 struct 前缀；const 原样传递）。"""
+    """VALUE 类型 → C 形（class 扁平 struct 前缀；TPtr 加 *；const 传递）。"""
+    if isinstance(ty, TPtr):
+        return type_c(ty.pointee) + " *"
     name = type_name(ty)
     s = f"struct {flat(name)}" if ty.kind == "class" else name
     return (f"const {s}" if ty.is_const else s)
@@ -64,8 +66,8 @@ def decl_class(cd):
     parts = []
     if bkey:
         parts.append(f"struct {flat(bkey)} {BASE_KEY};")
-    for (mn, _mt) in cd.members:
-        parts.append(f"int {mn};")
+    for (mn, mt) in cd.members:
+        parts.append(f"{type_c(mt)} {mn};")
     inner = " ".join(parts)
     return f"struct {cname} {{ {inner} }};" if inner \
         else f"struct {cname} {{}};"
@@ -93,7 +95,8 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         order.append(cd)
 
     for cd in decls:
-        visit(cd)
+        if not getattr(cd, "forward", False):
+            visit(cd)
     structs = [decl_class(cd) for cd in order]
     gdecls_c = []
     for (gn, gty, gi) in gdecls:
@@ -112,6 +115,8 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
             gdecls_c.append(f"{base2} {cf2}_{nm2};")
     funcs_c = []
     for cd in decls:
+        if getattr(cd, "forward", False):
+            continue                         # 前向声明：无函数可发射
         funcs_c.extend(lower_ctors(cd))
         funcs_c.extend(lower_methods(cd))
         info = classes_meta.get(getattr(cd, "key", cd.name))
@@ -371,6 +376,8 @@ def expr(e, ctx, scope):
         return (f"({expr(e.l, {'value'}, scope)} {e.op} "
                 f"{expr(e.r, {'value'}, scope)})")
     if isinstance(e, Un):
+        if e.op == "&":
+            return f"&({expr(e.e, {'value'}, scope)})"
         return f"({e.op}{expr(e.e, {'value'}, scope)})"
     raise AssertionError(f"lower: 未知表达式 {type(e).__name__}")
 
@@ -397,6 +404,10 @@ def member_obj(o, scope):
         return this_recv(getattr(o, "owner", None), scope)
     if isinstance(o, Id):
         if getattr(o, "ref_kind", None) == "member":
+            ot = getattr(o, "ty", None)
+            if isinstance(ot, TPtr):
+                # 指针成员：this_->p 本体即指针（0.0.21）
+                return this_member(o.name, getattr(o, "owner", None), scope)
             return this_recv(getattr(o, "owner", None), scope)
         ty = scope.get(o.name)
         if ty is not None and ty.kind in ("ref", "ptr"):
@@ -413,7 +424,8 @@ def form_is_ptr(form, o, scope):
     if isinstance(o, Id):
         ty = scope.get(o.name)
         return (getattr(o, "ref_kind", None) == "member"
-                or (ty is not None and ty.kind in ("ref", "ptr")))
+                or (ty is not None and ty.kind in ("ref", "ptr"))
+                or isinstance(getattr(o, "ty", None), TPtr))
     if isinstance(o, MethodCall):
         return o.ty.kind == "ref"                # 引用返回→指针本体
     return False
@@ -476,6 +488,10 @@ def recv_expr(o, scope):
                          scope.get("__recv_owner__"), scope)
     if isinstance(o, Id):
         if getattr(o, "ref_kind", None) == "member":
+            ot = getattr(o, "ty", None)
+            if isinstance(ot, TPtr):
+                # 指针成员：this_->p 本体即指针（0.0.21）
+                return this_member(o.name, getattr(o, "owner", None), scope)
             return this_recv(getattr(o, "owner", None), scope)
         ty = scope.get(o.name)
         if ty is not None and ty.kind in ("ref", "ptr"):

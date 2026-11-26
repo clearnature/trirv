@@ -216,7 +216,9 @@ class Parser:
             elif t[0] == "KW" and t[1] == "namespace":
                 ns_name = self.nsdef(classes, funcs)
             elif t[0] == "KW" and t[1] in ("class", "struct"):
-                classes.append(self.classdef())
+                cd2 = self.classdef()
+                if cd2 is not None:
+                    classes.append(cd2)
             elif t[0] == "KW" and t[1] == "int" and \
                     self.peek(1)[1] == "main":
                 if main is not None:
@@ -307,6 +309,10 @@ class Parser:
         if self.accept("PUNCT", ":"):
             self.expect("KW", "public")
             base = self.qual_name(self.expect("ID")[1])
+        if self.accept("PUNCT", ";"):
+            cd = ClassDecl(name, base)
+            cd.forward = True                  # 前向声明（不完整类型）
+            return cd
         self.expect("PUNCT", "{")
         cd = ClassDecl(name, base)
         while not self.accept("PUNCT", "}"):
@@ -337,8 +343,13 @@ class Parser:
                     self.memberdecl(cd)
             elif (t[0] == "KW" and t[1] in ("char", "void", "bool", "const")) or \
                     (t[0] == "KW" and t[1] == "operator") or \
-                    (t[0] == "ID" and self.peek(1)[0] == "ID" and
-                     self.peek(2)[1] == "(") or \
+                    (t[0] == "ID" and self.peek(1)[1] == "*"):
+                if t[0] == "ID":
+                    self.memberdecl(cd)    # B* p; 指针成员
+                else:
+                    cd.methods.append(self.methoddef())
+            elif (t[0] == "ID" and self.peek(1)[0] == "ID" and
+                    self.peek(2)[1] == "(") or \
                     (t[0] == "ID" and self.peek(1)[0] == "KW" and
                      self.peek(1)[1] == "operator"):
                 cd.methods.append(self.methoddef())
@@ -357,10 +368,11 @@ class Parser:
         return cd
 
     def memberdecl(self, cd):
-        self.expect("KW", "int")
+        """成员：int x; / B* p;（指针成员=0.0.21）。"""
+        ty = self.parse_type()
         while True:
             nm = self.expect("ID")[1]
-            cd.members.append((nm, Type("int")))
+            cd.members.append((nm, ty))
             if not self.accept("PUNCT", ","):
                 break
         self.expect("PUNCT", ";")
@@ -605,10 +617,12 @@ class Parser:
         if t[0] == "PUNCT" and t[1] in ("!", "-", "+"):
             self.next()
             return Un(t[1], self.unary())
-        if t[0] == "PUNCT" and t[1] in ("*", "&"):
+        if t[0] == "PUNCT" and t[1] == "&":
+            self.next()                      # 消费 &（缺它=无限递归）
+            return Un("&", self.unary())     # 0.0.21：&lvalue（指针实参面）
+        if t[0] == "PUNCT" and t[1] == "*":
             raise ParseError(
-                f"L{t[2]}: 一元 {t[1]} 暂不支持——引用/取址由降级器按 Type 插入，"
-                f"手写易与三值 TAND 混淆（C-TERNARY-PITFALLS）")
+                f"L{t[2]}: 一元 * 暂不支持（解引用经 ->/引用通道）")
         return self.postfix()
 
     def postfix(self):

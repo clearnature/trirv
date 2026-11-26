@@ -165,13 +165,24 @@ class Sema:
         for cd in decls:
             key = f"{cd.ns}::{cd.name}" if cd.ns else cd.name
             if key in self.classes:
-                raise SemaError("E0", f"类 {key} 重复定义")
+                prev = self.classes[key]
+                if not getattr(prev, "incomplete", False) or \
+                        getattr(cd, "forward", False):
+                    raise SemaError("E0", f"类 {key} 重复定义")
+                # 前向声明后的完整定义：填充
             cd.key = key
-            ci = ClassInfo(cd.name, None)
-            ci.key = key
-            self.classes[key] = ci
+            if key not in self.classes:
+                ci = ClassInfo(cd.name, None)
+                ci.key = key
+                ci.incomplete = bool(getattr(cd, "forward", False))
+                self.classes[key] = ci
+            else:
+                self.classes[key].key = key
         # Phase B：类型/主体规范化（ns 内短名 → 键；基类解析）
         for cd in decls:
+            if getattr(cd, "forward", False):
+                self.classes[cd.key].incomplete = True
+                continue                     # 不完整类型：无体可规范
             ns = cd.ns
             for meth in cd.methods:
                 self.canon_ty(meth.ret, ns)
@@ -194,6 +205,8 @@ class Sema:
                 cd.base_key = bkey
         # Phase C：完整构建 + mangling 守卫
         for cd in decls:
+            if getattr(cd, "forward", False):
+                continue
             info = self.classes[cd.key]
             if cd.base:
                 info.base = getattr(cd, "base_key", None)
@@ -379,10 +392,7 @@ class Sema:
                 self.cur_method = meth
                 sc = Scope(self.gscope)
                 for (pty, pn) in meth.params:
-                    if pty.kind == "ptr":
-                        raise SemaError("E0",
-                                        "指针形参=后续版本（引用形参同语义）")
-                    sc.declare(pn, pty)
+                    sc.declare(pn, pty)   # 0.0.21 指针形参放行
                 self.check_stmts(meth.body, sc, meth.is_const)
             if self.classes[cd.key].dtor:
                 self.cur_method = None
@@ -675,8 +685,14 @@ class Sema:
             else:
                 e.ty, e.lval = tval("int"), False
         elif isinstance(e, Un):
-            self.check_expr(e.e, sc, is_const)
-            e.ty, e.lval = tval("int"), False
+            ut = self.check_expr(e.e, sc, is_const)
+            if e.op == "&":
+                if not getattr(e.e, "lval", False):
+                    raise SemaError("E0", "& 操作数须为左值")
+                from cpp_types import TPtr as _TP
+                e.ty, e.lval = _TP(ut), False     # &x → 指针右值
+            else:
+                e.ty, e.lval = tval("int"), False
         else:
             raise SemaError("E0", f"未知表达式 {type(e).__name__}")
         return e.ty
