@@ -10,7 +10,7 @@
         一元 &/*（地址/解引用——引用语义由降级器插，用户手写易与 TAND 撞）。
 """
 from cpp_lexer import lex
-from cpp_types import (CType, TInt, TChar, TBool, TVoid, TClass, TRef,
+from cpp_types import (CType, TInt, TChar, TBool, TVoid, TClass, TRef, TPtr, tptr,
                        tint, tchar, tbool, tvoid, tcls, tref)
 
 
@@ -74,6 +74,20 @@ class MethodCall:
 class FreeCall:
     def __init__(self, name, args):
         self.name, self.args = name, args
+
+
+class New:
+    """new X(args) → 0.0.15（cls=限定键，sema 填 sig）。"""
+
+    def __init__(self, cls, args):
+        self.cls, self.args = cls, args
+
+
+class DeleteStmt:
+    """delete p; → 0.0.15（子集无 dtor 语法：仅回收存储）。"""
+
+    def __init__(self, expr):
+        self.expr = expr
 
 
 class Bin:
@@ -318,6 +332,8 @@ class Parser:
             raise ParseError(f"L{t[2]}: 不支持的类型 {t[1]!r}")
         if self.accept("PUNCT", "&"):
             ty = tref(ty)                     # ref(ref) 在构造层即拒绝
+        while self.accept("PUNCT", "*"):
+            ty = tptr(ty)                     # Box* p（0.0.15 指针声明）
         return ty
 
     def parse_params(self):
@@ -407,10 +423,23 @@ class Parser:
             c = self.expr()
             self.expect("PUNCT", ")")
             return While(c, self.stmt())
+        if t[0] == "KW" and t[1] == "delete":
+            self.next()
+            e = self.expr()
+            self.expect("PUNCT", ";")
+            return DeleteStmt(e)
         if t[0] == "KW" and t[1] == "for":
             return self.forstmt()
         if t[0] == "KW" and (t[1] == "const" or t[1] in ("int", "char")):
             ty = self.parse_type()   # const int& x / int& x / const int x / int x
+            nm = self.expect("ID")[1]
+            init = None
+            if self.accept("PUNCT", "="):
+                init = self.expr()
+            self.expect("PUNCT", ";")
+            return VarDecl(nm, ty, init)
+        if t[0] == "ID" and self.peek(1)[1] == "*":
+            ty = self.parse_type()                 # Box* p = new Box(args);（0.0.15）
             nm = self.expect("ID")[1]
             init = None
             if self.accept("PUNCT", "="):
@@ -546,7 +575,14 @@ class Parser:
         if t[0] == "KW" and t[1] == "this":
             return This()
         if t[0] == "KW" and t[1] == "new":
-            raise ParseError(f"L{t[2]}: new 暂不支持（v0.0.11+ malloc+ctor）")
+            cn = self.qual_name(self.expect("ID")[1])   # t=next() 已耗 new
+            args = []
+            if self.accept("PUNCT", "("):
+                args = [] if self.peek()[1] == ")" else self.exprlist()
+                self.expect("PUNCT", ")")
+            return New(cn, args)
+        if t[0] == "KW" and t[1] == "delete":
+            raise ParseError("delete 是语句：delete p;（表达式位置不支持）")
         if t[0] == "PUNCT" and t[1] == "(":
             e = self.expr()
             self.expect("PUNCT", ")")

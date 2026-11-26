@@ -52,6 +52,7 @@ BEHAVIOR = [
     ("test12_freefunc.cpp", 33),
     ("test13_namespaces.cpp", 44),
     ("test14_externc.cpp", 25),
+    ("test15_new.cpp", 57),          # 需链 libc（malloc/free）
 ]
 # (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [
@@ -59,6 +60,16 @@ REJECT = [
 ]
 
 os.makedirs(TMP, exist_ok=True)
+
+# libc trvo（malloc/free——test15 new/delete 依赖；只对标注用例链接）
+LIBC_Tinyin = None
+LIBC_SRC = os.path.join(ROOT, "cc", "trirv_libc.c")
+LIBC_TVO = os.path.join(TMP, "trirv_libc.trvo")
+_needs_libc = any(f == "test15_new.cpp" for f, _w in BEHAVIOR)
+if _needs_libc and not os.path.exists(LIBC_TVO):
+    r = subprocess.run([CC, LIBC_SRC, LIBC_TVO], capture_output=True, text=True)
+    assert r.returncode == 0, f"libc trvo 构建失败: {r.stderr[:120]}"
+LIBC_LINK = ["-l", LIBC_TVO] if _needs_libc else []
 
 for fn, want in BEHAVIOR:
     src = os.path.join(ROOT, "cpp", "tests", fn)
@@ -69,12 +80,13 @@ for fn, want in BEHAVIOR:
     if r.returncode != 0:
         check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
         continue
-    r = subprocess.run([CC, c_out, trv], capture_output=True, text=True)
+    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn == "test15_new.cpp" else []),
+                       capture_output=True, text=True)
     if r.returncode != 0:
         check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")
         continue
     prog, mem, _ = _trvio.load_bytes(open(trv, "rb").read())
-    c = vm.VM(prog, mem_init=mem).run(max_steps=20000)
+    c = vm.VM(prog, mem_init=mem).run(max_steps=50000)
     check(f"{fn} PyVM", c.exit_code, want)
     if os.path.exists(CVM):
         r = subprocess.run([CVM, trv], capture_output=True)

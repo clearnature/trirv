@@ -127,7 +127,8 @@ typedef struct ClassInfo {
 | `int f(int a, int b = 10)` | 调用点补全：`f(&m, 1, 10)`（默认表达式在调用者语境求值） | mangling 不含默认值；默认限常量表达式 |
 | `Math m;`（全默认 ctor） | `struct Math m; Math_ctor(&m, 7);` | 全默认构造兼任无参构造 |
 | `virtual void f()` | vtable 槽位 + `(*this_->__vtbl->f)(this_)` | v2 |
-| `new X(args)` | `struct X *p = malloc(sizeof(struct X)); X_ctor(p, args);` | |
+| `Box* p = new Box(5);` | `struct Box *p = malloc(sizeof(struct Box)); Box_ctor(p, 5);` | 0.0.15：§四 规划行落地；指针穿透 `p->get()` 直传 |
+| `delete p;` | `free(p);` | 0.0.15：子集无 dtor 语法，仅回收存储（X_dtor 进场后补） |
 | `delete p` | `X_dtor(p); free(p);` | |
 | `namespace geo { … }` | 结构体扁平 `struct geo_Box`；函数全 Itanium 嵌套 `_ZN3geo4areaEii` | 0.0.13：ns 内裸名解析（sema 注册期规范化），外部必须限定；嵌套 ns/using=拒绝 |
 | `extern "C" { int f(int); }` | 裸名 `int f(int a);`（不 mangle） | 0.0.14：原型直出对接 C 符号；形参限基本型 |
@@ -167,8 +168,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.12 | **自由函数透传**：`_Z<len>name<params>` mangling + FreeCall 解析（默认/物化/引用转发全通道同享）+ 对象引用形参 + 方法内裸调自由函数（隐式 this 判定集=本类链方法名，不误绑）+ 引用穿透接收者（ref→pointee 查类）+ 自由函数重载/歧义/重定义守卫 | ✓ 已验证（e2e 33 项：12 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.13 | **命名空间**：`::` 限定名 parser 拼接（复用全通道）+ sema 注册期短名→限定键规范化（ns 内裸名解析/外部必须限定=C++ 作用域法则）+ mangle 逐组件编码（_ZN3geo3Box3getEv）+ C 结构体扁平名（geo_Box）+ 同名类异 ns 共存 + ns 内裸调自由函数 | ✓ 已验证（e2e 35 项：13 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.14 | **extern "C"**：块/单声明两形态；mangle=裸名直出（C 链接面）；形参/返回限基本型（引用/对象=指针 ABI，后续版本）；无体声明=原型直出（对接既有 C 符号的钥匙）；C 链接无重载（同名=E0） | ✓ 已验证（e2e 37 项：14 行为 + 1 N8 + 7 ADT，双 VM） |
-| **0.0.15** | **+ new/delete（malloc/free + ctor/dtor）** | **下一个** |
-| 0.0.16 | + 操作符重载（operator+/==/<< 限算术） | |
+| 0.0.15 | **new/delete**：`new X(args)`→malloc+ctor（§四 规划行）；`delete p`→free（无 dtor 语法=仅回收存储）；TPtr 指针类型层（ptr-of-ptr/ptr-of-ref 构造层拒绝；mangle P 前缀）；`->` 指针穿透接收者；指针形参=拒绝（引用同语义）；test15 需链 cc/trirv_libc.trvo（malloc/free） | ✓ 已验证（e2e 39 项：15 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.16** | **+ 操作符重载（operator+/==/<< 限算术）** | **下一个** |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |

@@ -16,6 +16,8 @@ def enc_type(ty):
     if ty.kind == "ref":
         k = "K" if ty.pointee.is_const else ""
         return "R" + k + enc_type(ty.pointee)
+    if ty.kind == "ptr":
+        return "P" + enc_type(ty.pointee)  # Itanium 指针前缀
     if ty.kind == "class":
         return _enc_components(ty.name)   # geo::Box → 3geo3Box（嵌套名）
     return {"int": "i", "char": "c", "bool": "b", "void": "v"}.get(ty.kind, ty.kind)

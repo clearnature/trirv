@@ -84,6 +84,21 @@ class TClass(CType):
         self.name = name
 
 
+class TPtr(CType):
+    """指针（0.0.15 new/delete）：T* 无顶层 const 位（const T* 由
+    pointee 承载；T* const 子集拒绝）。嵌套（T**/T*&）不可表达。"""
+    _kind = "ptr"
+    __slots__ = ("pointee",)
+
+    def __init__(self, pointee):
+        if not isinstance(pointee, CType):
+            raise TypeError_("TPtr 需要 CType pointee")
+        if isinstance(pointee, (TPtr, TRef)):
+            raise TypeError_("指针的指针/指针引用不可表达（子集）")
+        super().__init__(False)
+        self.pointee = pointee
+
+
 class TRef(CType):
     """引用：自身无 const 位——is_const = pointee 派生（C++ 语义：
     const T& 的 const 在被引类型上，引用顶层 const 无意义）。"""
@@ -132,9 +147,13 @@ def tref(pointee):
     return TRef(pointee)
 
 
+def tptr(pointee):
+    return TPtr(pointee)
+
+
 def type_name(ty):
     """边界投影：C 形/报错共用的类型名（'int'/'char'/'bool'/'void'/类名）。"""
-    if isinstance(ty, TRef):
+    if isinstance(ty, (TRef, TPtr)):
         return type_name(ty.pointee)
     if isinstance(ty, TClass):
         return ty.name

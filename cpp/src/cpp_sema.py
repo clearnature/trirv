@@ -13,11 +13,11 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (New, DeleteStmt, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
-from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, type_name,
-                        TRef, TClass)
+from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
+                        TRef, TClass, TPtr)
 from cpp_mangle import mangle_method, mangle_function
 
 
@@ -104,6 +104,8 @@ class Sema:
             s.cls = self.resolve_class_name(s.cls, ns) or s.cls
             for a in s.args:
                 self.canon_expr(a, ns)
+        elif isinstance(s, DeleteStmt):
+            self.canon_expr(s.expr, ns)
         elif isinstance(s, ExprStmt):
             self.canon_expr(s.expr, ns)
         elif isinstance(s, Return):
@@ -130,7 +132,11 @@ class Sema:
                 self.canon_stmt(x, ns)
 
     def canon_expr(self, e, ns):
-        if isinstance(e, (MethodCall, FreeCall)):
+        if isinstance(e, New):
+            e.cls = self.resolve_class_name(e.cls, ns) or e.cls
+            for a in e.args:
+                self.canon_expr(a, ns)
+        elif isinstance(e, (MethodCall, FreeCall)):
             if isinstance(e, MethodCall):
                 self.canon_expr(e.obj, ns)
             for a in e.args:
@@ -330,6 +336,9 @@ class Sema:
                 self.cur_method = meth
                 sc = Scope()
                 for (pty, pn) in meth.params:
+                    if pty.kind == "ptr":
+                        raise SemaError("E0",
+                                        "指针形参=后续版本（引用形参同语义）")
                     sc.declare(pn, pty)
                 self.check_stmts(meth.body, sc, meth.is_const)
         for f in self.funcs_list:
@@ -405,6 +414,13 @@ class Sema:
             for a in s.args:
                 self.check_expr(a, sc, is_const)
             sc.declare(s.var, tobj(s.cls))
+        elif isinstance(s, DeleteStmt):
+            et = self.check_expr(s.expr, sc, is_const)
+            if et.kind != "ptr" or et.pointee.kind != "class":
+                raise SemaError("E0",
+                                "delete 操作数须为对象指针（Box*）——子集内"
+                                "delete 仅回收对象存储（无 dtor 语法）")
+            s.ty = et
         elif isinstance(s, ExprStmt):
             self.check_expr(s.expr, sc, is_const)
         elif isinstance(s, Return):
@@ -470,6 +486,10 @@ class Sema:
             ot = self.check_expr(e.obj, sc, is_const)
             if ot.kind == "ref":
                 ot = ot.pointee                  # 引用穿透（C++ 语义）
+            if ot.kind == "ptr":
+                if not e.arrow:
+                    raise SemaError("E0", "指针成员访问用 ->（C++ 法）")
+                ot = ot.pointee                  # 指针穿透
             if ot.kind != "class":
                 raise SemaError("E0", f"非对象上取成员 {e.name!r}")
             hit = self.find_member_owner(ot.name, e.name)
@@ -481,6 +501,8 @@ class Sema:
             ot = self.check_expr(e.obj, sc, is_const)
             if ot.kind == "ref":
                 ot = ot.pointee                  # 引用穿透（C++ 语义）
+            if ot.kind == "ptr":
+                ot = ot.pointee                  # 指针穿透（-> 已由 parser 分支）
             if ot.kind != "class":
                 raise SemaError("E0", f"非对象上调用 {e.name!r}()")
             hit = self.find_method_owner(ot.name, e.name, len(e.args))
@@ -493,6 +515,29 @@ class Sema:
                 e.args.append(meth.defaults[len(e.args)])
             self.check_args(e.args, meth, sc, is_const)
             e.sig, e.ty, e.lval = meth, meth.ret, False
+        elif isinstance(e, New):
+            ckey = self.resolve_class_name(e.cls, self.cur_ns)
+            if ckey is None:
+                raise SemaError("E0", f"类 {e.cls} 未定义")
+            e.cls = ckey
+            hits = []
+            for c in self.classes[ckey].ctors:
+                n = len(c.params)
+                if n == len(e.args) or (n > len(e.args) and all(
+                        c.defaults[i] is not None for i in range(len(e.args), n))):
+                    hits.append(c)
+            if len(hits) > 1:
+                raise SemaError("E0", f"new {ckey} 构造歧义")
+            if not hits and e.args:
+                raise SemaError("E0", f"{ckey} 无 {len(e.args)} 参构造")
+            if hits:
+                e.sig = hits[0]
+                while len(e.args) < len(e.sig.params):
+                    e.args.append(e.sig.defaults[len(e.args)])
+                for a in e.args:
+                    self.check_expr(a, sc, is_const)
+                    a.bind = "value"
+            e.ty, e.lval = tptr(tobj(ckey)), False
         elif isinstance(e, FreeCall):
             f = self.find_free_func(e.name, len(e.args))
             if f is None:
@@ -722,6 +767,8 @@ def _install_mat(cls):
                 rid = Id(tn)
                 rid.ty, rid.lval = tval("int"), True
                 s.init = rid
+        elif isinstance(s, DeleteStmt):
+            pass                                # delete p 无物化需求
         elif isinstance(s, ExprStmt):
             self._mat_expr(s.expr, h)
         elif isinstance(s, Return):
@@ -732,7 +779,19 @@ def _install_mat(cls):
 
     def _mat_expr(self, e, h):
         """后序：内层调用的物化先入 hoists（声明序=依赖序，C 合法）。"""
-        if isinstance(e, (MethodCall, FreeCall)):
+        if isinstance(e, New):
+            for a in e.args:
+                self._mat_expr(a, h)
+            if getattr(e, "sig", None) is not None:
+                for i, a in enumerate(e.args):
+                    if getattr(a, "bind", None) == "mat":
+                        tn = self._fresh()
+                        h.append((tn, a))
+                        rid = Id(tn)
+                        rid.ty, rid.lval = tval("int"), True
+                        e.args[i] = rid
+                        e.args[i].bind = "value"   # ctor 值形参
+        elif isinstance(e, (MethodCall, FreeCall)):
             if isinstance(e, MethodCall):
                 self._mat_expr(e.obj, h)     # FreeCall 无接收者
             for a in e.args:

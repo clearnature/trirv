@@ -15,17 +15,19 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
+from cpp_parser import (New, DeleteStmt, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
-from cpp_types import tref, type_name, TRef
+from cpp_types import tref, type_name, TRef, TPtr
 
 BASE_KEY = "__base"
 
 
 def has_call(e):
     """AST 侧调用检测（物化临时量两步发射判定）。"""
+    if isinstance(e, New):
+        return getattr(e, "sig", None) is not None
     if isinstance(e, (MethodCall, FreeCall)):
         return True
     if isinstance(e, Bin):
@@ -192,16 +194,26 @@ def hoist_pre(s, scope):
         return ""
     parts = []
     for (tn, e) in hs:
-        c = expr(e, {"value"}, scope)
-        if has_call(e):
-            parts.append(f"int {tn}; {tn} = {c};")
+        if isinstance(e, New):
+            # 0.0.15：new X(args) → malloc + ctor（§四 规划行落地）
+            cf = flat(e.cls)
+            args = ", ".join(expr(a, {"value"}, scope) for a in e.args)
+            ctor = f" {cf}_ctor({tn}{', ' + args if args else ''});" \
+                if getattr(e, "sig", None) is not None else ""
+            parts.append(f"struct {cf} *{tn} = malloc(sizeof(struct {cf}));"
+                         f"{ctor}")
         else:
-            parts.append(f"const int {tn} = {c};")
+            c = expr(e, {"value"}, scope)
+            if has_call(e):
+                parts.append(f"int {tn}; {tn} = {c};")
+            else:
+                parts.append(f"const int {tn} = {c};")
     return " ".join(parts) + " "
 
 
 def _stmt(s, scope, is_const):
     if isinstance(s, VarDecl):
+        scope[s.name] = s.ty             # 局部类型入 scope（ptr/ref 通道）
         if isinstance(s.ty, TRef):
             # 引用局部 = 指针绑定；右值初始化已被物化（init 是 Id(temp)）
             pt = type_name(s.ty.pointee)
@@ -213,6 +225,14 @@ def _stmt(s, scope, is_const):
             return f"{c}{pt} *{s.name} = &({expr(ie, {'value'}, scope)});"
         base = type_name(s.ty)
         cpre = "const " if s.ty.is_const else ""
+        if isinstance(s.ty, TPtr) and isinstance(s.init, New):
+            # Box* p = new Box(args);（§四 规划行：malloc 单声明 + ctor 后句）
+            cf = flat(s.init.cls)
+            args = ", ".join(expr(a, {"value"}, scope) for a in s.init.args)
+            ctor = f" {cf}_ctor({s.name}{', ' + args if args else ''});" \
+                if getattr(s.init, "sig", None) is not None else ""
+            return (f"struct {cf} *{s.name} = "
+                    f"malloc(sizeof(struct {cf}));{ctor}")
         if s.init is not None:
             c = expr(s.init, {"value"}, scope)
             if has_call(s.init):
@@ -224,6 +244,9 @@ def _stmt(s, scope, is_const):
         args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
         call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
         return f"struct {cf} {s.var}; {call}"
+    if isinstance(s, DeleteStmt):
+        # 子集无 dtor 语法：delete 仅回收存储（X_dtor 进场后补调用）
+        return f"free({expr(s.expr, {'value'}, scope)});"
     if isinstance(s, ExprStmt):
         return f"{expr(s.expr, {'value'}, scope)};"
     if isinstance(s, Return):
@@ -283,6 +306,8 @@ def expr(e, ctx, scope):
             form = f"({c}struct {owner} *)this_"   # this->跨类成员 cast 一致
         sep = "->" if form_is_ptr(form, e.obj, scope) else "."
         return f"{form}{sep}{e.name}"
+    if isinstance(e, New):
+        raise AssertionError("lower: 裸 New 未经物化改写（sema/_mat 通道缺失）")
     if isinstance(e, (MethodCall, FreeCall)):
         return call(e, ctx, scope)
     if isinstance(e, Assign):
@@ -314,17 +339,19 @@ def this_recv(owner, scope):
 
 
 def member_obj(o, scope):
-    """数据成员接收者形态：局部对象=名字本体；REF 形参=指针；this=cast。"""
+    """数据成员接收者形态：局部对象=名字本体；REF/TPtr=指针；this=cast。"""
     if isinstance(o, This):
         return this_recv(getattr(o, "owner", None), scope)
     if isinstance(o, Id):
         if getattr(o, "ref_kind", None) == "member":
             return this_recv(getattr(o, "owner", None), scope)
         ty = scope.get(o.name)
-        if ty is not None and ty.kind == "ref":
+        if ty is not None and ty.kind in ("ref", "ptr"):
             return o.name
         return o.name
-    return expr(o, {"ref" if o.ty.kind == "ref" else "value"}, scope)
+    if isinstance(o, New):
+        raise AssertionError("lower: New 作接收者未经物化")
+    return expr(o, {"ref" if o.ty.kind in ("ref", "ptr") else "value"}, scope)
 
 
 def form_is_ptr(form, o, scope):
@@ -333,7 +360,7 @@ def form_is_ptr(form, o, scope):
     if isinstance(o, Id):
         ty = scope.get(o.name)
         return (getattr(o, "ref_kind", None) == "member"
-                or (ty is not None and ty.kind == "ref"))
+                or (ty is not None and ty.kind in ("ref", "ptr")))
     if isinstance(o, MethodCall):
         return o.ty.kind == "ref"                # 引用返回→指针本体
     return False
@@ -383,8 +410,8 @@ def recv_expr(o, scope):
         if getattr(o, "ref_kind", None) == "member":
             return this_recv(getattr(o, "owner", None), scope)
         ty = scope.get(o.name)
-        if ty is not None and ty.kind == "ref":
-            return o.name                        # 引用对象→指针本体
+        if ty is not None and ty.kind in ("ref", "ptr"):
+            return o.name                        # 引用/指针对象→指针本体
         return f"&{o.name}"
     if isinstance(o, MethodCall):
         return expr(o, {"ref" if o.ty.kind == "ref" else "value"}, scope)
