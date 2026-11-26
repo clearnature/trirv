@@ -244,21 +244,25 @@ class Parser:
         return ty
 
     def parse_params(self):
-        ps = []
+        """返回 (params, defaults)：defaults[i] = 默认实参 AST|None。
+        一旦有默认，后续必须全有（后缀规则在 sema 校验）。"""
+        ps, dfl = [], []
         if self.peek()[1] == ")" and self.peek()[0] == "PUNCT":
-            return ps
+            return ps, dfl
         while True:
             ty = self.parse_type()
             nm = self.expect("ID")[1]
             ps.append((ty, nm))
+            d = self.expr() if self.accept("PUNCT", "=") else None
+            dfl.append(d)
             if not self.accept("PUNCT", ","):
                 break
-        return ps
+        return ps, dfl
 
     def ctordef(self, clsname):
         self.expect("ID", clsname)
         self.expect("PUNCT", "(")
-        params = self.parse_params()
+        params, defaults = self.parse_params()
         self.expect("PUNCT", ")")
         inits = []
         if self.accept("PUNCT", ":"):
@@ -271,17 +275,21 @@ class Parser:
                 if not self.accept("PUNCT", ","):
                     break
         body = self.block()
-        return CtorDecl(params, inits, body)
+        cd = CtorDecl(params, inits, body)
+        cd.defaults = defaults
+        return cd
 
     def methoddef(self):
         ty = self.parse_type()
         nm = self.expect("ID")[1]
         self.expect("PUNCT", "(")
-        params = self.parse_params()
+        params, defaults = self.parse_params()
         self.expect("PUNCT", ")")
         is_const = bool(self.accept("KW", "const"))
         body = self.block()
-        return MethodDecl(nm, ty, params, is_const, body)
+        md = MethodDecl(nm, ty, params, is_const, body)
+        md.defaults = defaults
+        return md
 
     def maindef(self):
         self.expect("KW", "int")

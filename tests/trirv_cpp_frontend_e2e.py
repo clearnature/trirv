@@ -48,6 +48,7 @@ BEHAVIOR = [
     ("test09_sema.cpp", 70),
     ("test08b_lifetime.cpp", 7),     # 0.0.9 曾拒绝，0.0.10 物化转正
     ("test10_lifetime.cpp", 56),
+    ("test11_default.cpp", 69),
 ]
 # (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [

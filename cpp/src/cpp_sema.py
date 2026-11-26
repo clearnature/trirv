@@ -17,6 +17,7 @@ from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import tint, tchar, tbool, tvoid, tcls, tref, type_name
+from cpp_mangle import mangle_method
 
 
 class SemaError(Exception):
@@ -83,6 +84,19 @@ class Sema:
                 info.members[mn] = mty
             info.methods.extend(cd.methods)
             info.ctors.extend(cd.ctors)
+            # 默认实参校验 + mangling 重定义守卫（sema 名字修饰职责，§三）
+            seen = {}
+            for meth in cd.methods:
+                self.check_defaults(meth)
+                mn2 = mangle_method(cd.name, meth)
+                if mn2 in seen:
+                    raise SemaError("E0",
+                                    f"{cd.name}.{meth.name} 重定义：mangled "
+                                    f"{mn2} 撞 {seen[mn2]}（默认实参不进签名）")
+                seen[mn2] = meth.name
+                meth.mname = mn2
+            for ctor in cd.ctors:
+                self.check_defaults(ctor)
 
     def find_member(self, cname, name):
         r = self.find_member_owner(cname, name)
@@ -103,14 +117,26 @@ class Sema:
         return r[0] if r else None
 
     def find_method_owner(self, cname, name, nargs):
-        """(MethodDecl, 声明类名)——跨类调用的 cast 喂点。"""
+        """(MethodDecl, 声明类名)——跨类调用的 cast 喂点。
+        0.0.11：缺省实参可补全（nargs < 参数数且缺位全有默认）；歧义报错。"""
+        hits = []
         c = cname
         while c:
             for m in self.classes[c].methods:
-                if m.name == name and len(m.params) == nargs:
-                    return (m, c)
+                if m.name != name:
+                    continue
+                n = len(m.params)
+                if n == nargs:
+                    hits.append((m, c))
+                elif n > nargs and all(
+                        m.defaults[i] is not None for i in range(nargs, n)):
+                    hits.append((m, c))
             c = self.classes[c].base
-        return None
+        if len(hits) > 1:
+            cands = ", ".join(f"{k[1]}::{name}/{len(k[0].params)}参"
+                              for k in hits)
+            raise SemaError("E0", f"{name}({nargs} 参) 重载歧义：{cands}")
+        return hits[0] if hits else None
 
     # ============ 主体 ============
     def check(self, decls, main):
@@ -179,12 +205,22 @@ class Sema:
         elif isinstance(s, CtorStmt):
             if s.cls not in self.classes:
                 raise SemaError("E0", f"类 {s.cls} 未定义")
-            hits = [c for c in self.classes[s.cls].ctors
-                    if len(c.params) == len(s.args)]
+            hits = []
+            for c in self.classes[s.cls].ctors:
+                n = len(c.params)
+                if n == len(s.args) or (n > len(s.args) and all(
+                        c.defaults[i] is not None
+                        for i in range(len(s.args), n))):
+                    hits.append(c)
+            if len(hits) > 1:
+                raise SemaError("E0",
+                                f"{s.cls} 构造歧义（{len(s.args)} 实参）")
             if not hits:
                 raise SemaError(
                     f"E0: {s.cls} 无 {len(s.args)} 参构造")
             s.sig = hits[0]
+            while len(s.args) < len(s.sig.params):      # 默认补全
+                s.args.append(s.sig.defaults[len(s.args)])
             for a in s.args:
                 self.check_expr(a, sc, is_const)
             sc.declare(s.var, tobj(s.cls))
@@ -268,6 +304,8 @@ class Sema:
             meth, e.sig_owner = hit
             if is_const and not meth.is_const and is_this_receiver(e.obj):
                 raise SemaError("K2", f"const 方法经 this 调非 const 方法 {e.name}()")
+            while len(e.args) < len(meth.params):        # 0.0.11 默认补全
+                e.args.append(meth.defaults[len(e.args)])
             self.check_args(e.args, meth, sc, is_const)
             e.sig, e.ty, e.lval = meth, meth.ret, False
         elif isinstance(e, FreeCall):
@@ -529,3 +567,53 @@ def _install_mat(cls):
 
 
 _install_mat(Sema)
+
+
+
+
+def is_const_expr(e):
+    if isinstance(e, Num):
+        return True
+    if isinstance(e, Bin):
+        return is_const_expr(e.l) and is_const_expr(e.r)
+    if isinstance(e, Un):
+        return is_const_expr(e.e)
+    return False
+
+
+def _install_defaults(cls):
+    def check_defaults(self, d):
+        """后缀规则 + 常量表达式限制 + 形参类别限制（0.0.11）。"""
+        defaults = getattr(d, "defaults", None)
+        params = d.params
+        if defaults is None:
+            defaults = [None] * len(params)
+            d.defaults = defaults
+        seen_default = False
+        for i, df in enumerate(defaults):
+            if df is None:
+                if seen_default:
+                    raise SemaError("E0",
+                                    f"{d.name} 形参 {i} 无默认：后缀规则要求"
+                                    f"一旦有默认，后续必须全有")
+                continue
+            seen_default = True
+            if not is_const_expr(df):
+                raise SemaError("E0",
+                                f"{d.name} 形参 {i} 默认实参限常量表达式"
+                                f"（字面量/算术）——名字引用需声明作用域查找，"
+                                f"子集外")
+            (pty, _pn) = params[i]
+            if pty.kind == "ref" and not pty.pointee.is_const:
+                raise SemaError("E0",
+                                f"{d.name} 形参 {i}：非 const 引用形参"
+                                f"默认实参=左值需求，子集外拒绝")
+            if pty.kind == "class":
+                raise SemaError("E0",
+                                f"{d.name} 形参 {i}：对象形参默认实参"
+                                f"（拷贝构造语义）= 后续版本")
+
+    cls.check_defaults = check_defaults
+
+
+_install_defaults(Sema)
