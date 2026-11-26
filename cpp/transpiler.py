@@ -1,10 +1,34 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.6 —— C++ -> C 降级器（单继承 + 引用 + const 方法/形参）。
+"""transpiler v0.0.7 —— C++ -> C 降级器（单继承 + 引用 + const + 方法重载/Itanium）。
 用法：python3 cpp/transpiler.py input.cpp output.c
 """
 import re, sys
 
-VERSION = "0.0.6"
+VERSION = "0.0.7"
+
+
+def _enc_type(t, classes):
+    """Itanium 类型编码：int→i / char→c / void→v / 对象→<len><Name>。"""
+    if t == "int":
+        return "i"
+    if t == "char":
+        return "c"
+    if t == "void":
+        return "v"
+    if t in classes:
+        return f"{len(t)}{t}"
+    return t
+
+
+def _mangle(cname, mname, params, classes):
+    """_ZN<len(Class)><Class><len(meth)><meth>E<params>；零参 → 旧前缀名（兼容既有契约）。"""
+    if not params:
+        return f"{cname}_{mname}"
+    enc = "".join(
+        ("RK" if p.get("const") else "R") + _enc_type(p["type"], classes)
+        if p.get("ref") else _enc_type(p["type"], classes)
+        for p in params)
+    return f"_ZN{len(cname)}{cname}{len(mname)}{mname}E{enc}"
 
 
 def transpile(src):
@@ -31,20 +55,21 @@ def transpile(src):
             info["ctor_body"] = ctor.group(3).strip()
         for mm in re.finditer(r'(int\s*&?|void)\s+(\w+)\s*\(([^)]*)\)\s*(?:const\s*)?\{([^{}]*)\}', body):
             params = []
-            for p in mm.group(3).split(","):
-                p = re.sub(r'^const\s+', '', p.strip())   # const 形参：限定符剥离
+            for p0 in mm.group(3).split(","):
+                p = re.sub(r'^const\s+', '', p0.strip())   # const 形参：限定符剥离
+                is_const = (p != p0.strip())
                 if not p:
                     continue
                 # 形参：Type name / Type &name / Type& name（引用）
                 pm = re.match(r'(\w+)\s*&\s*(\w+)$', p)
                 if pm:
                     params.append({"type": pm.group(1), "name": pm.group(2),
-                                   "ref": True})
+                                   "ref": True, "const": is_const})
                     continue
                 pm = re.match(r'(\w+)\s+(\w+)$', p)
                 if pm:
                     params.append({"type": pm.group(1), "name": pm.group(2),
-                                   "ref": False})
+                                   "ref": False, "const": is_const})
             info["methods"].append({"ret": mm.group(1), "name": mm.group(2),
                                     "params": params,
                                     "body": mm.group(4).strip()})
@@ -137,7 +162,8 @@ def transpile(src):
                 # 引用返回：return member → return &(this_->member)
                 body = re.sub(r'return\s+this_->(\w+)', r'return &(this_->\1)', body)
             sig = ", ".join(c_params)
-            out.append(f"{ret_c} {name}_{mname}({sig}) {{ {body} }}")
+            fname = _mangle(name, mname, meth["params"], classes)
+            out.append(f"{ret_c} {fname}({sig}) {{ {body} }}")
 
     # ===== Pass 3: main 降级 =====
     main_pat = re.compile(r'int\s+main\s*\(\s*\)\s*\{(.*)\}', re.DOTALL)
@@ -160,21 +186,25 @@ def transpile(src):
                     var = dm.group(1)
                     main_body = main_body.replace(dm.group(0),
                         f"struct {cname} {var}; {cname}_ctor(&{var});")
-            # 方法调用替换（带实参；对象形参/引用形参的实参加 & 传地址）
+            # 方法调用替换（重载按实参个数选载；对象/引用实参加 & 传地址）
             for meth in info["methods"]:
+                fname = _mangle(cname, meth["name"], meth["params"], classes)
                 arg_types = [p["type"] for p in meth.get("params", [])]
                 arg_refs = [p.get("ref", False) for p in meth.get("params", [])]
+                nargs = len(meth.get("params", []))
 
-                def _call(m, meth=meth, arg_types=arg_types, arg_refs=arg_refs):
+                def _call(m, fname=fname, arg_types=arg_types, arg_refs=arg_refs, nargs=nargs):
                     recv, argstr = m.group(1), m.group(2)
                     args = [a.strip() for a in argstr.split(",")] if argstr.strip() else []
+                    if len(args) != nargs:
+                        return m.group(0)   # 实参个数不符=其他重载，留给对应变体处理
                     fixed = []
                     for i, a in enumerate(args):
                         if i < len(arg_types) and (arg_types[i] in classes or arg_refs[i]):
                             fixed.append(f"&{a}")
                         else:
                             fixed.append(a)
-                    return f"{cname}_{meth['name']}(&{recv}, {', '.join(fixed)})".replace(", )", ")")
+                    return f"{fname}(&{recv}, {', '.join(fixed)})".replace(", )", ")")
 
                 call_pat = re.compile(rf'(\w+)\.{meth["name"]}\(([^)]*)\)')
                 main_body = call_pat.sub(_call, main_body)

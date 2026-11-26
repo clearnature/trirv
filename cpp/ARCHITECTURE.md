@@ -117,8 +117,8 @@ _ZN1XC2Ev       → X::X() (base ctor)
 | 0.0.4 | + 引用返回（int&→int*，test04）+ 方法参数（值/对象形参，test02 dot=11） | ✓ 已验证（transpiler v0.0.3） |
 | 0.0.5 | + 引用形参（int& n → int* n，body 自动 *n，实参自动 &，test05=25） | ✓ 已验证（transpiler v0.0.5） |
 | 0.0.6 | + const 方法 `f() const` + const 形参（限定符剥离，test06=19） | ✓ 已验证（transpiler v0.0.6） |
-| **0.0.7** | **+ 函数重载（Itanium mangling）** | **下一个** |
-| 0.0.8 | + 默认参数 | |
+| 0.0.7 | + 方法重载（真 Itanium mangling `_ZN<len>…<meth>E<params>`，实参个数选载；探针证 trirv_cc 接受 `_ZN` 标识符；test07=160） | ✓ 已验证（transpiler v0.0.7） |
+| **0.0.8** | **+ 默认参数** | **下一个** |
 | 0.0.9 | + 命名空间（前缀扁平化） | |
 | 0.0.10 | + extern "C" 块 | |
 | 0.0.11 | + new/delete（malloc/free + ctor/dtor） | |
