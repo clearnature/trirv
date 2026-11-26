@@ -10,6 +10,8 @@
         一元 &/*（地址/解引用——引用语义由降级器插，用户手写易与 TAND 撞）。
 """
 from cpp_lexer import lex
+from cpp_types import (CType, TInt, TChar, TBool, TVoid, TClass, TRef,
+                       tint, tchar, tbool, tvoid, tcls, tref)
 
 
 class ParseError(Exception):
@@ -17,23 +19,7 @@ class ParseError(Exception):
 
 
 # ---- AST 节点（轻量：__slotsys 无需，dict-free 明确字段） ----
-class Type:
-    """sema 验收标准：Type{kind, base, is_const, pointee} 一次到位，非布尔散装。
-
-    kind ∈ 'void'|'int'|'char'|'bool'|'class'|'ref'
-    kind=='ref' 时 pointee 指向被引类型（其 is_const 区分 Ri/RKi）。"""
-
-    def __init__(self, kind, base=None, is_const=False, pointee=None):
-        self.kind = kind
-        self.base = base
-        self.is_const = is_const
-        self.pointee = pointee
-
-    def __repr__(self):
-        c = "const " if self.is_const else ""
-        if self.kind == "ref":
-            return f"{c}{self.pointee!r}&"
-        return f"{c}{self.base or self.kind}"
+Type = CType            # 兼容旧引用名（ADT 基类）
 
 
 class ClassDecl:
@@ -241,14 +227,20 @@ class Parser:
         """['const'] (int|char|void|bool|ID) ['&'] → Type。"""
         is_const = bool(self.accept("KW", "const"))
         t = self.next()
-        if t[0] == "KW" and t[1] in BASIC:
-            ty = Type(BASIC[t[1]], is_const=is_const)
+        if t[0] == "KW" and t[1] == "int":
+            ty = tint(is_const)
+        elif t[0] == "KW" and t[1] == "char":
+            ty = tchar(is_const)
+        elif t[0] == "KW" and t[1] == "bool":
+            ty = tbool(is_const)
+        elif t[0] == "KW" and t[1] == "void":
+            ty = tvoid()                      # const void 不可表达
         elif t[0] == "ID":
-            ty = Type("class", base=t[1], is_const=is_const)
+            ty = tcls(t[1], is_const)
         else:
             raise ParseError(f"L{t[2]}: 不支持的类型 {t[1]!r}")
         if self.accept("PUNCT", "&"):
-            ty = Type("ref", pointee=ty)
+            ty = tref(ty)                     # ref(ref) 在构造层即拒绝
         return ty
 
     def parse_params(self):
@@ -333,7 +325,7 @@ class Parser:
         if t[0] == "KW" and t[1] == "for":
             return self.forstmt()
         if t[0] == "KW" and t[1] in ("int", "char"):
-            ty = Type(BASIC[t[1]])
+            ty = tint() if t[1] == "int" else tchar()
             self.next()
             nm = self.expect("ID")[1]
             init = None
@@ -363,7 +355,8 @@ class Parser:
         self.expect("PUNCT", "(")
         init = None
         if self.peek()[0] == "KW" and self.peek()[1] in ("int", "char"):
-            ty = Type(BASIC[self.next()[1]])
+            kw = self.next()[1]
+            ty = tint() if kw == "int" else tchar()
             nm = self.expect("ID")[1]
             ie = self.expr() if self.accept("PUNCT", "=") else None
             init = VarDecl(nm, ty, ie)

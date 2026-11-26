@@ -57,18 +57,36 @@ cpp/src/
 └── cpp_emit.h
 ```
 
-## 三、类型系统（cpp_sema.c）
+## 三、类型系统（cpp_types + cpp_sema.c）
+
+**ADT 纪律（v0.0.9，参照 sov-math 强类型化）**：类型=构造子集合，非法组合
+在构造层不可表达（`data Trit = T0|T1|T2` 精神；`toTritIndex` 投影跨边界
+→ `.kind` 投影仅供 lower/mangle 边界，库内一律保持 CType 类型）：
+
+```
+TInt(is_const) / TChar / TBool          基本型（const 可）
+TVoid()                                 const void 不可表达（无 is_const 形参）
+TClass(name, is_const)                  匿名类不可表达（newtype 隔离）
+TRef(pointee)                           ref-of-ref 不可表达（C++ 禁）；
+                                        is_const = pointee 派生 property，
+                                        顶层 const 不可赋值（setter 拒绝）
+```
+
+C 移植=tagged union + 构造函数强制不变式（ctype_ref() 拒绝 ref pointee、
+ctype_void() 无 const 形参——Python TypeError_ 对应 C 侧 assert+abort）：
 
 ```c
-typedef enum { TY_VOID, TY_INT, TY_CHAR, TY_CLASS, TY_PTR, TY_REF, TY_FN } TypeKind;
+typedef enum { TY_VOID, TY_INT, TY_CHAR, TY_CLASS, TY_REF } TypeKind;
 typedef struct CType {
     TypeKind kind;
-    char *name;             /* class 名 / int / void */
-    struct CType *pointee;  /* TY_PTR/TY_REF 指向类型 */
-    int is_const;
-    /* class 专用 */
-    struct ClassInfo *cls;  /* TY_CLASS → 类信息 */
+    char *name;             /* TY_CLASS 专用（匿名不可表达） */
+    struct CType *pointee;  /* TY_REF 专用（非 CType 即 abort） */
+    int is_const;           /* TY_REF 无此槽位——读 = pointee.is_const */
 } CType;
+/* 构造器即不变式守卫：ctype_ref(pointee) 断言 pointee->kind != TY_REF */
+```
+
+Python 原型（cpp_types.py）中对应实现：
 
 typedef struct ClassInfo {
     char *name;
@@ -135,13 +153,14 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.6 | + const 方法 `f() const` + const 形参（限定符剥离，test06=19） | ✓ 已验证（transpiler v0.0.6） |
 | 0.0.7 | + 方法重载（Itanium mangling 前身——零参不修饰，K 位缺失） | ✓ 已验证（transpiler v0.0.7，被 0.0.8 取代） |
 | 0.0.8 | **sema 重构（正则三遍退役）**：五层模块 cpp/src/ + `Type{kind: VALUE\|REF, is_const}` + N8（引用绑临时量拒绝）+ const 原样传递（cast 带同款 const：`(const struct B *)this_`）+ 全 Itanium（零参 `_ZN…Ev`、const 方法 `_ZNK…`、`T&`→R / `const T&`→RK）+ 隐式 this 调用 + K1/K2 const 规则 | ✓ 已验证（e2e 20 项：8 行为 + 2 N8 拒绝，双 VM） |
-| **0.0.9** | **+ 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化** | **下一个** |
-| 0.0.10 | + 默认参数 | |
-| 0.0.11 | + 自由函数透传（引用形参同通道） | |
-| 0.0.12 | + 命名空间（前缀扁平化） | |
-| 0.0.13 | + extern "C" 块 | |
-| 0.0.14 | + new/delete（malloc/free + ctor/dtor） | |
-| 0.0.15 | + 操作符重载（operator+/==/<< 限算术） | |
+| 0.0.9 | **类型层 ADT 化（参照 sov-math）**：cpp_types 构造子集合——ref-of-ref / const void / ref 顶层 const / 匿名类 构造层不可表达；.kind 投影仅供 lower/mangle 边界；SemaError 证据携带（GADT MathError 精神）；e2e +7 ADT 不变式机检（27 项） | ✓ 已验证（transpiler v0.0.9） |
+| **0.0.10** | **+ 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化** | **下一个** |
+| 0.0.11 | + 默认参数 | |
+| 0.0.12 | + 自由函数透传（引用形参同通道） | |
+| 0.0.13 | + 命名空间（前缀扁平化） | |
+| 0.0.14 | + extern "C" 块 | |
+| 0.0.15 | + new/delete（malloc/free + ctor/dtor） | |
+| 0.0.16 | + 操作符重载（operator+/==/<< 限算术） | |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |

@@ -13,13 +13,18 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (Type, Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
+from cpp_types import tint, tchar, tbool, tvoid, tcls, tref, type_name
 
 
 class SemaError(Exception):
-    pass
+    """GADT MathError 精神：证据携带（code = N8/K1/K2/K3/E0/R1/I1）。"""
+
+    def __init__(self, code, msg):
+        self.code = code
+        super().__init__(f"{code}: {msg}")
 
 
 class ClassInfo:
@@ -48,12 +53,14 @@ class Scope:
 
 
 def tval(base, is_const=False):
-    return Type(base, base=base if base not in ("int", "char", "void", "bool")
-                else None, is_const=is_const)
+    makers = {"int": tint, "char": tchar, "bool": tbool}
+    if base in makers:
+        return makers[base](is_const)
+    return tvoid() if base == "void" else tcls(base, is_const)
 
 
 def tobj(cname, is_const=False):
-    return Type("class", base=cname, is_const=is_const)
+    return tcls(cname, is_const)
 
 
 class Sema:
@@ -66,12 +73,12 @@ class Sema:
     def build_classes(self, decls):
         for cd in decls:
             if cd.name in self.classes:
-                raise SemaError(f"E0: 类 {cd.name} 重复定义")
+                raise SemaError("E0", f"类 {cd.name} 重复定义")
             self.classes[cd.name] = ClassInfo(cd.name, cd.base)
         for cd in decls:
             info = self.classes[cd.name]
             if cd.base and cd.base not in self.classes:
-                raise SemaError(f"E0: 基类 {cd.base} 未定义")
+                raise SemaError("E0", f"基类 {cd.base} 未定义")
             for (mn, mty) in cd.members:
                 info.members[mn] = mty
             info.methods.extend(cd.methods)
@@ -121,7 +128,7 @@ class Sema:
                 for (tgt, args) in ctor.inits:
                     if tgt == cd.base:
                         if cd.base is None:
-                            raise SemaError(f"E0: {tgt} 不是 {cd.name} 基类")
+                            raise SemaError("E0", f"{tgt} 不是 {cd.name} 基类")
                     elif self.find_member(cd.name, tgt) is None:
                         raise SemaError(
                             f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
@@ -152,7 +159,7 @@ class Sema:
             sc.declare(s.name, s.ty)
         elif isinstance(s, CtorStmt):
             if s.cls not in self.classes:
-                raise SemaError(f"E0: 类 {s.cls} 未定义")
+                raise SemaError("E0", f"类 {s.cls} 未定义")
             hits = [c for c in self.classes[s.cls].ctors
                     if len(c.params) == len(s.args)]
             if not hits:
@@ -184,7 +191,7 @@ class Sema:
         elif isinstance(s, BlockStmt):
             self.check_stmts(s.stmts, Scope(sc), is_const)
         else:
-            raise SemaError(f"E0: 未知语句 {type(s).__name__}")
+            raise SemaError("E0", f"未知语句 {type(s).__name__}")
 
     def check_return(self, expr):
         meth = self.cur_method
@@ -209,7 +216,7 @@ class Sema:
             e.ty, e.lval = tval("int"), False   # 子集内字符串不逐字节类型化
         elif isinstance(e, This):
             if self.cur_cls is None:
-                raise SemaError("E0: this 在类外")
+                raise SemaError("E0", "this 在类外")
             e.ty, e.lval = tobj(self.cur_cls.name, is_const=is_const), True
         elif isinstance(e, Id):
             vt = sc_find(sc, e.name)
@@ -218,53 +225,53 @@ class Sema:
             elif self.cur_cls is not None:
                 hit = self.find_member_owner(self.cur_cls.name, e.name)
                 if hit is None:
-                    raise SemaError(f"E0: 未声明标识符 {e.name!r}")
+                    raise SemaError("E0", f"未声明标识符 {e.name!r}")
                 mt, owner = hit
                 e.ref_kind, e.ty, e.lval, e.owner = "member", mt, True, owner
             else:
-                raise SemaError(f"E0: 未声明标识符 {e.name!r}")
+                raise SemaError("E0", f"未声明标识符 {e.name!r}")
         elif isinstance(e, Member):
             ot = self.check_expr(e.obj, sc, is_const)
             if ot.kind != "class":
-                raise SemaError(f"E0: 非对象上取成员 {e.name!r}")
-            hit = self.find_member_owner(ot.base, e.name)
+                raise SemaError("E0", f"非对象上取成员 {e.name!r}")
+            hit = self.find_member_owner(ot.name, e.name)
             if hit is None:
-                raise SemaError(f"E0: {ot.base} 无成员 {e.name!r}")
+                raise SemaError("E0", f"{ot.name} 无成员 {e.name!r}")
             mt, e.owner = hit
             e.ty, e.lval = mt, True
         elif isinstance(e, MethodCall):
             ot = self.check_expr(e.obj, sc, is_const)
             if ot.kind != "class":
-                raise SemaError(f"E0: 非对象上调用 {e.name!r}()")
-            hit = self.find_method_owner(ot.base, e.name, len(e.args))
+                raise SemaError("E0", f"非对象上调用 {e.name!r}()")
+            hit = self.find_method_owner(ot.name, e.name, len(e.args))
             if hit is None:
-                raise SemaError(f"E0: {ot.base}.{e.name} 无 {len(e.args)} 参重载")
+                raise SemaError("E0", f"{ot.name}.{e.name} 无 {len(e.args)} 参重载")
             meth, e.sig_owner = hit
             if is_const and not meth.is_const and is_this_receiver(e.obj):
-                raise SemaError(f"K2: const 方法经 this 调非 const 方法 {e.name}()")
+                raise SemaError("K2", f"const 方法经 this 调非 const 方法 {e.name}()")
             self.check_args(e.args, meth, sc, is_const)
             e.sig, e.ty, e.lval = meth, meth.ret, False
         elif isinstance(e, FreeCall):
-            raise SemaError(f"E0: 自由函数 {e.name}() 暂不支持（透传=后续版本）")
+            raise SemaError("E0", f"自由函数 {e.name}() 暂不支持（透传=后续版本）")
         elif isinstance(e, Assign):
             lt = self.check_expr(e.lhs, sc, is_const)
             rt = self.check_expr(e.rhs, sc, is_const)
             self.const_guard(e.lhs, is_const)
             if not getattr(e.lhs, "lval", False) and lt.kind != "ref":
-                raise SemaError("E0: 赋值目标非左值且非引用")
+                raise SemaError("E0", "赋值目标非左值且非引用")
             e.ty, e.lval = lt, False
         elif isinstance(e, Bin):
             self.check_expr(e.l, sc, is_const)
             self.check_expr(e.r, sc, is_const)
             for side in (e.l, e.r):
                 if side.ty.kind == "class":
-                    raise SemaError(f"E0: 对象 {side.ty.base} 参与算术")
+                    raise SemaError("E0", f"对象 {type_name(side.ty)} 参与算术")
             e.ty, e.lval = tval("int"), False
         elif isinstance(e, Un):
             self.check_expr(e.e, sc, is_const)
             e.ty, e.lval = tval("int"), False
         else:
-            raise SemaError(f"E0: 未知表达式 {type(e).__name__}")
+            raise SemaError("E0", f"未知表达式 {type(e).__name__}")
         return e.ty
 
     def check_args(self, args, meth, sc, is_const):
@@ -295,9 +302,9 @@ class Sema:
         if not is_const:
             return
         if isinstance(lhs, Id) and getattr(lhs, "ref_kind", None) == "member":
-            raise SemaError(f"K1: const 方法内写成员 {lhs.name}")
+            raise SemaError("K1", f"const 方法内写成员 {lhs.name}")
         if isinstance(lhs, Member):
-            raise SemaError(f"K1: const 方法内写成员 {lhs.name}")
+            raise SemaError("K1", f"const 方法内写成员 {lhs.name}")
 
 
 def sc_find(sc, name):

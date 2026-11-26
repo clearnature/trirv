@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.8 —— C++ -> C 降级器（sema 重构：五层架构落地）。
+"""transpiler v0.0.9 —— C++ -> C 降级器（sema 重构：五层架构落地）。
 
 用法：python3 cpp/transpiler.py input.cpp output.c
 
@@ -26,8 +26,9 @@ from cpp_parser import parse, ParseError               # noqa: E402
 from cpp_sema import Sema, SemaError                   # noqa: E402
 from cpp_lower import lower_tu                         # noqa: E402
 from cpp_emit import emit                              # noqa: E402
+from cpp_types import TypeError_                       # noqa: E402
 
-VERSION = "0.0.8"
+VERSION = "0.0.9"
 
 
 def transpile(src):
@@ -44,7 +45,7 @@ def main(argv):
     try:
         src = open(argv[1]).read()
         c_src = transpile(src)
-    except (LexError, ParseError, SemaError) as e:
+    except (LexError, ParseError, SemaError, TypeError_) as e:
         print(f"[{type(e).__name__}] {e}", file=sys.stderr)
         return 2
     open(argv[2], "w").write(c_src)

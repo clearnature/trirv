@@ -87,5 +87,36 @@ for fn, code in REJECT:
     check(f"{fn} 拒绝退出", r.returncode != 0, True)
     check(f"{fn} 错误码含 {code}", code in r.stderr, True)
 
+# ---- 类型层 ADT 不变式（sov-math 强类型纪律：非法状态不可表达） ----
+sys.path.insert(0, os.path.join(ROOT, "cpp", "src"))
+from cpp_types import (TInt, TVoid, TClass, TRef, tint, tvoid, tcls, tref,
+                       TypeError_, type_name)   # noqa: E402
+
+try:
+    tref(tref(tint()))
+    check("ADT: ref-of-ref 拒绝", False, True)
+except TypeError_:
+    check("ADT: ref-of-ref 拒绝", True, True)
+try:
+    TVoid(True)                                # TVoid 无 is_const 形参
+    check("ADT: const void 不可表达", False, True)
+except TypeError:
+    check("ADT: const void 不可表达", True, True)
+r = tref(tint(True))
+try:
+    r.is_const = False
+    check("ADT: ref 顶层 const 不可赋值", False, True)
+except TypeError_:
+    check("ADT: ref 顶层 const 不可赋值", True, True)
+check("ADT: ref const 派生自 pointee", r.is_const, True)
+try:
+    tcls("")
+    check("ADT: 匿名类拒绝", False, True)
+except TypeError_:
+    check("ADT: 匿名类拒绝", True, True)
+check("ADT: kind 投影（边界层）", type_name(tref(tcls("Box"))), "Box")
+check("ADT: 相等性（结构）", tint(True) == tint(True)
+      and tint(True) != tint(False) and tref(tint()) == tref(tint()), True)
+
 print(f"\ncpp 前端 sema 管线契约：{passed} PASS / {failed} FAIL")
 sys.exit(1 if failed else 0)

@@ -15,10 +15,11 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (Type, Num, StrLit, Id, This, Member, MethodCall, Bin, Un,
+from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
+from cpp_types import tref, type_name
 
 BASE_KEY = "__base"
 
@@ -26,15 +27,13 @@ BASE_KEY = "__base"
 def obj_param_as_ref(ty):
     """对象 VALUE 形参按指针形降级（trirv_cc 结构体按值传参子集外）——
     scope 里改记 ref 形态，body 的成员访问/传对象自动走指针。"""
-    if ty.kind == "class":
-        return Type("ref", pointee=ty)
-    return ty
+    return tref(ty) if ty.kind == "class" else ty
 
 
 def type_c(ty):
     """VALUE 类型 → C 形（class 加 struct 前缀；const 原样传递）。"""
-    base = ty.base or ty.kind
-    s = f"struct {base}" if ty.kind == "class" else base
+    name = type_name(ty)
+    s = f"struct {name}" if ty.kind == "class" else name
     return (f"const {s}" if ty.is_const else s)
 
 
@@ -139,7 +138,7 @@ def stmts(ss, scope, is_const):
 
 def stmt(s, scope, is_const):
     if isinstance(s, VarDecl):
-        base = s.ty.base or s.ty.kind
+        base = type_name(s.ty)
         if s.init is not None:
             return f"{base} {s.name} = {expr(s.init, {'value'}, scope)};"
         return f"{base} {s.name};"

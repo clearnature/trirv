@@ -17,7 +17,7 @@ def enc_type(ty):
         k = "K" if ty.pointee.is_const else ""
         return "R" + k + enc_type(ty.pointee)
     if ty.kind == "class":
-        return f"{len(ty.base)}{ty.base}"
+        return f"{len(ty.name)}{ty.name}"
     return {"int": "i", "char": "c", "bool": "b", "void": "v"}.get(ty.kind, ty.kind)
 
 
