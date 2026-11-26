@@ -45,3 +45,11 @@ host 生成实例（planted 3-col / K4 UNSAT / 三角形 / 环）
 - 律算合一 Agda 证明项导出 → TriRV 见证复验（同 lean4checker 形态）
 - 大 n 调度（迭代深化 / 生成元启发式，对接热浴 Glauber 动力学）
 - W3 大乘证书（bignum_tri）→ 求解器产物全覆盖见证化
+
+## Z3 对接架构决策
+
+**不实现 C++ 前端，不编译 Z3**——Z3 在 x86 上运行，TriRV 只校验其输出。
+详见 docs/Z3-INTEGRATION.md（Lean 4 lean4checker 模式完整论证）。
+
+数据流：Z3 产 DIMACS + assignment → TriRV `cnf_verify_assign` 独立复验 →
+Z3 结论被三进制世界确认/拒绝。TCB = cnf_verify_assign 的 ~30 行 C。

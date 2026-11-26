@@ -1,11 +1,3 @@
-[submodule "tinycc"]
-	path = tinycc
-	url = https://github.com/clearnature/tinycc.git
-	branch = trirv
-[submodule "third_party/musl"]
-	path = third_party/musl
-	url = https://github.com/clearnature/musl.git
-	branch = trirv-vendor
-[submodule "third_party/wasm-testsuite"]
-	path = third_party/wasm-testsuite
-	url = https://github.com/WebAssembly/testsuite
+[submodule "third_party/z3"]
+	path = third_party/z3
+	url = https://github.com/clearnature/z3.git
