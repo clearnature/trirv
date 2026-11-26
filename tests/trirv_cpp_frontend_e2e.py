@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""trirv_cpp_frontend_e2e —— C++ 前端 sema 管线契约（五层架构，v0.0.8 起）。
+
+管线：cpp/transpiler.py（lexer→parser→sema→lower→emit）→ trirv_cc → 双 VM。
+行为断言 7 + N8 拒绝 2；双 VM 一致 + N8 精确匹配（要么对、要么报错）。
+
+sema 验收标准（用户拍板）：Type{kind: VALUE|REF, is_const} 驱动全部
+引用/const/mangling 决策；_ZNK/RK 喂点逐文件核对（test09 产物即样张）。
+"""
+import os
+import subprocess
+import sys
+
+import _bootstrap  # noqa: F401
+import _trvio
+import trirv_vm as vm
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+CPP = os.path.join(ROOT, "cpp", "transpiler.py")
+CC = os.path.join(ROOT, "cc", "bin", "trirv_cc")
+CVM = os.path.join(ROOT, "vm", "bin", "trirv_vm")
+TMP = os.path.join(ROOT, "tmp")
+
+passed = 0
+failed = 0
+
+
+def check(name, got, want):
+    global passed, failed
+    if got == want:
+        passed += 1
+        print(f"PASS {name}: {got!r}")
+    else:
+        failed += 1
+        print(f"FAIL {name}: got={got!r} want={want!r}")
+
+
+# (文件, 期望 exit)——exit 通道 8 位 POSIX 截断（vm/trirv_vm.py:515），期望值 <256
+BEHAVIOR = [
+    ("test01_counter.cpp", 2),
+    ("test02_vector.cpp", 11),
+    ("test03_inherit.cpp", 5),
+    ("test04_ref.cpp", 99),
+    ("test05_refparam.cpp", 25),
+    ("test06_const.cpp", 19),
+    ("test07_overload.cpp", 160),
+    ("test09_sema.cpp", 70),
+]
+# (文件, stderr 必含码)——拒绝性用例
+REJECT = [
+    ("test08a_n8_ref.cpp", "N8"),
+    ("test08b_n8_constref.cpp", "N8"),
+]
+
+os.makedirs(TMP, exist_ok=True)
+
+for fn, want in BEHAVIOR:
+    src = os.path.join(ROOT, "cpp", "tests", fn)
+    c_out = os.path.join(TMP, fn.replace(".cpp", ".c"))
+    trv = os.path.join(TMP, fn.replace(".cpp", ".trv"))
+    r = subprocess.run([sys.executable, CPP, src, c_out],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
+        continue
+    r = subprocess.run([CC, c_out, trv], capture_output=True, text=True)
+    if r.returncode != 0:
+        check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")
+        continue
+    prog, mem, _ = _trvio.load_bytes(open(trv, "rb").read())
+    c = vm.VM(prog, mem_init=mem).run(max_steps=20000)
+    check(f"{fn} PyVM", c.exit_code, want)
+    if os.path.exists(CVM):
+        r = subprocess.run([CVM, trv], capture_output=True)
+        ex = None
+        for ln in r.stderr.decode("utf-8", "replace").splitlines():
+            if "exit=" in ln:
+                ex = int(ln.split("exit=")[1].split()[0])
+        check(f"{fn} CVM", ex, want)
+
+for fn, code in REJECT:
+    src = os.path.join(ROOT, "cpp", "tests", fn)
+    c_out = os.path.join(TMP, fn.replace(".cpp", ".c"))
+    r = subprocess.run([sys.executable, CPP, src, c_out],
+                       capture_output=True, text=True)
+    check(f"{fn} 拒绝退出", r.returncode != 0, True)
+    check(f"{fn} 错误码含 {code}", code in r.stderr, True)
+
+print(f"\ncpp 前端 sema 管线契约：{passed} PASS / {failed} FAIL")
+sys.exit(1 if failed else 0)

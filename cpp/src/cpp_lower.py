@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""cpp_lower —— Layer 5 降级：Type 驱动的 C 形态决策（对齐 cpp_lower.c 规划）。
+
+正则时代的全部特设规则在此退役，替换为符号表查证：
+  REF 变量读/写      → (*n)              （Type.kind=='ref'，非散装布尔）
+  调用点实参         → bind 注记（sema N8 通过后才有 bind）：
+                        addr→&x / ref→原样转发 / deref|value→值形
+  引用返回           → &(this_->m)（左值取址）/ 转发原样
+  VALUE 语境的 REF   → *(…)（自动解引用，含 b.ref() = 30 写穿）
+  const 方法 this    → const struct X *this_（const 原样传递给 C 编译器）
+  跨类成员/方法      → cast 带同一 const 性：((const struct B *)this_)->bm
+                        ——cast 剥 const 是 C 编译器看不见的语义洞，
+                        唯一必须自证的 const 一致性（用户拍板第 2 条）
+
+scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
+  __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
+"""
+from cpp_parser import (Type, Num, StrLit, Id, This, Member, MethodCall, Bin, Un,
+                        Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
+                        While, For, BlockStmt)
+from cpp_mangle import mangle_method
+
+BASE_KEY = "__base"
+
+
+def obj_param_as_ref(ty):
+    """对象 VALUE 形参按指针形降级（trirv_cc 结构体按值传参子集外）——
+    scope 里改记 ref 形态，body 的成员访问/传对象自动走指针。"""
+    if ty.kind == "class":
+        return Type("ref", pointee=ty)
+    return ty
+
+
+def type_c(ty):
+    """VALUE 类型 → C 形（class 加 struct 前缀；const 原样传递）。"""
+    base = ty.base or ty.kind
+    s = f"struct {base}" if ty.kind == "class" else base
+    return (f"const {s}" if ty.is_const else s)
+
+
+def decl_class(cd):
+    """class → struct（基类嵌入 __base 首成员=upcast 通道）。"""
+    parts = []
+    if cd.base:
+        parts.append(f"struct {cd.base} {BASE_KEY};")
+    for (mn, _mt) in cd.members:
+        parts.append(f"int {mn};")
+    inner = " ".join(parts)
+    return f"struct {cd.name} {{ {inner} }};" if inner \
+        else f"struct {cd.name} {{}};"
+
+
+def lower_tu(decls, main, classes_meta):
+    for cd in decls:
+        for meth in cd.methods:
+            if not hasattr(meth, "mname"):
+                meth.mname = mangle_method(cd.name, meth)
+    order, seen = [], set()
+
+    def visit(cd):
+        if cd.name in seen:
+            return
+        seen.add(cd.name)
+        if cd.base:
+            for d in decls:
+                if d.name == cd.base:
+                    visit(d)
+        order.append(cd)
+
+    for cd in decls:
+        visit(cd)
+    structs = [decl_class(cd) for cd in order]
+    funcs = []
+    for cd in decls:
+        funcs.extend(lower_ctors(cd))
+        funcs.extend(lower_methods(cd))
+    main_c = lower_main(main) if main is not None else None
+    return {"structs": structs, "funcs": funcs, "main": main_c}
+
+
+# ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
+def lower_ctors(cd):
+    out = []
+    for ctor in cd.ctors:
+        params = [f"struct {cd.name} *this_"]
+        for (pty, pn) in ctor.params:
+            params.append(decl_param(pty, pn))
+        scope = {pn: obj_param_as_ref(pty) for (pty, pn) in ctor.params}
+        scope["__cls__"], scope["__const__"] = cd.name, False
+        body = []
+        for (tgt, args) in ctor.inits:
+            rargs = ", ".join(expr(a, {"value"}, scope) for a in args)
+            if tgt == cd.base:
+                body.append(f"{cd.base}_ctor((struct {cd.base} *)this_, "
+                            f"{rargs});")
+            else:
+                body.append(f"this_->{tgt} = {rargs};")
+        body.extend(stmts(ctor.body, scope, False))
+        out.append(f"void {cd.name}_ctor({', '.join(params)}) "
+                   f"{{ {' '.join(body)} }}" if body else
+                   f"void {cd.name}_ctor({', '.join(params)}) {{ }}")
+    return out
+
+
+# ============ 方法 ============
+def lower_methods(cd):
+    out = []
+    for meth in cd.methods:
+        this_t = (f"const struct {cd.name} *this_" if meth.is_const
+                  else f"struct {cd.name} *this_")
+        params = [this_t] + [decl_param(p, n) for (p, n) in meth.params]
+        scope = {n: obj_param_as_ref(p) for (p, n) in meth.params}
+        scope["__cls__"], scope["__const__"] = cd.name, meth.is_const
+        scope["__method__"] = meth
+        body = stmts(meth.body, scope, meth.is_const)
+        out.append(f"{render_ret(meth.ret)} {meth.mname}({', '.join(params)}) "
+                   f"{{ {' '.join(body)} }}" if body else
+                   f"{render_ret(meth.ret)} {meth.mname}({', '.join(params)}) "
+                   f"{{ }}")
+    return out
+
+
+def render_ret(ty):
+    if ty.kind == "ref":
+        return f"{type_c(ty.pointee)} *"
+    return type_c(ty)
+
+
+def decl_param(pty, pn):
+    if pty.kind == "ref":
+        return f"{type_c(pty.pointee)} *{pn}"
+    return f"{type_c(pty)} {pn}"
+
+
+# ============ 语句 ============
+def stmts(ss, scope, is_const):
+    return [stmt(s, scope, is_const) for s in ss]
+
+
+def stmt(s, scope, is_const):
+    if isinstance(s, VarDecl):
+        base = s.ty.base or s.ty.kind
+        if s.init is not None:
+            return f"{base} {s.name} = {expr(s.init, {'value'}, scope)};"
+        return f"{base} {s.name};"
+    if isinstance(s, CtorStmt):
+        args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
+        call = f"{s.cls}_ctor(&{s.var}{', ' + args if args else ''});"
+        return f"struct {s.cls} {s.var}; {call}"
+    if isinstance(s, ExprStmt):
+        return f"{expr(s.expr, {'value'}, scope)};"
+    if isinstance(s, Return):
+        return ret_stmt(s, scope)
+    if isinstance(s, If):
+        els = f" else {stmt(s.els, scope, is_const)}" if s.els else ""
+        return (f"if ({expr(s.cond, {'value'}, scope)}) "
+                f"{stmt(s.then, scope, is_const)}{els}")
+    if isinstance(s, While):
+        return (f"while ({expr(s.cond, {'value'}, scope)}) "
+                f"{stmt(s.body, scope, is_const)}")
+    if isinstance(s, For):
+        init = stmt(s.init, scope, is_const) if s.init else ";"
+        cond = expr(s.cond, {"value"}, scope) if s.cond else "1"
+        step = expr(s.step, {"value"}, scope) if s.step else ""
+        init_c = init[:-1] if init.endswith(";") else init
+        return f"for ({init_c}; {cond}; {step}) " \
+               f"{stmt(s.body, scope, is_const)}"
+    if isinstance(s, BlockStmt):
+        inner = " ".join(stmt(x, scope, is_const) for x in s.stmts)
+        return "{ " + inner + " }"
+    raise AssertionError(f"lower: 未知语句 {type(s).__name__}")
+
+
+def ret_stmt(s, scope):
+    meth = scope.get("__method__")
+    e = s.expr
+    if e is None:
+        return "return;"
+    if meth is not None and meth.ret.kind == "ref":
+        if e.ty.kind == "ref":
+            return f"return {expr(e, {'ref'}, scope)};"      # 转发指针本体
+        return f"return &({expr(e, {'value'}, scope)});"     # 左值取址
+    return f"return {expr(e, {'value'}, scope)};"
+
+
+# ============ 表达式（ctx：value=读值 / ref=要指针本体） ============
+def expr(e, ctx, scope):
+    if isinstance(e, Num):
+        return str(e.v)
+    if isinstance(e, StrLit):
+        return e.v
+    if isinstance(e, Id):
+        if getattr(e, "ref_kind", None) == "member":
+            return this_member(e.name, getattr(e, "owner", None), scope)
+        ty = scope.get(e.name)
+        if ty is not None and ty.kind == "ref":
+            return e.name if "ref" in ctx else f"(*{e.name})"
+        return e.name
+    if isinstance(e, This):
+        return this_recv(getattr(e, "owner", None), scope)
+    if isinstance(e, Member):
+        form = member_obj(e.obj, scope)
+        owner = getattr(e, "owner", None)
+        if form == "this_" and owner not in (None, scope.get("__cls__")):
+            c = "const " if scope.get("__const__") else ""
+            form = f"({c}struct {owner} *)this_"   # this->跨类成员 cast 一致
+        sep = "->" if form_is_ptr(form, e.obj, scope) else "."
+        return f"{form}{sep}{e.name}"
+    if isinstance(e, MethodCall):
+        return call(e, ctx, scope)
+    if isinstance(e, Assign):
+        lhs = expr(e.lhs, {"value"}, scope)     # REF 左值自然出 (*…)
+        rhs = expr(e.rhs, {"value"}, scope)
+        return f"{lhs} = {rhs}"
+    if isinstance(e, Bin):
+        return (f"({expr(e.l, {'value'}, scope)} {e.op} "
+                f"{expr(e.r, {'value'}, scope)})")
+    if isinstance(e, Un):
+        return f"({e.op}{expr(e.e, {'value'}, scope)})"
+    raise AssertionError(f"lower: 未知表达式 {type(e).__name__}")
+
+
+def this_member(name, owner, scope):
+    """this 裸成员访问：本类直达；跨类 cast 带方法同款 const（拍板第 2 条）。"""
+    if owner is None or scope.get("__cls__") in (None, owner):
+        return f"this_->{name}"
+    c = "const " if scope.get("__const__") else ""
+    return f"(({c}struct {owner} *)this_)->{name}"
+
+
+def this_recv(owner, scope):
+    """this 作接收者：跨类（方法声明在祖先类）→ 基类指针 cast。"""
+    if owner is None or scope.get("__cls__") in (None, owner):
+        return "this_"
+    c = "const " if scope.get("__const__") else ""
+    return f"({c}struct {owner} *)this_"
+
+
+def member_obj(o, scope):
+    """数据成员接收者形态：局部对象=名字本体；REF 形参=指针；this=cast。"""
+    if isinstance(o, This):
+        return this_recv(getattr(o, "owner", None), scope)
+    if isinstance(o, Id):
+        if getattr(o, "ref_kind", None) == "member":
+            return this_recv(getattr(o, "owner", None), scope)
+        ty = scope.get(o.name)
+        if ty is not None and ty.kind == "ref":
+            return o.name
+        return o.name
+    return expr(o, {"ref" if o.ty.kind == "ref" else "value"}, scope)
+
+
+def form_is_ptr(form, o, scope):
+    if isinstance(o, This):
+        return True                              # this_ / cast 后均指针
+    if isinstance(o, Id):
+        ty = scope.get(o.name)
+        return (getattr(o, "ref_kind", None) == "member"
+                or (ty is not None and ty.kind == "ref"))
+    if isinstance(o, MethodCall):
+        return o.ty.kind == "ref"                # 引用返回→指针本体
+    return False
+
+
+def call(e, ctx, scope):
+    meth = e.sig
+    recv_owner = scope.get("__recv_owner__")
+    scope["__recv_owner__"] = getattr(e, "sig_owner", None)
+    parts = [recv_expr(e.obj, scope)]
+    for a in e.args:
+        bind = getattr(a, "bind", "value")
+        if bind == "addr":
+            parts.append(f"&({expr(a, {'value'}, scope)})")
+        elif bind == "ref":
+            parts.append(expr(a, {"ref"}, scope))
+        else:
+            parts.append(expr(a, {"value"}, scope))
+    scope["__recv_owner__"] = recv_owner
+    s = f"{meth.mname}({', '.join(parts)})"
+    if "ref" in ctx or e.ty.kind != "ref":
+        return s
+    return f"*({s})"                             # VALUE 语境自动解引用
+
+
+def recv_expr(o, scope):
+    """方法接收者：对象左值取 &；引用/指针本体直传；this 走跨类 cast。"""
+    if isinstance(o, This):
+        return this_recv(getattr(o, "sig_owner", None)
+                         if hasattr(o, "sig_owner") else
+                         scope.get("__recv_owner__"), scope)
+    if isinstance(o, Id):
+        if getattr(o, "ref_kind", None) == "member":
+            return this_recv(getattr(o, "owner", None), scope)
+        ty = scope.get(o.name)
+        if ty is not None and ty.kind == "ref":
+            return o.name                        # 引用对象→指针本体
+        return f"&{o.name}"
+    if isinstance(o, MethodCall):
+        return expr(o, {"ref" if o.ty.kind == "ref" else "value"}, scope)
+    return f"&({expr(o, {'value'}, scope)})"
+
+
+# ============ main ============
+def lower_main(main):
+    scope = {"__cls__": None, "__const__": False, "__method__": None}
+    body = " ".join(stmt(s, scope, False) for s in main)
+    return f"int main(void) {{ {body} }}"
