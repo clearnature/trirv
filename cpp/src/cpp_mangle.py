@@ -23,6 +23,20 @@ def enc_type(ty):
     return {"int": "i", "char": "c", "bool": "b", "void": "v"}.get(ty.kind, ty.kind)
 
 
+OP_ENC = {"+": "pl", "==": "eq", "-": "mi", "*": "ml", "/": "dv",
+          "<": "lt", ">": "gt", "<=": "le", ">=": "ge", "!=": "ne"}
+
+
+def _name_enc(name):
+    """operator+ → pl（Itanium 算子表，无长度前缀）；普通名 → <len>name。"""
+    if name.startswith("operator"):
+        op = name[len("operator"):]
+        if op in OP_ENC:
+            return OP_ENC[op]
+        raise ValueError(f"操作符 {op} 子集外（限算术：+/==）")
+    return f"{len(name)}{name}"
+
+
 def _enc_components(qname):
     """限定名逐组件编码：geo::Box → 3geo3Box。"""
     return "".join(f"{len(c)}{c}" for c in qname.split("::"))
@@ -31,7 +45,7 @@ def _enc_components(qname):
 def mangle_method(cls_name, meth):
     """MethodDecl → Itanium 修饰名（限定类名逐组件）。K 位=方法 const 性。"""
     prefix = "_ZNK" if meth.is_const else "_ZN"
-    comps = _enc_components(cls_name) + f"{len(meth.name)}{meth.name}"
+    comps = _enc_components(cls_name) + _name_enc(meth.name)
     enc = "".join(enc_type(pty) for (pty, _pn) in meth.params)
     return f"{prefix}{comps}E" + (enc or "v")
 
@@ -41,7 +55,11 @@ def mangle_function(f):
     enc = "".join(enc_type(pty) for (pty, _pn) in f.params) or "v"
     if getattr(f, "c_link", False):
         return f.name                     # C 链接面：裸名直出（不 mangle）
+    nenc = _name_enc(f.name)
     ns = getattr(f, "ns", None)
     if ns:
-        return f"_ZN{len(ns)}{ns}{len(f.name)}{f.name}E{enc}"
-    return f"_Z{len(f.name)}{f.name}{enc}"
+        return f"_ZN{len(ns)}{ns}{nenc}E{enc}"
+    if nenc.startswith("operator") is False and "pl" not in nenc and \
+            nenc not in OP_ENC.values():
+        return f"_Z{nenc}{enc}"           # 普通自由函数
+    return f"_Z{nenc}{enc}"               # 算子自由函数：_ZplRK…RK…

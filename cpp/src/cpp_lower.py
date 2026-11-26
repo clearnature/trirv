@@ -315,6 +315,9 @@ def expr(e, ctx, scope):
         rhs = expr(e.rhs, {"value"}, scope)
         return f"{lhs} = {rhs}"
     if isinstance(e, Bin):
+        c = getattr(e, "call", None)
+        if c is not None:
+            return expr(c, ctx, scope)       # 算子调用（sema 已 bind 注记）
         return (f"({expr(e.l, {'value'}, scope)} {e.op} "
                 f"{expr(e.r, {'value'}, scope)})")
     if isinstance(e, Un):

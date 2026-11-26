@@ -557,15 +557,51 @@ class Sema:
         elif isinstance(e, Bin):
             self.check_expr(e.l, sc, is_const)
             self.check_expr(e.r, sc, is_const)
-            for side in (e.l, e.r):
-                if side.ty.kind == "class":
-                    raise SemaError("E0", f"对象 {type_name(side.ty)} 参与算术")
-            e.ty, e.lval = tval("int"), False
+            lcls = e.l.ty.kind == "class"
+            rcls = e.r.ty.kind == "class"
+            if lcls or rcls:
+                if e.op not in ("+", "=="):
+                    raise SemaError("E0",
+                                    f"操作符 {e.op} 对象子集外（限算术：+/==）")
+                if not (lcls and rcls):
+                    raise SemaError("E0",
+                                    f"{e.op} 运算对象类型不匹配"
+                                    f"（对象与基本型混算，无隐式转换）")
+                self.resolve_binop(e, sc, is_const)
+            else:
+                e.ty, e.lval = tval("int"), False
         elif isinstance(e, Un):
             self.check_expr(e.e, sc, is_const)
             e.ty, e.lval = tval("int"), False
         else:
             raise SemaError("E0", f"未知表达式 {type(e).__name__}")
+        return e.ty
+
+    def resolve_binop(self, e, sc, is_const):
+        """对象 +/-/== → 成员形态（lhs 1 参）优先，自由形态（2 参）兜底。
+        就地构建调用节点存 e.call（lower 直发），Type/bind 全通道复用。"""
+        name = "operator" + e.op
+        hit = self.find_method_owner(e.l.ty.name, name, 1)
+        if hit is not None:
+            meth, owner = hit
+            node = MethodCall(e.l, name, [e.r])
+            if is_const and not meth.is_const and is_this_receiver(e.l):
+                raise SemaError("K2",
+                                f"const 方法经 this 调非 const 方法 {name}()")
+            self.check_args(node.args, meth, sc, is_const)
+            node.sig, node.ty, node.lval = meth, meth.ret, False
+            node.sig_owner = owner
+        else:
+            f = self.find_free_func(name, 2)
+            if f is None:
+                raise SemaError("E0",
+                                f"{type_name(e.l.ty)} 无 {name} 重载"
+                                f"（成员 1 参/自由 2 参均未定义）")
+            node = FreeCall(name, [e.l, e.r])
+            self.check_args(node.args, f, sc, is_const)
+            node.sig, node.ty, node.lval = f, f.ret, False
+        e.call = node
+        e.ty, e.lval = node.ty, False
         return e.ty
 
     def check_args(self, args, meth, sc, is_const):
@@ -590,6 +626,13 @@ class Sema:
                     raise SemaError(
                         f"N8: 非 const 引用形参绑定临时量（{_fmt(a)}）"
                         f"——C++ 法：非常量左值引用不延寿，保持拒绝")
+            elif pty.kind == "class":
+                if at.kind == "ref" or getattr(a, "lval", False):
+                    a.bind = "addr"          # 对象左值取址
+                else:
+                    raise SemaError("E0",
+                                    "对象临时量绑定=0.0.17（算术结果对象"
+                                    "物化）——本版本仅左值对象")
             else:
                 a.bind = "deref" if at.kind == "ref" else "value"
 
@@ -806,8 +849,11 @@ def _install_mat(cls):
                     e.args[i] = rid
                     e.args[i].bind = "addr"
         elif isinstance(e, Bin):
-            self._mat_expr(e.l, h)
-            self._mat_expr(e.r, h)
+            if getattr(e, "call", None) is not None:
+                self._mat_expr(e.call, h)    # 算子调用节点参数通道
+            else:
+                self._mat_expr(e.l, h)
+                self._mat_expr(e.r, h)
         elif isinstance(e, Un):
             self._mat_expr(e.e, h)
         elif isinstance(e, Assign):

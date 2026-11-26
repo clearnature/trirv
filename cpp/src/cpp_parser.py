@@ -193,7 +193,7 @@ class Parser:
                 if main is not None:
                     raise ParseError(f"L{t[2]}: main 重定义")
                 main = self.maindef()
-            elif t[0] == "KW" and t[1] in ("void", "bool", "const", "int", "char") or \
+            elif t[0] == "KW" and t[1] in ("void", "bool", "const", "int", "char", "operator") or \
                     t[0] == "ID":
                 funcs.append(self.funcdef())
             else:
@@ -247,7 +247,10 @@ class Parser:
         """自由函数：Type name(params) [{ body }]——extern "C" 时允许无体
         （原型直出）；const 后缀非法（C++ 法）。"""
         ty = self.parse_type()
-        nm = self.expect("ID")[1]
+        if self.peek()[0] == "KW" and self.peek()[1] == "operator":
+            nm = self.op_name()
+        else:
+            nm = self.expect("ID")[1]
         if nm == "main":
             raise ParseError("main 必须是 int main()")
         self.expect("PUNCT", "(")
@@ -289,13 +292,15 @@ class Parser:
             elif t[0] == "ID" and t[1] == name and self.peek(1)[1] == "(":
                 cd.ctors.append(self.ctordef(name))
             elif t[0] == "KW" and t[1] == "int":
-                # int val; 成员 vs int f(...) / int& f(...) 方法
+                # int val; 成员 vs int f(...) / int& f(...) / int operator+(...) 方法
                 if (self.peek(1)[0] == "ID" and self.peek(2)[1] == "(") \
-                        or self.peek(1)[1] == "&":
+                        or self.peek(1)[1] == "&" \
+                        or (self.peek(1)[0] == "KW" and self.peek(1)[1] == "operator"):
                     cd.methods.append(self.methoddef())
                 else:
                     self.memberdecl(cd)
             elif (t[0] == "KW" and t[1] in ("char", "void", "bool", "const")) or \
+                    (t[0] == "KW" and t[1] == "operator") or \
                     (t[0] == "ID" and self.peek(1)[0] == "ID" and
                      self.peek(2)[1] == "("):
                 cd.methods.append(self.methoddef())
@@ -372,9 +377,20 @@ class Parser:
         cd.defaults = defaults
         return cd
 
+    def op_name(self):
+        """operator 后接算子（限算术：+/==）→ 'operator+' 名。"""
+        self.expect("KW", "operator")
+        t = self.next()
+        if t[0] == "PUNCT" and t[1] in ("+", "=="):
+            return "operator" + t[1]
+        raise ParseError(f"L{t[2]}: 操作符 {t[1]!r} 子集外（限算术：+/==）")
+
     def methoddef(self):
         ty = self.parse_type()
-        nm = self.expect("ID")[1]
+        if self.peek()[0] == "KW" and self.peek()[1] == "operator":
+            nm = self.op_name()
+        else:
+            nm = self.expect("ID")[1]
         self.expect("PUNCT", "(")
         params, defaults = self.parse_params()
         self.expect("PUNCT", ")")
