@@ -673,6 +673,21 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
   才是 1-tryte 步距）；RES 读取勿按 WBLOB 基址臆测偏移（哨兵各自
   自定位）
 
+#### solver/ 独立模块落地（2026-11-26，用户拍板：求解器双端结构化 + Lean4 类比）
+
+- 新目录 solver/（独立结构化模块）——求解-校验分离架构（Lean 4
+  lean4checker 类比：小型独立 C 复验器不信任求解本体）：
+  solver/README.md（章程：双端架构表/数据流/v2 路线）+
+  solver/py/color3.py（搜索原型/oracle，CPython 无限精度）+
+  solver/c/color3_solve_tri.c（TriRV 原生生产求解器，回溯 ≤3^16）
+  ——双端**同搜索序**（顶点升序、色 0→1→2 升序）= 同见证可逐字符对拍
+- 契约 trirv_solver_e2e **15 PASS / 0 FAIL** 入册 → **fast=77 套**：
+  5 实例双端对拍（planted 8/密集 6/K4 UNSAT/三角形/C6 偶环）+
+  见证独立复验零冲突 + K4 双端 UNSAT（完备枚举证明）+ CVM 同跑
+- 坑：UNSAT 记录的 OUT 推进按 1+n+1 但只写 1+1 → 留 NUL 空洞使
+  host 解析失步（驱动自身 bug 非编译器；修 = sat 条件推进）——
+  与「第 4 次 dec_str 销案」同课：先查自家代码再查编译器
+
 #### GF(3)/C12 见证机检批（2026-11-26，witness-sat 形态：闭式见证 + 归纳）
 
 - 数据源 = 离散数学参照库 `~/work/discrete-mathematics`（律算合一
