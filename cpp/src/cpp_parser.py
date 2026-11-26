@@ -26,6 +26,7 @@ class ClassDecl:
     def __init__(self, name, base):
         self.name, self.base = name, base
         self.ns = None             # 所属命名空间（0.0.13）
+        self.nested_in = None      # 外层类键（0.0.22 嵌套类）
         self.members = []          # [(name, Type)]
         self.ctors = []            # [CtorDecl]
         self.dtors = []            # [DtorDecl]（0.0.19，至多一个）
@@ -163,6 +164,7 @@ class Parser:
     def __init__(self, toks):
         self.toks = toks
         self.i = 0
+        self.collected_inner = []      # 嵌套类冒泡（0.0.22）
 
     # ---- 基元 ----
     def peek(self, k=0):
@@ -229,6 +231,8 @@ class Parser:
                 funcs.append(self.funcdef())
             else:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
+        classes.extend(self.collected_inner)
+        self.collected_inner = []
         return classes, funcs, globals_, sdefs, main
 
     def extern_c(self, funcs):
@@ -353,6 +357,21 @@ class Parser:
                     (t[0] == "ID" and self.peek(1)[0] == "KW" and
                      self.peek(1)[1] == "operator"):
                 cd.methods.append(self.methoddef())
+            elif t[0] == "KW" and t[1] in ("class", "struct"):
+                inner = self.classdef()
+                outer = f"{cd.ns}::{cd.name}" if cd.ns else cd.name
+                inner.nested_in = outer
+                inner.ns = outer               # ns 机制同构：key=outer::inner
+                self.collected_inner.append(inner)
+            elif t[0] == "KW" and t[1] == "friend":
+                self.next()
+                self.parse_type()
+                self.expect("ID")[1]
+                self.expect("PUNCT", "(")
+                while self.peek()[1] != ")":
+                    self.next()
+                self.expect("PUNCT", ")")
+                self.expect("PUNCT", ";")   # friend 声明：无访问控制子集=语义 no-op
             elif t[0] == "PUNCT" and t[1] == "~":
                 self.next()
                 dn = self.expect("ID")[1]

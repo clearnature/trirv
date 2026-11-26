@@ -81,11 +81,16 @@ class Sema:
         return getattr(self.cur_cls, "key", None) or self.cur_cls.name
 
     def resolve_class_name(self, name, ns):
-        """短名/限定名 → 规范键；找不到返回 None。"""
+        """短名/限定名 → 规范键；找不到返回 None。
+        0.0.22：cur_cls 键作伪 ns 回退（外层类体内裸名可见内层类）。"""
         if name in self.classes:
             return name
         if ns and f"{ns}::{name}" in self.classes:
             return f"{ns}::{name}"
+        if self.cur_cls is not None:
+            k = getattr(self.cur_cls, "key", self.cur_cls.name)
+            if f"{k}::{name}" in self.classes:
+                return f"{k}::{name}"
         return None
 
     def canon_ty(self, ty, ns):
