@@ -15,13 +15,26 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall, Bin, Un,
+from cpp_parser import (Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
-from cpp_types import tref, type_name
+from cpp_types import tref, type_name, TRef
 
 BASE_KEY = "__base"
+
+
+def has_call(e):
+    """AST 侧调用检测（物化临时量两步发射判定）。"""
+    if isinstance(e, (MethodCall, FreeCall)):
+        return True
+    if isinstance(e, Bin):
+        return has_call(e.l) or has_call(e.r)
+    if isinstance(e, Un):
+        return has_call(e.e)
+    if isinstance(e, Assign):
+        return has_call(e.lhs) or has_call(e.rhs)
+    return False
 
 
 def obj_param_as_ref(ty):
@@ -137,11 +150,45 @@ def stmts(ss, scope, is_const):
 
 
 def stmt(s, scope, is_const):
+    pre = hoist_pre(s, scope)
+    return pre + _stmt(s, scope, is_const)
+
+
+def hoist_pre(s, scope):
+    """0.0.10 物化临时量：const T& 绑临时量的具名落盘（调用者作用域）。
+    含调用的初始化拆两步（trirv_cc INITLIST 限制）——临时量非 const。"""
+    hs = getattr(s, "hoists", None)
+    if not hs:
+        return ""
+    parts = []
+    for (tn, e) in hs:
+        c = expr(e, {"value"}, scope)
+        if has_call(e):
+            parts.append(f"int {tn}; {tn} = {c};")
+        else:
+            parts.append(f"const int {tn} = {c};")
+    return " ".join(parts) + " "
+
+
+def _stmt(s, scope, is_const):
     if isinstance(s, VarDecl):
+        if isinstance(s.ty, TRef):
+            # 引用局部 = 指针绑定；右值初始化已被物化（init 是 Id(temp)）
+            pt = type_name(s.ty.pointee)
+            c = "const " if s.ty.pointee.is_const else ""
+            ie = s.init
+            if ie is not None and ie.ty.kind == "ref":
+                rhs = expr(ie, {"ref"}, scope)          # 引用转发指针本体
+                return f"{c}{pt} *{s.name} = {rhs};"
+            return f"{c}{pt} *{s.name} = &({expr(ie, {'value'}, scope)});"
         base = type_name(s.ty)
+        cpre = "const " if s.ty.is_const else ""
         if s.init is not None:
-            return f"{base} {s.name} = {expr(s.init, {'value'}, scope)};"
-        return f"{base} {s.name};"
+            c = expr(s.init, {"value"}, scope)
+            if has_call(s.init):
+                return f"{cpre}{base} {s.name}; {s.name} = {c};"
+            return f"{cpre}{base} {s.name} = {c};"
+        return f"{cpre}{base} {s.name};"
     if isinstance(s, CtorStmt):
         args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
         call = f"{s.cls}_ctor(&{s.var}{', ' + args if args else ''});"

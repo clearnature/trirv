@@ -324,9 +324,8 @@ class Parser:
             return While(c, self.stmt())
         if t[0] == "KW" and t[1] == "for":
             return self.forstmt()
-        if t[0] == "KW" and t[1] in ("int", "char"):
-            ty = tint() if t[1] == "int" else tchar()
-            self.next()
+        if t[0] == "KW" and (t[1] == "const" or t[1] in ("int", "char")):
+            ty = self.parse_type()   # const int& x / int& x / const int x / int x
             nm = self.expect("ID")[1]
             init = None
             if self.accept("PUNCT", "="):
@@ -354,9 +353,9 @@ class Parser:
         self.expect("KW", "for")
         self.expect("PUNCT", "(")
         init = None
-        if self.peek()[0] == "KW" and self.peek()[1] in ("int", "char"):
-            kw = self.next()[1]
-            ty = tint() if kw == "int" else tchar()
+        if self.peek()[0] == "KW" and \
+                (self.peek()[1] == "const" or self.peek()[1] in ("int", "char")):
+            ty = self.parse_type()
             nm = self.expect("ID")[1]
             ie = self.expr() if self.accept("PUNCT", "=") else None
             init = VarDecl(nm, ty, ie)

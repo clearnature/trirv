@@ -120,7 +120,10 @@ typedef struct ClassInfo {
 | const 方法内 `((B*)this_)` | **`((const struct B *)this_)`** | cast 带同款 const——唯一自证点 |
 | `class D : public B` | `struct D { struct B __base; ... };` | 首成员=upcast |
 | `B::B()` 调用 | `B_ctor((struct B *)this_)` | 基类构造转发 |
-| `g(42)`（REF 绑临时量） | **编译期拒绝 N8** | 要么对、要么报错；0.0.9 物化 |
+| `g(42)`（**非 const** REF 绑临时量） | **编译期拒绝 N8** | C++ 法：非常量左值引用不延寿，永久拒绝 |
+| `g(42)`（**const T&** 绑临时量） | `const int __tmp0 = 42; g(&__tmp0);` | 0.0.10 物化延寿（调用者作用域具名临时量） |
+| `const int& r = 42;` | `const int __tmp6 = 5; const int *r = &(__tmp6);` | 引用局部延寿：临时量生命周期=作用域 |
+| `int x = f();`（调用初始化） | `int x; x = f(...);` | 两步发射（trirv_cc INITLIST 限制的化解，I1 撤销） |
 | `virtual void f()` | vtable 槽位 + `(*this_->__vtbl->f)(this_)` | v2 |
 | `new X(args)` | `struct X *p = malloc(sizeof(struct X)); X_ctor(p, args);` | |
 | `delete p` | `X_dtor(p); free(p);` | |
@@ -154,8 +157,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.7 | + 方法重载（Itanium mangling 前身——零参不修饰，K 位缺失） | ✓ 已验证（transpiler v0.0.7，被 0.0.8 取代） |
 | 0.0.8 | **sema 重构（正则三遍退役）**：五层模块 cpp/src/ + `Type{kind: VALUE\|REF, is_const}` + N8（引用绑临时量拒绝）+ const 原样传递（cast 带同款 const：`(const struct B *)this_`）+ 全 Itanium（零参 `_ZN…Ev`、const 方法 `_ZNK…`、`T&`→R / `const T&`→RK）+ 隐式 this 调用 + K1/K2 const 规则 | ✓ 已验证（e2e 20 项：8 行为 + 2 N8 拒绝，双 VM） |
 | 0.0.9 | **类型层 ADT 化（参照 sov-math）**：cpp_types 构造子集合——ref-of-ref / const void / ref 顶层 const / 匿名类 构造层不可表达；.kind 投影仅供 lower/mangle 边界；SemaError 证据携带（GADT MathError 精神）；e2e +7 ADT 不变式机检（27 项） | ✓ 已验证（transpiler v0.0.9） |
-| **0.0.10** | **+ 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化** | **下一个** |
-| 0.0.11 | + 默认参数 | |
+| 0.0.10 | **生命周期扩展**：const T& 绑临时量→调用者作用域具名物化（sema bind='mat' 通道 + 后序改写器逐语句 hoists，声明序=依赖序）；引用局部声明 `const int& r = 42` 延寿；VALUE 返回值/嵌套物化；调用初始化两步发射（I1 撤销）。已知偏差：循环条件物化=单次求值（子集文档化）。非 const T& 绑临时量保持 N8 永久拒绝 | ✓ 已验证（e2e 29 项：9 行为 + 1 N8 + 7 ADT，双 VM） |
+| **0.0.11** | **+ 默认参数** | **下一个** |
 | 0.0.12 | + 自由函数透传（引用形参同通道） | |
 | 0.0.13 | + 命名空间（前缀扁平化） | |
 | 0.0.14 | + extern "C" 块 | |

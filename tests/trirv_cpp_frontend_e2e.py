@@ -46,11 +46,12 @@ BEHAVIOR = [
     ("test06_const.cpp", 19),
     ("test07_overload.cpp", 160),
     ("test09_sema.cpp", 70),
+    ("test08b_lifetime.cpp", 7),     # 0.0.9 曾拒绝，0.0.10 物化转正
+    ("test10_lifetime.cpp", 56),
 ]
-# (文件, stderr 必含码)——拒绝性用例
+# (文件, stderr 必含码)——拒绝性用例（C++ 法：非常量左值引用不延寿）
 REJECT = [
     ("test08a_n8_ref.cpp", "N8"),
-    ("test08b_n8_constref.cpp", "N8"),
 ]
 
 os.makedirs(TMP, exist_ok=True)

@@ -143,6 +143,15 @@ class Sema:
         self.cur_cls, self.cur_method = None, None
         if main is not None:
             self.check_stmts(main, Scope(), False)
+        # 0.0.10 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化
+        self._tmpn = 0
+        for cd in decls:
+            for ctor in cd.ctors:
+                self._mat_body(ctor.body)
+            for meth in cd.methods:
+                self._mat_body(meth.body)
+        if main is not None:
+            self._mat_body(main)
 
     def check_stmts(self, ss, sc, is_const):
         for s in ss:
@@ -150,12 +159,22 @@ class Sema:
 
     def check_stmt(self, s, sc, is_const):
         if isinstance(s, VarDecl):
-            if s.init is not None:
-                self.check_expr(s.init, sc, is_const)
-                if has_call(s.init):
+            if s.ty.kind == "ref":
+                # 引用局部声明：const T& r = 42 物化延寿；T& r = 42 拒绝（N8）
+                if s.init is None:
                     raise SemaError(
-                        f"I1: 声明初始化器含函数调用——trirv_cc INITLIST 限制，"
-                        f"拆两步（{s.name}; {s.name} = ...;）")
+                        f"E0: 引用声明 {s.name} 需初始化器")
+                self.check_expr(s.init, sc, is_const)
+                if not s.ty.pointee.is_const \
+                        and not getattr(s.init, "lval", False) \
+                        and s.init.ty.kind != "ref":
+                    raise SemaError(
+                        f"N8: 非 const 引用 {s.name} 绑临时量（{_fmt(s.init)}）"
+                        f"——C++ 法：保持拒绝")
+                # 物化改写在 check 末尾统一跑
+            elif s.init is not None:
+                self.check_expr(s.init, sc, is_const)
+                # 调用初始化不再报错——lower 两步发射
             sc.declare(s.name, s.ty)
         elif isinstance(s, CtorStmt):
             if s.cls not in self.classes:
@@ -290,11 +309,12 @@ class Sema:
                     a.bind = "ref"
                 elif getattr(a, "lval", False):
                     a.bind = "addr"
+                elif pty.pointee.is_const:
+                    a.bind = "mat"       # 0.0.10：const T& 绑临时量→物化
                 else:
                     raise SemaError(
-                        f"N8: 引用形参绑定临时量（{_fmt(a)}）——真实语义需在"
-                        f"调用者作用域物化具名临时量并延长生命周期，"
-                        f"0.0.9 前明确拒绝（要么对、要么报错）")
+                        f"N8: 非 const 引用形参绑定临时量（{_fmt(a)}）"
+                        f"——C++ 法：非常量左值引用不延寿，保持拒绝")
             else:
                 a.bind = "deref" if at.kind == "ref" else "value"
 
@@ -409,3 +429,103 @@ def _rw_expr(e):
         e.__class__ = MethodCall          # 原地变身：隐式 this
         e.obj = This()
     # Num/StrLit/Id/This：叶子
+
+
+# ============ 0.0.10 物化改写（Sema 方法，文件尾追加便于审阅） ============
+def _install_mat(cls):
+    def _fresh(self):
+        n = f"__tmp{self._tmpn}"
+        self._tmpn += 1
+        return n
+
+    def _mat_body(self, body):
+        for s in body:
+            self._mat_stmt(s)
+
+    def _mat_stmt(self, s):
+        if isinstance(s, BlockStmt):
+            for x in s.stmts:
+                self._mat_stmt(x)
+            return
+        if isinstance(s, If):
+            h = []
+            self._mat_expr(s.cond, h)
+            if h:
+                s.hoists = h
+            self._mat_stmt(s.then)
+            if s.els is not None:
+                self._mat_stmt(s.els)
+            return
+        if isinstance(s, While):
+            h = []
+            self._mat_expr(s.cond, h)
+            if h:
+                s.hoists = h
+            self._mat_stmt(s.body)
+            return
+        if isinstance(s, For):
+            self._mat_stmt(s.init)
+            h = []
+            if s.cond is not None:
+                self._mat_expr(s.cond, h)
+            if s.step is not None:
+                self._mat_expr(s.step, h)
+            if h:
+                s.hoists = h   # 偏差记录：循环条件物化=单次求值（子集文档化）
+            self._mat_stmt(s.body)
+            return
+        h = []
+        if isinstance(s, VarDecl):
+            if s.init is not None:
+                self._mat_expr(s.init, h)
+            # 引用局部 + 右值初始化 → 物化为临时量，init 换 Id(temp)
+            if s.ty.kind == "ref" and s.init is not None \
+                    and s.init.ty.kind != "ref" \
+                    and not getattr(s.init, "lval", False):
+                tn = self._fresh()
+                h.append((tn, s.init))
+                rid = Id(tn)
+                rid.ty, rid.lval = tval("int"), True
+                s.init = rid
+        elif isinstance(s, ExprStmt):
+            self._mat_expr(s.expr, h)
+        elif isinstance(s, Return):
+            if s.expr is not None:
+                self._mat_expr(s.expr, h)
+        if h:
+            s.hoists = h
+
+    def _mat_expr(self, e, h):
+        """后序：内层调用的物化先入 hoists（声明序=依赖序，C 合法）。"""
+        if isinstance(e, MethodCall):
+            self._mat_expr(e.obj, h)
+            for a in e.args:
+                self._mat_expr(a, h)
+            meth = e.sig
+            for i, a in enumerate(e.args):
+                if getattr(a, "bind", None) == "mat":
+                    tn = self._fresh()
+                    h.append((tn, a))
+                    rid = Id(tn)
+                    rid.ty, rid.lval = tval("int"), True
+                    e.args[i] = rid
+                    e.args[i].bind = "addr"
+        elif isinstance(e, Bin):
+            self._mat_expr(e.l, h)
+            self._mat_expr(e.r, h)
+        elif isinstance(e, Un):
+            self._mat_expr(e.e, h)
+        elif isinstance(e, Assign):
+            self._mat_expr(e.lhs, h)
+            self._mat_expr(e.rhs, h)
+        elif isinstance(e, Member):
+            self._mat_expr(e.obj, h)
+        # Num/StrLit/Id/This：叶子
+
+    cls._fresh = _fresh
+    cls._mat_body = _mat_body
+    cls._mat_stmt = _mat_stmt
+    cls._mat_expr = _mat_expr
+
+
+_install_mat(Sema)
