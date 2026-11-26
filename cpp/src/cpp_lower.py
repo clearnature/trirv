@@ -194,12 +194,17 @@ def hoist_pre(s, scope):
         return ""
     parts = []
     for (tn, e) in hs:
-        if getattr(e, "ty", None) is not None and e.ty.kind == "class" and \
-                isinstance(e, FreeCall) and isinstance(e.sig, CtorDecl):
-            # 0.0.17 显式构造临时：栈物化（无结构体赋值依赖）
-            cf = flat(e.name)
-            args = ", ".join(expr(a, {"value"}, scope) for a in e.args)
-            parts.append(f"struct {cf} {tn}; {cf}_ctor(&{tn}, {args});")
+        if getattr(e, "ty", None) is not None and e.ty.kind == "class":
+            if isinstance(e, FreeCall) and isinstance(e.sig, CtorDecl):
+                # 0.0.17 显式构造临时：栈物化+ctor（无结构体赋值依赖）
+                cf = flat(e.name)
+                args = ", ".join(expr(a, {"value"}, scope) for a in e.args)
+                parts.append(f"struct {cf} {tn}; {cf}_ctor(&{tn}, {args});")
+            else:
+                # 0.0.18 调用结果对象：栈临时+结构体赋值（p18c=12 证可用）
+                cf = flat(type_name(e.ty))
+                c = expr(e, {"value"}, scope)
+                parts.append(f"struct {cf} {tn}; {tn} = {c};")
         elif isinstance(e, New):
             # 0.0.15：new X(args) → malloc + ctor（§四 规划行落地）
             cf = flat(e.cls)

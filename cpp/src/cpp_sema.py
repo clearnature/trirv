@@ -647,14 +647,10 @@ class Sema:
             elif pty.kind == "class":
                 if at.kind == "ref" or getattr(a, "lval", False):
                     a.bind = "addr"          # 对象左值取址
-                elif isinstance(a, FreeCall) and \
-                        type(getattr(a, "sig", None)).__name__ == "CtorDecl":
-                    a.bind = "mat"           # 0.0.17：显式构造临时→栈物化
                 else:
-                    raise SemaError("E0",
-                                    "调用结果对象绑定需结构体赋值——trirv_cc "
-                                    "不支持（探针 250≠511 实证）；sret/拷贝"
-                                    "构造=0.0.18（要么对、要么报错）")
+                    a.bind = "mat"           # 0.0.18：对象右值一律物化
+                    # （0.0.17 的 E0 是误判——250=506 mod 256，POSIX 8 位
+                    #  exit 通道；p18c-e 复验 trirv_cc 结构体赋值一直可用）
             else:
                 a.bind = "deref" if at.kind == "ref" else "value"
 
@@ -866,6 +862,14 @@ def _install_mat(cls):
                         e.args[i].bind = "value"   # ctor 值形参
         elif isinstance(e, (MethodCall, FreeCall)):
             if isinstance(e, MethodCall):
+                ot = getattr(e.obj, "ty", None)
+                if ot is not None and ot.kind == "class" and \
+                        not getattr(e.obj, "lval", False):
+                    tn = self._fresh()       # 接收者右值物化（(a+b)+c）
+                    h.append((tn, e.obj))
+                    rid = Id(tn)
+                    rid.ty, rid.lval = ot, True
+                    e.obj = rid
                 self._mat_expr(e.obj, h)     # FreeCall 无接收者
             for a in e.args:
                 self._mat_expr(a, h)
