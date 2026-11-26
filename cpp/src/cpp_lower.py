@@ -103,6 +103,22 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         if not getattr(cd, "forward", False):
             visit(cd)
     structs = [decl_class(cd, classes_meta) for cd in order]
+    vtbl_c = []
+    for cd in order:
+        info = classes_meta.get(getattr(cd, "key", cd.name))
+        if not info or not info.vslots:
+            continue
+        cname = flat(getattr(cd, "key", cd.name))
+        slots = []
+        for slot in info.vslots:
+            m = find_slot_impl(cd, info, slot, classes_meta)
+            rtxt = render_ret(m.ret)
+            ps = ["void *slf"] + \
+                 [decl_param(p, n) for (p, n) in m.params]
+            slots.append(f"{rtxt} (*{slot})({', '.join(ps)});")
+        vtbl_c.append(f"struct {cname}_v {{ {' '.join(slots)} }};")
+        vtbl_c.append(f"struct {cname}_v {cname}_vt;")
+    structs = vtbl_c + structs
 
     gdecls_c = []
     for (gn, gty, gi) in gdecls:
@@ -148,6 +164,13 @@ def lower_ctors(cd, classes_meta=None):
         scope["__cls__"] = getattr(cd, "key", cd.name)
         scope["__const__"] = False
         body = []
+        vset = []
+        if classes_meta.get(cd.key) and classes_meta[cd.key].vslots:
+            vset.append(f"this_->__vtbl = &{cname}_vt;")
+            for slot in classes_meta[cd.key].vslots:
+                m = find_slot_impl(cd, classes_meta[cd.key], slot,
+                                   classes_meta)
+                vset.append(f"{cname}_vt.{slot} = {m.mname};")
         for (tgt, args) in ctor.inits:
             rargs = ", ".join(expr(a, {"value"}, scope) for a in args)
             if bkey and tgt == bkey:
@@ -155,7 +178,8 @@ def lower_ctors(cd, classes_meta=None):
                             f"{rargs});")
             else:
                 body.append(f"this_->{tgt} = {rargs};")
-        body.extend(stmts(ctor.body, scope, False))
+        ustmts = stmts(ctor.body, scope, False)
+        body = body + vset + ustmts  # 序：base_ctor/成员初始化 → vtbl 设定 → 用户体
         out.append(f"void {cname}_ctor({', '.join(params)}) "
                    f"{{ {' '.join(body)} }}" if body else
                    f"void {cname}_ctor({', '.join(params)}) {{ }}")
@@ -459,6 +483,25 @@ def form_is_ptr(form, o, scope):
 
 def call(e, ctx, scope):
     meth = e.sig
+    if getattr(meth, "is_virtual", False) and hasattr(e, "obj"):
+        # 0.0.25 虚分派：recv->__vtbl->slot(recv, args…)
+        recv_owner = scope.get("__recv_owner__")
+        scope["__recv_owner__"] = getattr(e, "sig_owner", None)
+        recv = recv_expr(e.obj, scope)
+        parts = [recv]
+        for a in e.args:
+            bind = getattr(a, "bind", "value")
+            if bind == "addr":
+                parts.append(f"&({expr(a, {'value'}, scope)})")
+            elif bind == "ref":
+                parts.append(expr(a, {"ref"}, scope))
+            else:
+                parts.append(expr(a, {"value"}, scope))
+        scope["__recv_owner__"] = recv_owner
+        s = f"{recv}->__vtbl->{meth.name}({', '.join(parts)})"
+        if "ref" in ctx or e.ty.kind != "ref":
+            return s
+        return f"*({s})"
     if getattr(meth, "is_static", False):
         # 静态方法：无 this 形参（实例调用形态亦省 receiver）
         parts = []

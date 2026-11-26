@@ -617,10 +617,9 @@ class Sema:
             meth, e.sig_owner = hit
             if getattr(meth, "is_virtual", False):
                 raise SemaError("E0",
-                                "virtual 调用需 vtable——预研探针矩阵：fn-ptr "
-                                "间接调用/主函数内赋槽 ✓，函数内槽赋值 flaky "
-                                "（p24g✗ p24h✓）+ struct 前向声明不支持；"
-                                "trirv_cc 侧修复=0.025 前置（要么对、要么报错）")
+                                "virtual 调用需 vtable——trirv_cc pointee 静态"
+                                "缓冲覆写已修（strdup 快照），ctor 赋槽持久性"
+                                "排查中（t24diag 全零位图）；解锁=0.0.26")
             if getattr(meth, "is_static", False):
                 e.static_call = True
             if is_const and not meth.is_const and is_this_receiver(e.obj):

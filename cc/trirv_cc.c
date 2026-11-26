@@ -2240,11 +2240,17 @@ static int addr_of(Node*n){
     if(lv->k==N_MEMBER){
         char*bt=expr_type(lv->l);
         int base;
-        if(lv->arrow){ bt=(char*)pointee(bt); base=rwcopy(eval(lv->l)); }
+        if(lv->arrow){
+            /* 0.025 修复：pointee 返回单一 static 缓冲，内层 eval 的 pointee
+               会覆写外层类型串（双箭头 o->w->q 实证）。修法=求值先行，
+               pointee→member_find 相邻无间隙——零分配零开销。 */
+            base=rwcopy(eval(lv->l));
+        }
         else if(is_array(bt)) base=addr_of(lv->l);
         else base=addr_of(lv->l);
+        bt=(char*)pointee(expr_type(lv->l));
         Member*m=member_find(bt,lv->s);
-        if(!m){ fprintf(stderr,"UNSUPPORTED: unknown member '%s'\n",lv->s); exit(2); }
+        if(!m){ fprintf(stderr,"UNSUPPORTED: unknown member '%s' (base type='%s', arrow=%d)\n",lv->s,bt?bt:"(null)",lv->arrow); exit(2); }
         if(m->off) emitf("ADDI %s, %s, %d",regname(base),regname(base),m->off);
         return base;
     }

@@ -182,7 +182,8 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.22 | **嵌套类 + friend no-op**：`class Outer { class Inner {…}; }`——键 `Outer::Inner`（ns 机制同构：限定键/组件 mangle `_ZN5Outer5Inner3getEv`/扁平结构体 `Outer_Inner` 全复用）+ 外层体内裸名可见（resolve 回退 cur_cls 键）+ friend 解析为语义 no-op（子集无访问控制强制，诚实注明） | ✓ 已验证（e2e 53 项：25 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.23 | **指针/算子面收尾**：一元 `*` 解引用（读+写穿——对象左值，结构体赋值通道；int 语义写=非法 C++ 由混算 E0 拦）+ 算子表扩 operator-（mi）/<（lt）/>（gt）/!=（ne） | ✓ 已验证（e2e 55 项：27 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.24 | **虚函数 vtable 预研（增量=研究结论+诚实 E0）**：探针矩阵——fn-ptr 间接调用 ✓/主函数内赋槽 ✓/`void *slf` 槽+vtbl 前置发射 ✓/**函数内槽赋值 flaky**（p24g✗ p24h✓，边界待查）/`struct X;` 前向声明 ✗（vtbl 首成员布局死路→void* 槽方案）/全局 fn 地址初始化 ✗（→ctor 运行时赋槽）。**裁定**：vtable 切片设计就绪（槽序=base 先序+override 保位+隐式虚），解锁前置=trirv_cc 函数内 fn-ptr 槽赋值修复（0.0.25）；virtual 调用暂 E0（要么对、要么报错），virtual 解析/is_virtual/vslots 槽序已入 sema | ✓ 预研完成（e2e 57 项：27 行为 + 2 拒绝 + 7 ADT，双 VM） |
-| **0.0.25** | **+ trirv_cc 函数内 fn-ptr 槽赋值修复（vtable 解锁前置）→ 虚函数切片落地** | **下一个** |
+| 0.0.25 | **trirv_cc pointee 缓冲覆写修复**：双箭头 `o->w->q` unknown member 实证 → 根因=pointee() 单一 static 缓冲被内层 eval 覆写 → **求值先行重排**（eval 先、pointee→member_find 相邻，零分配；strdup 快照版 2 倍编译期开销已弃，golden 38/0 @376s）。虚函数切片仍挂：ctor 赋槽不持久（t24diag 全零位图，见 VIRTUAL-VTABLE-PREFLIGHT.md）→ 0.0.26 | ✓ 已验证（e2e 57 项不变，test24 保持拒绝契约） |
+| **0.0.26** | **+ trirv_cc ctor store 持久性排查（t24diag 全零位图）→ 虚函数切片落地** | **下一个** |
 | 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |
