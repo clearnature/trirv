@@ -46,6 +46,15 @@ int w_hash_check(char *data, int len, int claim);
   （XOR = 逐 trit (ta+tb)%3）
 - `claim` = 完整 45-trit 字值
 
+### W3 大乘积证书（对接 bignum_tri）
+```c
+int w_bn_product_check(int *a, int la, int *b, int lb,
+                       int *claim, int lcl, int *work);
+```
+- recompute a·b（bn_mul_big）并逐肢比对 claim（bn_cmp）
+- work = 调用方缓冲 ≥ la+lb 肢；O(la·lb)
+- 需链接 bignum_tri.c（bn_mul_big/bn_cmp 跨 TU 绑定）
+
 ## 已验证案例（契约钉死）
 
 | 案例 | 见证来源 | 结果 |
@@ -56,6 +65,10 @@ int w_hash_check(char *data, int len, int claim);
 | LL M_11 合证书（claim = 1736） | 理论 | 0 ✓ |
 | LL 错误声明（claim = 1） | — | 2 ✓ 拒绝 |
 | 哈希见证（边集数据，host 独立算 claim） | 外部求解器 | 0 ✓ |
+| 大乘 100×200=20000 | host INITLIST | 0 ✓ |
+| 大乘篡改 20100 | — | 3 ✓ 拒绝 |
+| 跨肢 1594322×2 | host INITLIST | 0 ✓ |
+| 跨肢篡改 | — | 3 ✓ 拒绝 |
 
 ## 路线（v2+）
 

@@ -176,6 +176,7 @@ SUITES = [
     ("trirv_bignum_e2e.py",       "bignum 无限精度库 9 项",    False, None),
     ("trirv_gf3_witness_e2e.py",  "GF(3)/C12 见证机检 7 项",   False, None),
     ("trirv_witness_e2e.py",      "见证运行时 v1 契约 14 项",  False, None),
+    ("trirv_witness_bn_e2e.py",   "W3 大乘证书 12 项",         False, None),
     ("trirv_solver_e2e.py",       "solver/ 双端求解器 15 项",  False, None),
     ("trirv_time_e2e.py",          "time 日历/strftime/时钟 14 项", False, None),
     ("trirv_trv2_relax_e2e.py",    "TRV2 长分支弛豫 10 项",     False, None),

@@ -53,6 +53,26 @@ int w_ll_cert(int p, int claim) {
     return 2;
 }
 
+/* W3 大乘积证书（对接 bignum_tri）：recompute a·b 并逐肢比对 claim。
+   work = 调用方缓冲（≥ la+lb 肢）。返回 0 = 见证成立 / 3 = 拒绝。
+   bn_mul_big/bn_cmp 链接期绑 bignum_tri.c（多 TU）。 */
+void bn_mul_big(int *a, int la, int *b, int lb, int *c);
+int bn_cmp(int *a, int la, int *b, int lb);
+
+int w_bn_product_check(int *a, int la, int *b, int lb,
+                       int *claim, int lcl, int *work) {
+    int wl;
+    bn_mul_big(a, la, b, lb, work);
+    wl = la + lb;
+    while (wl > 0) {
+        if (work[wl - 1] != 0) break;
+        wl = wl - 1;
+    }
+    if (wl == 0) return 3;
+    if (bn_cmp(work, wl, claim, lcl) != 0) return 3;
+    return 0;
+}
+
 /* W4 数据完整性见证：三值 FNV（h = (h XOR t) × 16777619 mod 3^45，
    XOR = 逐 trit (ta+tb)%3）。claim = 完整 45-trit 字值。 */
 int w_hash_check(char *data, int len, int claim) {

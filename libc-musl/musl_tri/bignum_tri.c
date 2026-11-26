@@ -119,6 +119,15 @@ int bn_cmp(int *a, int la, int *b, int lb) {
     return 0;
 }
 
+/* 规范化：返回去前导零后的有效肢长。 */
+int bn_norm(int *a, int len) {
+    while (len > 0) {
+        if (a[len - 1] != 0) break;
+        len = len - 1;
+    }
+    return len;
+}
+
 /* 十进制串：10^12 分块取余（t ≈ d·B ≈ 1.59e18 < 3^45/2 安全），
    每块 12 位按位写 tmp（位置 p = 10^p 系数），尾反向去前导零。 */
 void bn_dec_str(int *a, int len, char *out, int *outlen) {
