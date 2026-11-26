@@ -31,7 +31,7 @@ TOKEN_RE = re.compile(r"""
   | (?P<op>\.\.\.|==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\.|[-+*/%=<>!&|^~?,;(){}\[\]:])
 """, re.X)
 
-KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed","__tint2","__tint","__tbool","const",
+KEYWORDS = {"int","char","void","struct","va_list","unsigned","signed","__tint2","__tint","__tbool","const","enum",
             "if","else","while","for","return","break","continue",
             "do","goto","switch","case","default","typedef"}
 
@@ -119,7 +119,8 @@ class Parser:
         self.toks = toks; self.i = 0
         self.strings = {}                # addr -> bytes
         self.str_ptr = self.STR_BASE
-        self.structs = {}                # name -> {"size":N, "members":[(mname,mtype,offset)]}
+        self.structs = {}
+        self.enumc = {}                # name -> {"size":N, "members":[(mname,mtype,offset)]}
         self.gvars = []                  # 批G：全局声明 [(name, ty, dims, init)]
         self.typedefs = {}               # T7：别名 -> 已解析类型串
     def peek(self): return self.toks[self.i]
@@ -141,6 +142,33 @@ class Parser:
             if self.at("typedef"):
                 self.take("typedef")
                 self.parse_typedef()
+            elif self.at("enum"):
+                self.take()
+                if self.at("id"):
+                    self.take()
+                if self.at("{"):
+                    self.take()
+                    nxt = 0
+                    while not self.at("}"):
+                        if not self.at("id"):
+                            break
+                        ename = self.take().val
+                        eval_ = nxt
+                        if self.at("="):
+                            self.take()
+                            eneg = 1
+                            if self.at("-"):
+                                self.take()
+                                eneg = -1
+                            if self.at("num"):
+                                eval_ = eneg * int(self.take().val)
+                        self.enumc[ename] = eval_
+                        nxt = eval_ + 1
+                        if not self.at(","):
+                            break
+                        self.take()
+                    self.expect("}")
+                ty = "int"
             elif self.at("struct") and self._struct_is_def():
                 self.parse_struct_def()
             elif self._glob_is_decl():

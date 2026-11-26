@@ -263,6 +263,13 @@ static const char* regname(int r){
 
 /* ===================== 词法分析 ===================== */
 typedef enum { TK_EOF,TK_ID,TK_NUM,TK_STR,TK_KW,TK_OP } TokKind;
+/* 枚举常量表：enum 成员 → 编译期值（parse_type 注册，parse_primary 查找） */
+typedef struct { char*name; long long val; } EnumConst;
+static EnumConst ENUMC[256];
+static int NUM_ENUMC = 0;
+static int enumc_find(const char*name){
+    int i=0; while(i<NUM_ENUMC){ if(!strcmp(name,ENUMC[i].name)) return i; i=i+1; } return -1;
+}
 typedef struct {
     TokKind kind;
     long long num;      /* TK_NUM（截断值，供维度等小整数用） */
@@ -284,7 +291,7 @@ static void tok_push(Token t){
 static int is_kw(const char*s){
     static const char*kw[]={"int","char","void","unsigned","signed","struct","va_list","__tint2","__tint","__tbool",
         "if","else","while","do","for","return","break","continue","typedef","const","goto","switch","case","default","else","extern",
-        "sizeof",NULL};   /* 批次 6.3a：sizeof 入关键字类（at() 要求 TK_KW/TK_OP）*/
+        "sizeof","enum",NULL};   /* 批次 6.3a：sizeof 入关键字类（at() 要求 TK_KW/TK_OP）*/
     for(int i=0;kw[i];i++) if(!strcmp(s,kw[i])) return 1;
     return 0;
 }
@@ -493,6 +500,34 @@ static char* parse_type(void){
     }
     else if(accept("char")) snprintf(base,sizeof(base),"char");
     else if(accept("void")) snprintf(base,sizeof(base),"void");
+    else if(accept("enum")){
+        /* enum 解析：可选名 + { 成员（±整数/缺省=前值+1）}；类型=int。
+         * 成员注册到 ENUMC 表，后续表达式查找为编译期常量。 */
+        if(atk(TK_ID)) take();                    /* 可选 enum 名 */
+        if(at("{")){
+            take();                                /* { */
+            int next = 0;
+            while (!at("}") && !atk(TK_EOF)) {
+                if (!atk(TK_ID)) break;
+                char*em_name = take()->s;
+                int em_val = next;
+                if (accept("=")) {
+                    int neg = 0;
+                    if (at("-")) { take(); neg = 1; }
+                    if (atk(TK_NUM)) { em_val = (int)take()->num; if (neg) em_val = -em_val; }
+                }
+                if (NUM_ENUMC < 256) {
+                    ENUMC[NUM_ENUMC].name = strdup(em_name);
+                    ENUMC[NUM_ENUMC].val = em_val;
+                    NUM_ENUMC++;
+                }
+                next = em_val + 1;
+                if (!accept(",")) break;
+            }
+            expect("}");
+        }
+        snprintf(base,sizeof(base),"int");       /* enum 类型 = int */
+    }
     else if(accept("struct")){
         if(at("{")){
             /* 匿名 struct 定义（typedef struct {...} NAME; 用）：
@@ -558,6 +593,14 @@ static Node* parse_primary(void){
     }
     if(atk(TK_ID)){
         char*name=take()->s;
+        /* 枚举常量查找：TK_ID → N_NUM（编译期值替换） */
+        int ei = enumc_find(name);
+        if (ei >= 0) {
+            Node*n = nnew(N_NUM);
+            n->num = ENUMC[ei].val;
+            n->numw = ENUMC[ei].val;
+            return n;
+        }
         /* 变参内建：va_arg 第二个实参是类型，不能按表达式解析 */
         if(!strcmp(name,"va_start")||!strcmp(name,"va_arg")||!strcmp(name,"va_end")){
             if(accept("(")){
@@ -1294,6 +1337,34 @@ static void parse_program(void){
             expect(";");
             GROW(TYPEDEFS,CAPTDEF,NTDEF,Typedef);
             TYPEDEFS[NTDEF].name=strdup(nm); TYPEDEFS[NTDEF].real=strdup(real); NTDEF++;
+            continue;
+        }
+        if(at("enum")){
+            /* 顶层 enum 定义：enum [Name] { A = v, B, ... }; 
+             * parse_type 的 enum 分支已注册常量到 ENUMC——此处仅需消费 token。 */
+        take();                              /* enum */
+            if(atk(TK_ID)) take();               /* 可选名 */
+            if(at("{")) take();                  /* { */
+            int em_next = 0;
+            while(!at("}") && !atk(TK_EOF)) {
+                if(!atk(TK_ID)) break;
+                char*em_name = take()->s;
+                int em_val = em_next;
+                if(accept("=")) {
+                    int em_neg = 0;
+                    if(at("-")) { take(); em_neg = 1; }
+                    if(atk(TK_NUM)) { em_val = (int)take()->num; if(em_neg) em_val = -em_val; }
+                }
+                if(NUM_ENUMC < 256) {
+                    ENUMC[NUM_ENUMC].name = strdup(em_name);
+                    ENUMC[NUM_ENUMC].val = em_val;
+                    NUM_ENUMC++;
+                }
+                em_next = em_val + 1;
+                if(!accept(",")) break;
+            }
+            expect("}");
+            accept(";");
             continue;
         }
         if(at("struct")){
