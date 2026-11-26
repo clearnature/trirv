@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.3 —— C++ -> C 降级器（单继承 + 引用返回 + 方法参数）。
+"""transpiler v0.0.5 —— C++ -> C 降级器（单继承 + 引用返回/形参 + 方法参数）。
 用法：python3 cpp/transpiler.py input.cpp output.c
 """
 import re, sys
 
-VERSION = "0.0.3"
+VERSION = "0.0.5"
 
 
 def transpile(src):
@@ -35,10 +35,16 @@ def transpile(src):
                 p = p.strip()
                 if not p:
                     continue
-                # 形参：Type name / Type &name / Type& name
-                pm = re.match(r'(\w+)\s*&?\s*(\w+)$', p)
+                # 形参：Type name / Type &name / Type& name（引用）
+                pm = re.match(r'(\w+)\s*&\s*(\w+)$', p)
                 if pm:
-                    params.append({"type": pm.group(1), "name": pm.group(2)})
+                    params.append({"type": pm.group(1), "name": pm.group(2),
+                                   "ref": True})
+                    continue
+                pm = re.match(r'(\w+)\s+(\w+)$', p)
+                if pm:
+                    params.append({"type": pm.group(1), "name": pm.group(2),
+                                   "ref": False})
             info["methods"].append({"ret": mm.group(1), "name": mm.group(2),
                                     "params": params,
                                     "body": mm.group(4).strip()})
@@ -100,20 +106,27 @@ def transpile(src):
             else:
                 ret_c = ret_clean
             # 形参降级：对象形参 → struct T *name_（指针模拟传对象）；
-            # 基本类型形参原样；引用形参（int& n）→ 指针（body 改写 v0.0.4）
+            # 引用形参 int& n → int *n（body 内 n → *n）；基本类型形参原样
             c_params = [f"struct {name} *this_"]
-            obj_params = {}  # 形参名 → True（对象参数，调用点实参需加 &）
+            obj_params = {}   # 形参名 → True（对象参数，调用点实参需加 &）
+            ref_params = []   # 引用形参名（body 改写 n → *n）
             for p in meth.get("params", []):
                 if p["type"] in classes:
                     c_params.append(f"struct {p['type']} *{p['name']}_")
                     obj_params[p["name"]] = True
+                elif p.get("ref"):
+                    c_params.append(f"{p['type']} *{p['name']}")
+                    ref_params.append(p["name"])
                 else:
                     c_params.append(f"{p['type']} {p['name']}")
             # body 改写序：① 参数对象成员访问 other.x → other_->x
-            #            ② this 成员替换（(?<![.\w]) 已保护 ① 的产物）
+            #            ② 引用形参解引用 r → *r（先于成员替换，防 *r 误入成员规则）
+            #            ③ this 成员替换（(?<![.\w>]) 已保护 ① 的产物）
             for p in meth.get("params", []):
                 if p["name"] in obj_params:
                     body = re.sub(rf'\b{p["name"]}\.(\w+)', rf'{p["name"]}_->\1', body)
+            for rn in ref_params:
+                body = re.sub(rf'\b{rn}\b', f'*{rn}', body)
             for m in members:
                 body = re.sub(rf'(?<![.\w>]){m}\b', f"this_->{m}", body)
             if base and base in classes:
@@ -147,18 +160,17 @@ def transpile(src):
                     var = dm.group(1)
                     main_body = main_body.replace(dm.group(0),
                         f"struct {cname} {var}; {cname}_ctor(&{var});")
-            # 方法调用替换（带实参；对象形参的实参加 & 传地址）
+            # 方法调用替换（带实参；对象形参/引用形参的实参加 & 传地址）
             for meth in info["methods"]:
-                obj_names = {p["name"] for p in meth.get("params", [])
-                             if p["type"] in classes}
                 arg_types = [p["type"] for p in meth.get("params", [])]
+                arg_refs = [p.get("ref", False) for p in meth.get("params", [])]
 
-                def _call(m, meth=meth, obj_names=obj_names, arg_types=arg_types):
+                def _call(m, meth=meth, arg_types=arg_types, arg_refs=arg_refs):
                     recv, argstr = m.group(1), m.group(2)
                     args = [a.strip() for a in argstr.split(",")] if argstr.strip() else []
                     fixed = []
                     for i, a in enumerate(args):
-                        if i < len(arg_types) and arg_types[i] in classes:
+                        if i < len(arg_types) and (arg_types[i] in classes or arg_refs[i]):
                             fixed.append(f"&{a}")
                         else:
                             fixed.append(a)
