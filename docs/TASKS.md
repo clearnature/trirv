@@ -658,6 +658,21 @@ imm7）；参考解释器 byte()/st32/ld32 对偶同步。
   ——基线注记：trirv_cc 已含 TC 35.2% + TRV2 节省 8.5%，≤1.3× 更紧
 - [ ] 10.5 **GO/NO-GO 结论追加到 ADR-18**，批次 10 收官
 
+#### 见证运行时 v1 产品化（2026-11-26，用户拍板：可见证性=产品要求+对外能力）
+
+- libc-musl/musl_tri/witness_tri.c：标准校验器集 v1——W1 图 3-着色
+  见证（O(m) 边扫描）/ W2 梅森 LL 证书（p≤31 原生单字）/ W4 数据
+  完整性（三值 FNV mod 3^45）；返回码全局约定（W_OK=0/REJECT=1/2/4）
+- docs/WITNESS.md：**对外能力 ABI 规格**（确定性/独立性/可证伪/
+  对外可用四承诺 + API + 格式 + 已验证案例表 + v2 路线）
+- 契约 trirv_witness_e2e **14 PASS / 0 FAIL** 入册 → **fast=76 套**：
+  外部求解器演示（host Python planted 3-col 求解 + 哈希见证 → mem
+  注入 → guest 双 VM 独立校验）+ 篡改拒绝 + 错误声明拒绝 + LL 双向
+- 坑：WBLOB/CLAIMH 哨兵需初值器（bss 零初值扫描不到——「鸡生蛋」：
+  注入前先得定位）；int 数组哨兵 = 9-tryte word 步距扫描（char 数组
+  才是 1-tryte 步距）；RES 读取勿按 WBLOB 基址臆测偏移（哨兵各自
+  自定位）
+
 #### GF(3)/C12 见证机检批（2026-11-26，witness-sat 形态：闭式见证 + 归纳）
 
 - 数据源 = 离散数学参照库 `~/work/discrete-mathematics`（律算合一
