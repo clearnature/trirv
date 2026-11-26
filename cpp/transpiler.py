@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.2 —— C++ -> C 降级器（单继承版）。
+"""transpiler v0.0.3 —— C++ -> C 降级器（单继承 + 引用返回 + 方法参数）。
 用法：python3 cpp/transpiler.py input.cpp output.c
 """
 import re, sys
 
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 
 
 def transpile(src):
@@ -29,9 +29,19 @@ def transpile(src):
             for im in re.finditer(r'(\w+)\s*\(\s*(\w+)\s*\)', ctor.group(2)):
                 info["ctor_inits"].append((im.group(1), im.group(2)))
             info["ctor_body"] = ctor.group(3).strip()
-        for mm in re.finditer(r'(int|void)\s+(\w+)\s*\(\s*\)\s*\{([^{}]*)\}', body):
+        for mm in re.finditer(r'(int\s*&?|void)\s+(\w+)\s*\(([^)]*)\)\s*\{([^{}]*)\}', body):
+            params = []
+            for p in mm.group(3).split(","):
+                p = p.strip()
+                if not p:
+                    continue
+                # 形参：Type name / Type &name / Type& name
+                pm = re.match(r'(\w+)\s*&?\s*(\w+)$', p)
+                if pm:
+                    params.append({"type": pm.group(1), "name": pm.group(2)})
             info["methods"].append({"ret": mm.group(1), "name": mm.group(2),
-                                    "body": mm.group(3).strip()})
+                                    "params": params,
+                                    "body": mm.group(4).strip()})
         classes[name] = info
         order.append(name)
 
@@ -82,13 +92,39 @@ def transpile(src):
             ret = meth["ret"]
             mname = meth["name"]
             body = meth["body"]
+            # 清理 ret 中的空格："int &" → "int&"
+            ret_clean = ret.replace(" ", "")
+            is_ref = ret_clean.endswith("&")
+            if is_ref:
+                ret_c = ret_clean.replace("&", "*")  # int& → int*
+            else:
+                ret_c = ret_clean
+            # 形参降级：对象形参 → struct T *name_（指针模拟传对象）；
+            # 基本类型形参原样；引用形参（int& n）→ 指针（body 改写 v0.0.4）
+            c_params = [f"struct {name} *this_"]
+            obj_params = {}  # 形参名 → True（对象参数，调用点实参需加 &）
+            for p in meth.get("params", []):
+                if p["type"] in classes:
+                    c_params.append(f"struct {p['type']} *{p['name']}_")
+                    obj_params[p["name"]] = True
+                else:
+                    c_params.append(f"{p['type']} {p['name']}")
+            # body 改写序：① 参数对象成员访问 other.x → other_->x
+            #            ② this 成员替换（(?<![.\w]) 已保护 ① 的产物）
+            for p in meth.get("params", []):
+                if p["name"] in obj_params:
+                    body = re.sub(rf'\b{p["name"]}\.(\w+)', rf'{p["name"]}_->\1', body)
             for m in members:
-                body = re.sub(rf'(?<![.\w]){m}\b', f"this_->{m}", body)
+                body = re.sub(rf'(?<![.\w>]){m}\b', f"this_->{m}", body)
             if base and base in classes:
                 for bm in classes[base]["members"]:
-                    body = re.sub(rf'(?<![.\w]){bm}\b',
+                    body = re.sub(rf'(?<![.\w>]){bm}\b',
                                   f"((struct {base} *)this_)->{bm}", body)
-            out.append(f"{ret} {name}_{mname}(struct {name} *this_) {{ {body} }}")
+            if is_ref:
+                # 引用返回：return member → return &(this_->member)
+                body = re.sub(r'return\s+this_->(\w+)', r'return &(this_->\1)', body)
+            sig = ", ".join(c_params)
+            out.append(f"{ret_c} {name}_{mname}({sig}) {{ {body} }}")
 
     # ===== Pass 3: main 降级 =====
     main_pat = re.compile(r'int\s+main\s*\(\s*\)\s*\{(.*)\}', re.DOTALL)
@@ -111,11 +147,25 @@ def transpile(src):
                     var = dm.group(1)
                     main_body = main_body.replace(dm.group(0),
                         f"struct {cname} {var}; {cname}_ctor(&{var});")
-            # 方法调用替换
+            # 方法调用替换（带实参；对象形参的实参加 & 传地址）
             for meth in info["methods"]:
-                call_pat = re.compile(rf'(\w+)\.{meth["name"]}\(\)')
-                main_body = call_pat.sub(
-                    lambda m: f"{cname}_{meth['name']}(&{m.group(1)})", main_body)
+                obj_names = {p["name"] for p in meth.get("params", [])
+                             if p["type"] in classes}
+                arg_types = [p["type"] for p in meth.get("params", [])]
+
+                def _call(m, meth=meth, obj_names=obj_names, arg_types=arg_types):
+                    recv, argstr = m.group(1), m.group(2)
+                    args = [a.strip() for a in argstr.split(",")] if argstr.strip() else []
+                    fixed = []
+                    for i, a in enumerate(args):
+                        if i < len(arg_types) and arg_types[i] in classes:
+                            fixed.append(f"&{a}")
+                        else:
+                            fixed.append(a)
+                    return f"{cname}_{meth['name']}(&{recv}, {', '.join(fixed)})".replace(", )", ")")
+
+                call_pat = re.compile(rf'(\w+)\.{meth["name"]}\(([^)]*)\)')
+                main_body = call_pat.sub(_call, main_body)
         out.append(f"int main(void) {{{main_body}}}")
 
     return "\n\n".join(out)

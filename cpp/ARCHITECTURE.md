@@ -81,8 +81,11 @@ typedef struct ClassInfo {
 | `class X { int a; }` | `struct X { int a; };` | |
 | `X::X() : a(0) {}` | `void X_ctor(struct X *this_) { this_->a = 0; }` | |
 | `void X::f() {}` | `void X_f(struct X *this_) {}` | this→首参数 |
-| `int X::g(int x)` | `int X_g(struct X *this_, int x)` | |
+| `int X::g(int x)` | `int X_g(struct X *this_, int x)` | 基本类型形参原样 |
+| `int X::d(Y o)` | `int X_d(struct X *this_, struct Y *o_)` | 对象形参→指针，body `o.m`→`o_->m` |
+| `int& X::r()` | `int* X_r(struct X *this_)`（`return &(this_->m)`） | 引用返回→指针 |
 | `obj.f()` | `X_f(&obj)` | |
+| `a.d(b)` | `X_d(&a, &b)` | 对象实参自动加 &（经指针落盘：trirv_cc 支持 `f()=v`） |
 | `class D : public B` | `struct D { struct B __base; ... };` | 首成员=upcast |
 | `B::B()` 调用 | `B_ctor((struct B *)this_)` | 基类构造转发 |
 | `virtual void f()` | vtable 槽位 + `(*this_->__vtbl->f)(this_)` | v2 |
@@ -109,13 +112,14 @@ _ZN1XC2Ev       → X::X() (base ctor)
 | 0.0.1 | class + 成员变量 + 方法（this→指针）+ 构造 | PoC 已验证 |
 | 0.0.2 | + 单继承 + 基类构造/方法 upcast | PoC 已验证 |
 | 0.0.3 | + enum 支持（trirv_cc 编译器层） | ✓ 已验证 |
-| **0.0.4** | **+ 引用（int&→指针）+ const** | **下一个** |
-| 0.0.5 | + 函数重载（Itanium mangling） | |
-| 0.0.6 | + 默认参数 | |
-| 0.0.7 | + 命名空间（前缀扁平化） | |
-| 0.0.8 | + extern "C" 块 | |
-| 0.0.9 | + new/delete（malloc/free + ctor/dtor） | |
-| 0.0.10 | + 操作符重载（operator+/==/<< 限算术） | |
+| 0.0.4 | + 引用返回（int&→int*，test04）+ 方法参数（值/对象形参，test02 dot=11） | ✓ 已验证（transpiler v0.0.3） |
+| **0.0.5** | **+ 引用形参（int& n → int* n，body 自动 *n）+ const** | **下一个** |
+| 0.0.6 | + 函数重载（Itanium mangling） | |
+| 0.0.7 | + 默认参数 | |
+| 0.0.8 | + 命名空间（前缀扁平化） | |
+| 0.0.9 | + extern "C" 块 | |
+| 0.0.10 | + new/delete（malloc/free + ctor/dtor） | |
+| 0.0.11 | + 操作符重载（operator+/==/<< 限算术） | |
 | 0.0.11–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
 | 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
 | 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |
