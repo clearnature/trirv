@@ -71,7 +71,7 @@ def decl_class(cd):
         else f"struct {cname} {{}};"
 
 
-def lower_tu(decls, funcs, gdecls, main, classes_meta):
+def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     for cd in decls:
         for meth in cd.methods:
             if not hasattr(meth, "mname"):
@@ -102,6 +102,14 @@ def lower_tu(decls, funcs, gdecls, main, classes_meta):
             gdecls_c.append(f"{base} {gn} = {expr(gi, {'value'}, {})};")
         else:
             gdecls_c.append(f"{base} {gn};")
+    for (cn2, nm2, ty2, i2) in sdefs:
+        cf2 = flat(cn2)
+        base2 = type_name(ty2)
+        if i2 is not None:
+            gdecls_c.append(f"{base2} {cf2}_{nm2} = "
+                            f"{expr(i2, {'value'}, {})};")
+        else:
+            gdecls_c.append(f"{base2} {cf2}_{nm2};")
     funcs_c = []
     for cd in decls:
         funcs_c.extend(lower_ctors(cd))
@@ -170,9 +178,12 @@ def lower_methods(cd):
     out = []
     for meth in cd.methods:
         cname = flat(getattr(cd, "key", cd.name))
-        this_t = (f"const struct {cname} *this_" if meth.is_const
-                  else f"struct {cname} *this_")
-        params = [this_t] + [decl_param(p, n) for (p, n) in meth.params]
+        if getattr(meth, "is_static", False):
+            params = [decl_param(p, n) for (p, n) in meth.params]
+        else:
+            this_t = (f"const struct {cname} *this_" if meth.is_const
+                      else f"struct {cname} *this_")
+            params = [this_t] + [decl_param(p, n) for (p, n) in meth.params]
         scope = {n: obj_param_as_ref(p) for (p, n) in meth.params}
         scope["__cls__"] = getattr(cd, "key", cd.name)
         scope["__const__"] = meth.is_const
@@ -325,6 +336,8 @@ def expr(e, ctx, scope):
     if isinstance(e, StrLit):
         return e.v
     if isinstance(e, Id):
+        if getattr(e, "ref_kind", None) == "static":
+            return flat(getattr(e, "owner")) + "_" + e.name
         if getattr(e, "ref_kind", None) == "member":
             return this_member(e.name, getattr(e, "owner", None), scope)
         ty = scope.get(e.name)
@@ -339,6 +352,8 @@ def expr(e, ctx, scope):
         if form == "this_" and owner not in (None, scope.get("__cls__")):
             c = "const " if scope.get("__const__") else ""
             form = f"({c}struct {owner} *)this_"   # this->跨类成员 cast 一致
+        if getattr(e, "ref_kind", None) == "static":
+            return flat(getattr(e, "owner")) + "_" + e.name   # 静态成员=全局
         sep = "->" if form_is_ptr(form, e.obj, scope) else "."
         return f"{form}{sep}{e.name}"
     if isinstance(e, New):
@@ -406,6 +421,21 @@ def form_is_ptr(form, o, scope):
 
 def call(e, ctx, scope):
     meth = e.sig
+    if getattr(meth, "is_static", False):
+        # 静态方法：无 this 形参（实例调用形态亦省 receiver）
+        parts = []
+        for a in e.args:
+            bind = getattr(a, "bind", "value")
+            if bind == "addr":
+                parts.append(f"&({expr(a, {'value'}, scope)})")
+            elif bind == "ref":
+                parts.append(expr(a, {"ref"}, scope))
+            else:
+                parts.append(expr(a, {"value"}, scope))
+        s = f"{meth.mname}({', '.join(parts)})"
+        if "ref" in ctx or e.ty.kind != "ref":
+            return s
+        return f"*({s})"
     if not hasattr(e, "obj"):                    # 自由函数（0.0.12）
         parts = []
         for a in e.args:

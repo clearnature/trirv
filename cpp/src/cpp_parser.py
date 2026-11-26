@@ -29,6 +29,7 @@ class ClassDecl:
         self.members = []          # [(name, Type)]
         self.ctors = []            # [CtorDecl]
         self.dtors = []            # [DtorDecl]（0.0.19，至多一个）
+        self.statics = []          # [(name, Type)]（0.0.20 static 数据成员）
         self.methods = []          # [MethodDecl]
 
 
@@ -188,10 +189,20 @@ class Parser:
     def parse_tu(self):
         """0.0.12：classes + 自由函数 + main 三类顶层声明。"""
         classes, funcs, main = [], [], None
-        globals_ = []
+        globals_, sdefs = [], []
+        ty_of = lambda kw: tchar() if kw == "char" else tint()
         while self.peek()[0] != "EOF":
             t = self.peek()
             if t[0] == "KW" and t[1] in ("int", "char") and \
+                    self.peek(1)[0] == "ID" and self.peek(2)[1] == "::":
+                self.next()
+                cn = self.expect("ID")[1]
+                self.expect("PUNCT", "::")
+                nm = self.expect("ID")[1]
+                init = self.expr() if self.accept("PUNCT", "=") else None
+                self.expect("PUNCT", ";")
+                sdefs.append((cn, nm, ty_of(t[1]), init))
+            elif t[0] == "KW" and t[1] in ("int", "char") and \
                     self.peek(1)[0] == "ID" and \
                     self.peek(2)[1] in (";", "="):
                 ty = tchar() if t[1] == "char" else tint()
@@ -216,7 +227,7 @@ class Parser:
                 funcs.append(self.funcdef())
             else:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
-        return classes, funcs, globals_, main
+        return classes, funcs, globals_, sdefs, main
 
     def extern_c(self, funcs):
         """extern "C" { fdecl… } / extern "C" int f(params);——裸名链接面。
@@ -306,7 +317,14 @@ class Parser:
             elif t[0] == "KW" and t[1] == "virtual":
                 raise ParseError("L%d: virtual 暂不支持（v2 vtable）" % t[2])
             elif t[0] == "KW" and t[1] == "static":
-                raise ParseError("L%d: static 成员暂不支持" % t[2])
+                self.next()
+                ty = self.parse_type()
+                nm = self.expect("ID")[1]
+                if self.peek()[1] == "(":
+                    cd.methods.append(self.methoddef_static(nm, ty))
+                else:
+                    cd.statics.append((nm, ty))
+                    self.expect("PUNCT", ";")
             elif t[0] == "ID" and t[1] == name and self.peek(1)[1] == "(":
                 cd.ctors.append(self.ctordef(name))
             elif t[0] == "KW" and t[1] == "int":
@@ -405,6 +423,19 @@ class Parser:
         cd.defaults = defaults
         return cd
 
+    def methoddef_static(self, nm, ty):
+        """static int name(params) { body }——无 this（0.0.20）。"""
+        self.expect("PUNCT", "(")
+        params, defaults = self.parse_params()
+        self.expect("PUNCT", ")")
+        if self.accept("KW", "const"):
+            raise ParseError("static 方法无 const（无 this 可限定）")
+        body = self.block()
+        md = MethodDecl(nm, ty, params, False, body)
+        md.defaults = defaults
+        md.is_static = True
+        return md
+
     def op_name(self):
         """operator 后接算子（限算术：+/==）→ 'operator+' 名。"""
         self.expect("KW", "operator")
@@ -426,6 +457,7 @@ class Parser:
         body = self.block()
         md = MethodDecl(nm, ty, params, is_const, body)
         md.defaults = defaults
+        md.is_static = False
         return md
 
     def maindef(self):
@@ -645,5 +677,5 @@ class Block:
 
 
 def parse(src):
-    """源码 → (classes, free_funcs, globals, main_body_stmts)。"""
+    """源码 → (classes, free_funcs, globals, static_defs, main)。"""
     return Parser(lex(src)).parse_tu()

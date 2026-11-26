@@ -36,6 +36,7 @@ class ClassInfo:
         self.methods = []      # MethodDecl
         self.ctors = []        # CtorDecl
         self.dtor = None       # DtorDecl（0.0.19）
+        self.static_members = {}   # name → Type（0.0.20）
         self.key = None
 
 
@@ -198,8 +199,13 @@ class Sema:
                 info.base = getattr(cd, "base_key", None)
             for (mn, mty) in cd.members:
                 info.members[mn] = mty
+            for meth in cd.methods:
+                if not hasattr(meth, "is_static"):
+                    meth.is_static = False
             info.methods.extend(cd.methods)
             info.ctors.extend(cd.ctors)
+            for (sn, sty) in getattr(cd, "statics", []):
+                info.static_members[sn] = sty
             if len(getattr(cd, "dtors", [])) > 1:
                 raise SemaError("E0", f"{cd.key} 多个析构（至多一个）")
             if getattr(cd, "dtors", []):
@@ -228,6 +234,15 @@ class Sema:
             info = self.classes[c]
             if name in info.members:
                 return (info.members[name], c)
+            c = info.base
+        return None
+
+    def find_static_owner(self, cname, name):
+        c = cname
+        while c:
+            info = self.classes[c]
+            if name in info.static_members:
+                return (info.static_members[name], c)
             c = info.base
         return None
 
@@ -321,13 +336,20 @@ class Sema:
         return cands[0] if cands else None
 
     # ============ 主体 ============
-    def check(self, decls, funcs, gdecls, main):
+    def check(self, decls, funcs, gdecls, sdefs, main):
         self.build_classes(decls)
         self.build_funcs(funcs)
         self.gscope = Scope()
         for (gn, gty, _gi) in gdecls:
             self.gscope.declare(gn, gty)
         self.gdecls = gdecls
+        for (cn, nm, ty, _init) in sdefs:
+            ckey = self.resolve_class_name(cn, None)
+            if ckey is None:
+                raise SemaError("E0", f"静态成员定义 {cn}::{nm}：类未定义")
+            if nm not in self.classes[ckey].static_members:
+                raise SemaError("E0",
+                                f"{ckey} 无静态成员 {nm}（需类内声明）")
         for cd in decls:
             self.cur_cls, self.cur_method = cd, None
             self.cur_ns = cd.ns
@@ -498,6 +520,8 @@ class Sema:
         elif isinstance(e, This):
             if self.cur_cls is None:
                 raise SemaError("E0", "this 在类外")
+            if getattr(self.cur_method, "is_static", False):
+                raise SemaError("E0", "static 方法无 this")
             e.ty, e.lval = tobj(self._cur_key(), is_const=is_const), True
         elif isinstance(e, Id):
             vt = sc_find(sc, e.name)
@@ -505,10 +529,28 @@ class Sema:
                 e.ref_kind, e.ty, e.lval = "var", vt, True
             elif self.cur_cls is not None:
                 hit = self.find_member_owner(self._cur_key(), e.name)
-                if hit is None:
+                shit = self.find_static_owner(self._cur_key(), e.name)
+                if hit is not None:
+                    mt, owner = hit
+                    if getattr(self.cur_method, "is_static", False):
+                        raise SemaError("E0",
+                                        f"静态方法引用非静态成员 {e.name}")
+                    e.ref_kind, e.ty, e.lval, e.owner = "member", mt, True, owner
+                elif shit is not None:
+                    mt, owner = shit
+                    e.ref_kind, e.ty, e.lval, e.owner = "static", mt, True, owner
+                else:
                     raise SemaError("E0", f"未声明标识符 {e.name!r}")
-                mt, owner = hit
-                e.ref_kind, e.ty, e.lval, e.owner = "member", mt, True, owner
+            elif "::" in e.name:
+                # Cls::static_member 限定访问
+                parts2 = e.name.rsplit("::", 1)
+                ckey = self.resolve_class_name(parts2[0], self.cur_ns)
+                shit = self.find_static_owner(ckey, parts2[1]) if ckey else None
+                if shit is None:
+                    raise SemaError("E0", f"未声明标识符 {e.name!r}")
+                mt, owner = shit
+                e.ref_kind, e.ty, e.lval, e.owner = "static", mt, True, owner
+                e.name = parts2[1]           # 短名（lower 拼全局名用）
             else:
                 raise SemaError("E0", f"未声明标识符 {e.name!r}")
         elif isinstance(e, Member):
@@ -522,6 +564,11 @@ class Sema:
             if ot.kind != "class":
                 raise SemaError("E0", f"非对象上取成员 {e.name!r}")
             hit = self.find_member_owner(ot.name, e.name)
+            shit = self.find_static_owner(ot.name, e.name)
+            if hit is None and shit is not None:
+                mt, e.owner = shit
+                e.ref_kind, e.ty, e.lval = "static", mt, True
+                return e.ty
             if hit is None:
                 raise SemaError("E0", f"{ot.name} 无成员 {e.name!r}")
             mt, e.owner = hit
@@ -538,6 +585,8 @@ class Sema:
             if hit is None:
                 raise SemaError("E0", f"{ot.name}.{e.name} 无 {len(e.args)} 参重载")
             meth, e.sig_owner = hit
+            if getattr(meth, "is_static", False):
+                e.static_call = True
             if is_const and not meth.is_const and is_this_receiver(e.obj):
                 raise SemaError("K2", f"const 方法经 this 调非 const 方法 {e.name}()")
             while len(e.args) < len(meth.params):        # 0.0.11 默认补全
@@ -582,7 +631,19 @@ class Sema:
                     a.bind = "value"
                 e.ty, e.lval = tobj(ckey), False
                 return e.ty
-            f = self.find_free_func(e.name, len(e.args))
+            f = None
+            if "::" in e.name:
+                # Cls::static_method —— 限定静态方法
+                parts2 = e.name.rsplit("::", 1)
+                ckey = self.resolve_class_name(parts2[0], self.cur_ns)
+                if ckey:
+                    for m in self.classes[ckey].methods:
+                        if m.name == parts2[1] and m.is_static and \
+                                len(m.params) == len(e.args):
+                            f = m
+                            break
+            if f is None:
+                f = self.find_free_func(e.name, len(e.args))
             if f is None:
                 raise SemaError("E0",
                                 f"自由函数 {e.name} 无 {len(e.args)} 参重载")
