@@ -74,6 +74,8 @@ def tobj(cname, is_const=False):
 class Sema:
     def __init__(self):
         EH_FLAG[0] = False
+        self.fn_dtors = []            # 本帧 dtor 对象 [(var, class_key)]（0.0.37）
+        self.main_dtors = []
         self.classes = {}
         self.cur_method = None
         self.cur_cls = None
@@ -501,8 +503,10 @@ class Sema:
                 sc = Scope(self.gscope)
                 for (pty, pn) in meth.params:
                     sc.declare(pn, pty)   # 0.0.21 指针形参放行
+                self.fn_dtors = []
                 if meth.body is not None:      # 纯虚声明无体
                     self.check_stmts(meth.body, sc, meth.is_const)
+                meth.fn_dtors = list(self.fn_dtors)
             if self.classes[cd.key].dtor:
                 self.cur_method = None
                 sc = Scope(self.gscope)
@@ -510,16 +514,20 @@ class Sema:
         for f in self.funcs_list:
             self.cur_cls, self.cur_method = None, f
             self.cur_ns = None            # extern "C" 仅全局（子集）
+            self.fn_dtors = []
             if f.body is None:
                 continue                  # 原型声明：无体可查
             sc = Scope(self.gscope)
             for (pty, pn) in f.params:
                 sc.declare(pn, pty)
             self.check_stmts(f.body, sc, False)
+            f.fn_dtors = list(self.fn_dtors)
         self.cur_cls, self.cur_method = None, None
         self.cur_ns = None
         if main is not None:
+            self.fn_dtors = []
             self.check_stmts(main, Scope(self.gscope), False)
+            self.main_dtors = list(self.fn_dtors)
         # 0.0.10 生命周期扩展：const T& 绑临时量 → 调用者作用域具名物化
         self._tmpn = 0
         for cd in decls:
@@ -589,6 +597,8 @@ class Sema:
             for a in s.args:
                 self.check_expr(a, sc, is_const)
             sc.declare(s.var, tobj(s.cls))
+            if self.classes[ckey].dtor:
+                self.fn_dtors.append((s.var, ckey))    # 0.0.37 RAII 追踪
         elif isinstance(s, Throw):
             EH_FLAG[0] = True                 # 0.0.35 序言发射门控
             if s.expr is None:
@@ -654,6 +664,8 @@ class Sema:
             s.user_copy = any(_is_copy_ctor(c, ckey)
                               for c in self.classes[ckey].ctors)
             s.ty = tobj(ckey)                # lower scope 登记（0.0.29）
+            if self.classes[ckey].dtor:
+                self.fn_dtors.append((s.var, ckey))    # 0.0.37 RAII 追踪
             if s.user_copy and not getattr(s.init, "lval", False):
                 raise SemaError("E0",
                                 "用户拷贝构造仅支持左值源"

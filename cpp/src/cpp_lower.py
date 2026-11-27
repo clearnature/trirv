@@ -179,7 +179,9 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
             funcs_c.extend(lower_dtor(cd, info.dtor))
     for f in funcs:
         funcs_c.extend(lower_free_func(f))
-    main_c = lower_main(main) if main is not None else None
+    main_c = lower_main(main, getattr(main, "main_dtors", None) \
+                        if main is not None else None) \
+        if main is not None else None
     # 0.0.33 dc helper 发射（注册发生在 main 降级期间——须后置）
     for (hname, tis) in (DC_HELPERS[0] or []):
         ifs = " ".join(f"if (dyn == (void *)&{t}) {{ return obj; }}"
@@ -200,10 +202,13 @@ def _alloc_expr(cf, classes_meta):
 
 
 def _eh_ret(scope):
-    """函数级上浮返回面：main=terminate 134 / 非 main 按签名。"""
+    """函数级上浮返回面：main=terminate 134 / 非 main 按签名。
+    0.0.37 RAII：return 前插已声明 dtor 对象逆序（so_far 展开）。"""
+    dt = "".join(f"{flat(ck)}_dtor(&{v}); "
+                 for (v, ck) in reversed(scope.get("__dtors_so_far__", [])))
     if scope.get("__terminate__"):
-        return "return 134;"
-    return "return;" if scope.get("__ret_void__") else "return 0;"
+        return f"{dt}return 134;"
+    return f"{dt}return {';' if scope.get('__ret_void__') else '0;'}"
 
 
 def aug_try_body(body):
@@ -291,7 +296,10 @@ def lower_free_func(f):
     scope["__cls__"], scope["__const__"] = None, False
     scope["__method__"] = f
     scope["__ret_void__"] = f.ret.kind == "void"
+    scope["__fn_dtors__"] = getattr(f, "fn_dtors", [])   # 0.0.37
     body = stmts(f.body, scope, False)
+    body = body + [f"{flat(ck)}_dtor(&{v});"
+                   for (v, ck) in reversed(getattr(f, "fn_dtors", []))]
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
 
 
@@ -396,6 +404,7 @@ def lower_methods(cd):
         scope["__cls__"] = getattr(cd, "key", cd.name)
         scope["__const__"] = meth.is_const
         scope["__ret_void__"] = meth.ret.kind == "void"   # 0.0.35 EH 上浮
+        scope["__fn_dtors__"] = getattr(meth, "fn_dtors", [])   # 0.0.37
         scope["__method__"] = meth
         body = stmts(meth.body, scope, meth.is_const)
         out.append(f"{render_ret(meth.ret)} {meth.mname}({', '.join(params)}) "
@@ -521,6 +530,9 @@ def _stmt(s, scope, is_const):
         cf = flat(s.cls)
         args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
         call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
+        info = CLASSES_META[0].get(s.cls) if CLASSES_META[0] else None
+        if info is not None and info.dtor:
+            scope.setdefault("__dtors_so_far__", []).append((s.var, s.cls))
         eh_cp = (f" if (__ex_active) {{ {_eh_ret(scope)} }}"
                  if TRYD[0] == 0 and EH_FLAG[0] else "")
         return f"struct {cf} {s.var}; {call}{eh_cp}"
@@ -530,6 +542,10 @@ def _stmt(s, scope, is_const):
             # 同帧外层 catch 接续（无 goto 的结构化等价）
             return "__ex_rth = 1;"
         ti = 2 if s.expr.ty.kind == "char" else 1
+        if TRYD[0] > 0:
+            # 同帧 try 体内：设异常即 fall-through——守卫跳过后续语句，
+            # try 尾 catch 检查接住（0.0.37：无 goto 的结构化等价）
+            return f"__throw({expr(s.expr, {'value'}, scope)}, {ti});"
         retz = "return;" if scope.get("__ret_void__") else "return 0;"
         return (f"__throw({expr(s.expr, {'value'}, scope)}, {ti}); {retz}"
                 f"  /* throw 即返——本帧展开起点 */")
@@ -615,13 +631,15 @@ def _stmt(s, scope, is_const):
 def ret_stmt(s, scope):
     meth = scope.get("__method__")
     e = s.expr
+    dt = "".join(f"{flat(ck)}_dtor(&{v}); "
+                 for (v, ck) in reversed(scope.get("__dtors_so_far__", [])))
     if e is None:
-        return "return;"
+        return f"{dt}return;"
     if meth is not None and meth.ret.kind == "ref":
         if e.ty.kind == "ref":
-            return f"return {expr(e, {'ref'}, scope)};"      # 转发指针本体
-        return f"return &({expr(e, {'value'}, scope)});"     # 左值取址
-    return f"return {expr(e, {'value'}, scope)};"
+            return f"{dt}return {expr(e, {'ref'}, scope)};"      # 转发指针本体
+        return f"{dt}return &({expr(e, {'value'}, scope)});"     # 左值取址
+    return f"{dt}return {expr(e, {'value'}, scope)};"
 
 
 # ============ 表达式（ctx：value=读值 / ref=要指针本体） ============
@@ -854,8 +872,11 @@ def recv_expr(o, scope):
 
 
 # ============ main ============
-def lower_main(main):
+def lower_main(main, main_dtors=None):
     scope = {"__cls__": None, "__const__": False, "__method__": None,
-             "__ret_void__": False, "__terminate__": True}
+             "__ret_void__": False, "__terminate__": True,
+             "__fn_dtors__": main_dtors or []}
     body = " ".join(stmt(s, scope, False) for s in main)
+    body = body + "".join(f"{flat(ck)}_dtor(&{v}); "
+                          for (v, ck) in reversed(main_dtors or []))
     return f"int main(void) {{ {body} }}"

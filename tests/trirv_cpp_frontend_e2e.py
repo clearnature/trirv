@@ -73,6 +73,7 @@ BEHAVIOR = [
     ("test35_eh.cpp", 89),           # 0.0.35 throw/catch 基础（方案 C 检查点展开）
     ("test36_multicatch.cpp", 146),  # 0.0.36 多 catch/rethrow/catch(...)/函数级上浮
     ("test36c_terminate.cpp", 134),  # 0.0.36 main 未捕获 = terminate 134
+    ("test37_raii.cpp", 8),          # 需链 libc——0.0.37 RAII 栈展开
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -98,7 +99,8 @@ LIBC_TVO = os.path.join(TMP, "trirv_libc.trvo")
 _needs_libc = any(f in ("test15_new.cpp", "test19_dtor.cpp",
                         "test23_ops_ptr.cpp", "test24_virtual.cpp",
                         "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp",
-                        "test31c_dynamic.cpp", "test33_dyncast.cpp") for f, _w in BEHAVIOR)
+                        "test31c_dynamic.cpp", "test33_dyncast.cpp",
+                        "test37_raii.cpp") for f, _w in BEHAVIOR)
 if _needs_libc and not os.path.exists(LIBC_TVO):
     r = subprocess.run([CC, LIBC_SRC, LIBC_TVO], capture_output=True, text=True)
     assert r.returncode == 0, f"libc trvo 构建失败: {r.stderr[:120]}"
@@ -113,7 +115,7 @@ for fn, want in BEHAVIOR:
     if r.returncode != 0:
         check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
         continue
-    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp", "test31c_dynamic.cpp", "test33_dyncast.cpp") else []),
+    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp", "test31c_dynamic.cpp", "test33_dyncast.cpp", "test37_raii.cpp") else []),
                        capture_output=True, text=True)
     if r.returncode != 0:
         check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")
