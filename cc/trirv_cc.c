@@ -2241,14 +2241,14 @@ static int addr_of(Node*n){
         char*bt=expr_type(lv->l);
         int base;
         if(lv->arrow){
-            /* 0.025 修复：pointee 返回单一 static 缓冲，内层 eval 的 pointee
-               会覆写外层类型串（双箭头 o->w->q 实证）。修法=求值先行，
-               pointee→member_find 相邻无间隙——零分配零开销。 */
+            /* 0.025 修复（v3 零开销）：bt 是 struct 表持有的类型串（非
+               static buf），内层 eval 不影响它。pointee 的 static buf 放
+               到 eval 后调用——与 member_find 相邻无覆写间隙。 */
             base=rwcopy(eval(lv->l));
+            bt=(char*)pointee(bt);
         }
         else if(is_array(bt)) base=addr_of(lv->l);
         else base=addr_of(lv->l);
-        bt=(char*)pointee(expr_type(lv->l));
         Member*m=member_find(bt,lv->s);
         if(!m){ fprintf(stderr,"UNSUPPORTED: unknown member '%s' (base type='%s', arrow=%d)\n",lv->s,bt?bt:"(null)",lv->arrow); exit(2); }
         if(m->off) emitf("ADDI %s, %s, %d",regname(base),regname(base),m->off);

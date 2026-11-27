@@ -39,3 +39,37 @@ main 读回：`Square_vt.area==0`、`Shape_vt.area==0`、`s->__vtbl==&Square_vt`
 最前布局（单继承零 this 调整）；ctor 运行时幂等赋槽（全局 fn 地址
 初始化不支持）；虚调用 `recv->__vtbl->slot(recv, args)`；override
 遮蔽（查找止于首含类）。sema 已入册：virtual 解析/is_virtual/vslots。
+
+
+## 0.0.26 增量：cfront 共享槽布局（已落地）+ 新编译器 bug（待修）
+
+**布局修正**：vtbl 槽只在根类子对象位 0（`struct Shape { Shape_v *__vtbl; int tag; }`），
+派生类 `struct Square { Shape __base; int side; }` 经 __base 共享同一槽位
+（派生 ctor 以 `((struct Shape *)this_)->__vtbl = &Square_vt` 改指派生表），
+上转型零调整——修复 0.0.25 前的「自有 vtbl 最前 + __base 次位」布局
+（该布局使基类子对象位于偏移 9，上转型零调整写读错位 = d26e 150 实证）。
+
+**新编译器 bug（0.0.27）**：ctor 内经 cast 指针的成员 store 不持久。
+复现 `cpp/tests/t24d3-repro.c`：Square_ctor 内三处 store
+（Shape_ctor cast 调用/共享槽写/全局槽写）全部落空（位图 exit=0，
+期望 178）。对照：p24m（main 内同形态）✓、p24g（函数内非 cast）✓。
+嫌疑：N_CAST on struct-ptr param 的求值/寄存器复用。
+
+
+## 0.0.26 追加定位（q26a–j 七连探针）
+
+复现持续收敛：失败点在 trirv_cc **C 编译器前端**（手写 C 直接复现，
+完全绕开 cpp transpiler；PyVM/CVM 双机一致排除 VM；同形态指令在
+别处工作排除 ISA 能力面）。精确触发序列尚未钉死（q26j 全组合探针
+p24l/p24m2 均通过——触发条件比「先调用后访问全局」更细），但已
+锁定证据链：
+  ①手写最小 C（d26c/q26a，零 transpiler 参与）在 trirv_cc 编译
+    期/运行期复现——责任层=C 编译器前端；
+  ②失败形态=「函数体内访问全局 struct 的 fn-ptr 成员」在特定
+    上下文（此前有 struct 嵌套声明+多 struct 声明+ctor 形态函数）
+    报 undeclared identifier / unknown member；
+  ③q26i 实证：含该失败访问的函数，其前的 cast 实参调用/形参成员
+    访问不是必要条件（q26j 去cast仍挂），但 q26g/h（无 ctor 形态
+    函数）全通过——触发与「ctor 形态函数体」强相关。
+0.0.27 继续从 q26g→q26i 增量路径二分（下一步：q26i 去掉
+`((struct Shape*)this_)->__vtbl = ...` 一行测试）。

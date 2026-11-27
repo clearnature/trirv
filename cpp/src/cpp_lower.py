@@ -65,9 +65,10 @@ def decl_class(cd, classes_meta=None):
     bkey = getattr(cd, "base_key", None) or cd.base
     parts = []
     info = classes_meta.get(getattr(cd, "key", cd.name))
-    has_virt = info is not None and info.vslots
-    if has_virt:
-        # vtable 指针最前（单继承布局兼容：base 的 vtbl 同在位 0）
+    # cfront 布局：vtbl 槽只在根类子对象位 0——派生类经 __base 共享同一
+    # 槽位（派生 ctor 改指派生表），上转型零调整（0.0.26 布局修复）
+    is_virt_root = info is not None and info.vslots and not cd.base
+    if is_virt_root:
         parts.append(f"struct {cname}_v *__vtbl;")
     if bkey:
         parts.append(f"struct {flat(bkey)} {BASE_KEY};")
@@ -78,7 +79,11 @@ def decl_class(cd, classes_meta=None):
         else f"struct {cname} {{}};"
 
 
+CLASSES_META = [None]      # 当前 TU 类表（虚调用根指针查询用）
+
+
 def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
+    CLASSES_META[0] = classes_meta
     for cd in decls:
         for meth in cd.methods:
             if not hasattr(meth, "mname"):
@@ -139,8 +144,13 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     for cd in decls:
         if getattr(cd, "forward", False):
             continue                         # 前向声明：无函数可发射
-        funcs_c.extend(lower_ctors(cd, classes_meta))
+        # 0.0.26 修复：方法先于 ctor 发射——trirv_cc fn-ptr 赋值引用后
+        # 定义函数=地址 0（p26r=0 p26s=25 实证），前序发射消除前向引用
         funcs_c.extend(lower_methods(cd))
+    for cd in decls:
+        if getattr(cd, "forward", False):
+            continue
+        funcs_c.extend(lower_ctors(cd, classes_meta))
         info = classes_meta.get(getattr(cd, "key", cd.name))
         if info and info.dtor:
             funcs_c.extend(lower_dtor(cd, info.dtor))
@@ -166,7 +176,10 @@ def lower_ctors(cd, classes_meta=None):
         body = []
         vset = []
         if classes_meta.get(cd.key) and classes_meta[cd.key].vslots:
-            vset.append(f"this_->__vtbl = &{cname}_vt;")
+            # 派生类：cast 到根类后单箭头（trirv_cc 不支持 ->x.__y 混合链）
+            rkey = _root_of(cd.key, classes_meta)
+            rf = flat(rkey) if rkey else cname
+            vset.append(f"((struct {rf} *)this_)->__vtbl = &{cname}_vt;")
             for slot in classes_meta[cd.key].vslots:
                 m = find_slot_impl(cd, classes_meta[cd.key], slot,
                                    classes_meta)
@@ -196,6 +209,17 @@ def lower_free_func(f):
     scope["__method__"] = f
     body = stmts(f.body, scope, False)
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
+
+
+def _root_of(cname, classes_meta):
+    """基类链上溯到根（vtbl 槽所在子对象）。"""
+    c = cname
+    while c and c in classes_meta:
+        info = classes_meta[c]
+        if not info.base:
+            return c
+        c = info.base
+    return c
 
 
 def find_slot_impl(cd, info, slot, classes_meta):
@@ -298,6 +322,11 @@ def hoist_pre(s, scope):
                 if getattr(e, "sig", None) is not None else ""
             parts.append(f"struct {cf} *{tn} = malloc(sizeof(struct {cf}));"
                          f"{ctor}")
+        elif getattr(e, "ty", None) is not None and e.ty.kind == "ptr":
+            # 0.0.26 vtbl 指针提升（虚分派拆链）——正确 v 表指针类型
+            rf = flat(type_name(e.ty.pointee))
+            c = expr(e, {"value"}, scope)
+            parts.append(f"struct {rf}_v *{tn} = {c};")
         else:
             c = expr(e, {"value"}, scope)
             if has_call(e):
@@ -498,7 +527,13 @@ def call(e, ctx, scope):
             else:
                 parts.append(expr(a, {"value"}, scope))
         scope["__recv_owner__"] = recv_owner
-        s = f"{recv}->__vtbl->{meth.name}({', '.join(parts)})"
+        # 0.0.26 类型套用拆链：(*(struct Root_v **)recv)->slot(…)
+        # （trirv_cc 链式箭头 fn-ptr codegen 不工作——p26=42 探针实证）
+        root = _root_of(getattr(e, "sig_owner", None), CLASSES_META[0])
+        if not root:
+            root = _root_of(scope.get("__cls__"), CLASSES_META[0])
+        rootf = flat(root) if root else "Object"
+        s = f"(*(struct {rootf}_v **){recv})->{meth.name}({', '.join(parts)})"
         if "ref" in ctx or e.ty.kind != "ref":
             return s
         return f"*({s})"

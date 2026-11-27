@@ -615,11 +615,7 @@ class Sema:
             if hit is None:
                 raise SemaError("E0", f"{ot.name}.{e.name} 无 {len(e.args)} 参重载")
             meth, e.sig_owner = hit
-            if getattr(meth, "is_virtual", False):
-                raise SemaError("E0",
-                                "virtual 调用需 vtable——trirv_cc pointee 静态"
-                                "缓冲覆写已修（strdup 快照），ctor 赋槽持久性"
-                                "排查中（t24diag 全零位图）；解锁=0.0.26")
+            # 0.0.26：cfront 共享槽布局落地——虚调用解锁
             if getattr(meth, "is_static", False):
                 e.static_call = True
             if is_const and not meth.is_const and is_this_receiver(e.obj):
@@ -1003,6 +999,7 @@ def _install_mat(cls):
                     rid = Id(tn)
                     rid.ty, rid.lval = ot, True
                     e.obj = rid
+                # 0.0.26：虚分派由 lower 类型套用拆链发射（无需 sema 提升）
                 self._mat_expr(e.obj, h)     # FreeCall 无接收者
             for a in e.args:
                 self._mat_expr(a, h)
@@ -1087,3 +1084,10 @@ def _install_defaults(cls):
 
 
 _install_defaults(Sema)
+
+
+def _vroot(c, classes):
+    """虚方法所属类的根（vtbl 共享槽所在子对象）。"""
+    while c and classes.get(c) and classes[c].base:
+        c = classes[c].base
+    return c or "Object"
