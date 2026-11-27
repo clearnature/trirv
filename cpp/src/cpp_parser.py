@@ -102,6 +102,13 @@ class DeleteStmt:
         self.expr = expr
 
 
+class CopyInit:
+    """X var = expr; —— 拷贝初始化（0.0.29）。"""
+
+    def __init__(self, cls, var, init):
+        self.cls, self.var, self.init = cls, var, init
+
+
 class Bin:
     def __init__(self, op, l, r):
         self.op, self.l, self.r = op, l, r
@@ -497,10 +504,10 @@ class Parser:
         """operator 后接算子（限算术：+/==）→ 'operator+' 名。"""
         self.expect("KW", "operator")
         t = self.next()
-        if t[0] == "PUNCT" and t[1] in ("+", "==", "-", "<", ">", "!="):
+        if t[0] == "PUNCT" and t[1] in ("+", "=", "==", "-", "<", ">", "!="):
             return "operator" + t[1]
         raise ParseError(f"L{t[2]}: 操作符 {t[1]!r} 子集外"
-                         f"（限算术：+ == - < > !=）")
+                         f"（限算术：= + == - < > !=）")
 
     def methoddef(self, acc="public"):
         ty = self.parse_type()
@@ -581,6 +588,14 @@ class Parser:
                 init = self.expr()
             self.expect("PUNCT", ";")
             return VarDecl(nm, ty, init)
+        if t[0] == "ID" and self.peek(1)[0] == "ID" and \
+                self.peek(2)[1] == "=":
+            cls = self.qual_name(self.next()[1])   # X var = expr;（0.0.29）
+            var = self.next()[1]
+            self.expect("PUNCT", "=")
+            init = self.expr()
+            self.expect("PUNCT", ";")
+            return CopyInit(cls, var, init)
         if t[0] == "ID" and self.peek(1)[0] == "ID" and \
                 self.peek(2)[1] == ";":
             cls = self.qual_name(self.next()[1])

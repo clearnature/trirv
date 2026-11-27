@@ -23,7 +23,7 @@ def enc_type(ty):
     return {"int": "i", "char": "c", "bool": "b", "void": "v"}.get(ty.kind, ty.kind)
 
 
-OP_ENC = {"+": "pl", "==": "eq", "-": "mi", "*": "ml", "/": "dv",
+OP_ENC = {"=": "aS", "+": "pl", "==": "eq", "-": "mi", "*": "ml", "/": "dv",
           "<": "lt", ">": "gt", "<=": "le", ">=": "ge", "!=": "ne"}
 
 

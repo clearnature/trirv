@@ -64,6 +64,7 @@ BEHAVIOR = [
     ("test24_virtual.cpp", 59),      # 需链 libc（new/delete）——0.0.26 虚函数切片落地
     ("test27_purevirtual.cpp", 30),  # 需链 libc（new/delete）——0.0.27 纯虚/抽象
     ("test28_access.cpp", 36),       # 0.0.28 访问控制合法面
+    ("test29_copy.cpp", 161),        # 0.0.29 拷贝构造/赋值
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -72,6 +73,7 @@ REJECT = [
     ("test28b_private_ext.cpp", "访问控制"),      # 0.0.28：private 外部访问
     ("test28c_protected_ext.cpp", "访问控制"),    # 0.0.28：protected 类外访问
     ("test28d_private_derived.cpp", "访问控制"),  # 0.0.28：基类 private 派生不可见
+    ("test29b_mismatch.cpp", "拷贝初始化"),       # 0.0.29：拷贝初始化类型不匹配
 ]
 
 os.makedirs(TMP, exist_ok=True)

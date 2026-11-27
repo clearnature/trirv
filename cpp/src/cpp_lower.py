@@ -15,7 +15,7 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (New, DeleteStmt, CtorDecl, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
+from cpp_parser import (New, DeleteStmt, CtorDecl, CopyInit, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
@@ -165,11 +165,22 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
 
 
 # ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
+def _ctor_is_copy(ctor, cname):
+    """拷贝 ctor 判定（lower 侧镜像 sema._is_copy_ctor）。"""
+    if len(ctor.params) != 1:
+        return False
+    p = ctor.params[0][0]
+    return (p.kind == "ref" and p.pointee.kind == "class"
+            and p.pointee.name == cname and p.pointee.is_const)
+
+
 def lower_ctors(cd, classes_meta=None):
     out = []
     cname = flat(getattr(cd, "key", cd.name))
     bkey = getattr(cd, "base_key", None) or cd.base
     for ctor in cd.ctors:
+        cfname = (f"{cname}_ctor_copy" if _ctor_is_copy(ctor, cname)
+                  else f"{cname}_ctor")
         params = [f"struct {cname} *this_"]
         for (pty, pn) in ctor.params:
             params.append(decl_param(pty, pn))
@@ -198,9 +209,9 @@ def lower_ctors(cd, classes_meta=None):
                 body.append(f"this_->{tgt} = {rargs};")
         ustmts = stmts(ctor.body, scope, False)
         body = body + vset + ustmts  # 序：base_ctor/成员初始化 → vtbl 设定 → 用户体
-        out.append(f"void {cname}_ctor({', '.join(params)}) "
+        out.append(f"void {cfname}({', '.join(params)}) "
                    f"{{ {' '.join(body)} }}" if body else
-                   f"void {cname}_ctor({', '.join(params)}) {{ }}")
+                   f"void {cfname}({', '.join(params)}) {{ }}")
     return out
 
 
@@ -363,6 +374,18 @@ def hoist_pre(s, scope):
 
 
 def _stmt(s, scope, is_const):
+    if isinstance(s, CopyInit):
+        cf = flat(s.cls)
+        if isinstance(s.init, FreeCall) and isinstance(getattr(s.init, "sig", None), CtorDecl):
+            # 零拷贝 elision：直接构造（C++ 法）
+            args = ", ".join(expr(a, {"value"}, scope) for a in s.init.args)
+            scope[s.var] = s.ty
+            return f"struct {cf} {s.var}; {cf}_ctor(&{s.var}, {args});"
+        rhs = expr(s.init, {"value"}, scope)
+        scope[s.var] = s.ty              # 局部类型入 scope
+        if s.user_copy:
+            return f"struct {cf} {s.var}; {cf}_ctor_copy(&{s.var}, &({rhs}));"
+        return f"struct {cf} {s.var}; {s.var} = {rhs};"   # 隐式=两步结构体赋值
     if isinstance(s, VarDecl):
         scope[s.name] = s.ty             # 局部类型入 scope（ptr/ref 通道）
         if isinstance(s.ty, TRef):
@@ -469,6 +492,9 @@ def expr(e, ctx, scope):
     if isinstance(e, (MethodCall, FreeCall)):
         return call(e, ctx, scope)
     if isinstance(e, Assign):
+        c = getattr(e, "call", None)
+        if c is not None:
+            return expr(c, ctx, scope)          # 用户 operator=（0.0.29）
         lhs = expr(e.lhs, {"value"}, scope)     # REF 左值自然出 (*…)
         rhs = expr(e.rhs, {"value"}, scope)
         return f"{lhs} = {rhs}"

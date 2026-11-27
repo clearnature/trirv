@@ -13,7 +13,7 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (New, DeleteStmt, DtorDecl, Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (New, DeleteStmt, DtorDecl, CopyInit, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
@@ -115,6 +115,9 @@ class Sema:
             s.cls = self.resolve_class_name(s.cls, ns) or s.cls
             for a in s.args:
                 self.canon_expr(a, ns)
+        elif isinstance(s, CopyInit):
+            s.cls = self.resolve_class_name(s.cls, ns) or s.cls
+            self.canon_expr(s.init, ns)
         elif isinstance(s, DeleteStmt):
             self.canon_expr(s.expr, ns)
         elif isinstance(s, ExprStmt):
@@ -470,7 +473,10 @@ class Sema:
                         raise SemaError(
                             f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
                     for a in args:
-                        self.check_stmts(ctor.body, sc, False)
+                        self.check_expr(a, sc, False)
+                self.check_stmts(ctor.body, sc, False)   # 0.0.29 修：体检查
+                # 曾错挂在 init-args 循环内（无 init-list 的 ctor 体从未被
+                # 检查——既有测试全带 init-list 掩盖的潜伏 bug）
             for meth in cd.methods:
                 self.cur_method = meth
                 sc = Scope(self.gscope)
@@ -545,6 +551,8 @@ class Sema:
             s.cls = ckey
             hits = []
             for c in self.classes[s.cls].ctors:
+                if _is_copy_ctor(c, ckey):
+                    continue          # 拷贝 ctor 不参与 X(args) 形态（C++ 法）
                 n = len(c.params)
                 if n == len(s.args) or (n > len(s.args) and all(
                         c.defaults[i] is not None
@@ -562,6 +570,30 @@ class Sema:
             for a in s.args:
                 self.check_expr(a, sc, is_const)
             sc.declare(s.var, tobj(s.cls))
+        elif isinstance(s, CopyInit):
+            ckey = self.resolve_class_name(s.cls, self.cur_ns)
+            if ckey is None:
+                raise SemaError("E0", f"类 {s.cls} 未定义")
+            if self.is_abstract(ckey):
+                raise SemaError("E0",
+                                f"抽象类 {ckey} 不可实例化"
+                                f"（含未覆盖的纯虚函数）")
+            s.cls = ckey
+            rt = self.check_expr(s.init, sc, is_const)
+            base_t = rt.pointee if rt.kind == "ref" else rt
+            if base_t.kind != "class" or base_t.name != ckey:
+                from cpp_types import type_name as _tn
+                raise SemaError("E0",
+                                f"拷贝初始化类型不匹配：{ckey} ← "
+                                f"{_tn(base_t)}")
+            s.user_copy = any(_is_copy_ctor(c, ckey)
+                              for c in self.classes[ckey].ctors)
+            s.ty = tobj(ckey)                # lower scope 登记（0.0.29）
+            if s.user_copy and not getattr(s.init, "lval", False):
+                raise SemaError("E0",
+                                "用户拷贝构造仅支持左值源"
+                                "（右值物化=后续版本）")
+            sc.declare(s.var, tobj(ckey))
         elif isinstance(s, DeleteStmt):
             et = self.check_expr(s.expr, sc, is_const)
             if et.kind != "ptr" or et.pointee.kind != "class":
@@ -715,6 +747,8 @@ class Sema:
             e.cls = ckey
             hits = []
             for c in self.classes[ckey].ctors:
+                if _is_copy_ctor(c, ckey):
+                    continue
                 n = len(c.params)
                 if n == len(e.args) or (n > len(e.args) and all(
                         c.defaults[i] is not None for i in range(len(e.args), n))):
@@ -772,6 +806,24 @@ class Sema:
             self.const_guard(e.lhs, is_const)
             if not getattr(e.lhs, "lval", False) and lt.kind != "ref":
                 raise SemaError("E0", "赋值目标非左值且非引用")
+            if lt.kind == "class":
+                from cpp_types import type_name as _tn2
+                rb = rt.pointee if rt.kind == "ref" else rt
+                if rb.kind != "class" or rb.name != lt.name:
+                    raise SemaError("E0",
+                                    f"拷贝赋值类型不匹配：{lt.name} = "
+                                    f"{_tn2(rb)}")
+                hit = self.find_method_owner(lt.name, "operator=", 1)
+                if hit is not None:
+                    meth = hit[0]
+                    node = MethodCall(e.lhs, "operator=", [e.rhs])
+                    self.check_args(node.args, meth, sc, is_const)
+                    node.sig, node.ty, node.lval = meth, meth.ret, False
+                    node.sig_owner = hit[1]
+                    e.call = node
+                    e.ty, e.lval = node.ty, False
+                    return e.ty
+                # 无用户 operator= → 隐式成员级浅复制（C 结构体赋值直通）
             e.ty, e.lval = lt, False
         elif isinstance(e, Bin):
             self.check_expr(e.l, sc, is_const)
@@ -1029,7 +1081,9 @@ def _install_mat(cls):
             self._mat_stmt(s.body)
             return
         h = []
-        if isinstance(s, VarDecl):
+        if isinstance(s, CopyInit):
+            self._mat_expr(s.init, h)        # 拷贝初始化源表达式（0.0.29）
+        elif isinstance(s, VarDecl):
             if s.init is not None:
                 self._mat_expr(s.init, h)
             # 引用局部 + 右值初始化 → 物化为临时量，init 换 Id(temp)
@@ -1175,3 +1229,12 @@ def _vroot(c, classes):
     while c and classes.get(c) and classes[c].base:
         c = classes[c].base
     return c or "Object"
+
+
+def _is_copy_ctor(ctor, ckey):
+    """拷贝 ctor 判定：单参 const Own&（0.0.29，非 const 形态=子集外）。"""
+    if len(ctor.params) != 1:
+        return False
+    pty = ctor.params[0][0]
+    return (pty.kind == "ref" and pty.pointee.kind == "class"
+            and pty.pointee.name == ckey and pty.pointee.is_const)

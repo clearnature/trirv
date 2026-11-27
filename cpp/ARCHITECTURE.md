@@ -186,7 +186,7 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.26 | **虚函数切片落地（四根因连环修）**：①pointee 覆写 ②共享槽布局（vtbl 槽归根类子对象位 0，上转型零调整）③类型套用拆链 `(*(struct Root_v **)recv)->slot(…)` ④发射序修复（方法先于 ctor——fn-ptr 前向引用=地址 0）。test24 四形态（指针虚分派/describe 二级分派/基指针 upcast/override 槽位复用）=59 双 VM | ✓ 已验证（e2e 57 项） |
 | 0.0.27 | **纯虚函数/抽象类**（TDD：test27 先红后绿）：`= 0` 解析（无体 MethodDecl）；纯虚槽照常占 vtbl 位（签名取声明）但 ctor 不赋值（NULL）+ 纯虚声明不发射 C 函数；抽象类实例化（new/栈对象）sema E0——合法程序 NULL 槽不可达（C++ 法）；override 后全槽赋派生 impl 具体化 | ✓ 已验证（e2e 59 项：30 行为 + 2 拒绝 + 7 ADT，双 VM） |
 | 0.0.28 | **访问控制强制**（TDD：test28b/c/d 先「错误接受」RED → 实现 → E0 GREEN）：class 默认 private/struct 默认 public + label 切换记录（member_access/static_access/MethodDecl.access）；四个拦截点（Id 裸成员/Id 限定静态/Member obj.member/MethodCall）；可见性矩阵（private 仅自身/protected 沿基链派生/public 任意）。偏差文档化：protected 经基指针未细分、friend 授权未实现、ctor/dtor 访问不强制 | ✓ 已验证（e2e 69 项：31 行为 + 5 拒绝 + 7 ADT，双 VM） |
-| 0.0.29 | **拷贝构造/拷贝赋值**：隐式逐字复制（成员级）+ 用户定义 `X(const X&)`/`operator=` | 规划 |
+| 0.0.29 | **拷贝构造/拷贝赋值**（TDD：test29 先红后绿）：`X y = x;` 拷贝初始化（CopyInit 节点）——隐式=两步结构体赋值（p18c 通道）/用户 `X(const X&)`=X_ctor_copy 调用（重载 C 层唯一名约定）/CtorExpr 零拷贝 elision；用户 `operator=`（Itanium aS）经 Assign e.call 直通（void 形态子集——X&+\*this 链式=后续）；类型不匹配 E0；拷贝 ctor 不参与 X(args) 匹配（C++ 法）。**潜伏 bug 修复**：ctor 体检查曾错挂 init-args 循环内（无 init-list 的 ctor 体从未被检查——既有测试全带 init-list 掩盖） | ✓ 已验证（e2e 71 项：32 行为 + 6 拒绝 + 7 ADT，双 VM） |
 | 0.0.30 | **operator new/delete**（类专属分配器）+ explicit 单参 ctor 禁隐式转换 | 规划 |
 | 0.0.31 | **命名 cast 糖**：static_cast/reinterpret_cast/const_cast → C cast 直发（语义检查=sema） | 规划 |
 | 0.0.32 | **RTTI·typeinfo**：vtbl 扩展 `__ti` 首槽（类型名串指针）+ `typeid(对象/类型)`（指针同一性比较） | 规划 |
