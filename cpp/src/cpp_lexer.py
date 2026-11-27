@@ -10,13 +10,13 @@ KEYWORDS = {
     "return", "if", "else", "while", "for", "new", "delete", "this",
     "namespace", "template", "typename", "try", "catch", "throw", "extern",
     "explicit", "static_cast", "dynamic_cast", "reinterpret_cast",
-    "const_cast",
+    "const_cast", "throw", "try", "catch",
     "true", "false", "nullptr", "enum", "operator", "friend",
 }
 
 # 多字标点：长前缀优先匹配（&& 必须先于 &，-> 先于 -）
 PUNCTS = [
-    "::", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=",
+    "...", "::", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=",
     "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
     "<<=", ">>=",
 ]

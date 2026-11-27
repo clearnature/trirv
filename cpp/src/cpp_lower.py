@@ -15,11 +15,11 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (New, DeleteStmt, CtorDecl, CopyInit, NamedCast, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
+from cpp_parser import (New, DeleteStmt, CtorDecl, CopyInit, NamedCast, Throw, Try, EH_FLAG, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
-from cpp_types import tref, type_name, TRef, TPtr
+from cpp_types import tref, type_name, TRef, TPtr, TInt
 
 BASE_KEY = "__base"
 
@@ -147,6 +147,13 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
             gdecls_c.append(f"{base} {gn} = {expr(gi, {'value'}, {})};")
         else:
             gdecls_c.append(f"{base} {gn};")
+    eh_prologue = []
+    if EH_FLAG[0]:
+        gdecls_c.append("int __ex_active = 0;")
+        gdecls_c.append("int __ex_obj = 0;")
+        gdecls_c.append("int __ex_ti = 0;")
+        eh_prologue.append("void __throw_int(int v) { __ex_obj = v; "
+                           "__ex_ti = 1; __ex_active = 1; }")
     for (cn2, nm2, ty2, i2) in sdefs:
         cf2 = flat(cn2)
         base2 = type_name(ty2)
@@ -155,7 +162,7 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
                             f"{expr(i2, {'value'}, {})};")
         else:
             gdecls_c.append(f"{base2} {cf2}_{nm2};")
-    funcs_c = []
+    funcs_c = eh_prologue
     for cd in decls:
         if getattr(cd, "forward", False):
             continue                         # 前向声明：无函数可发射
@@ -189,6 +196,31 @@ def _alloc_expr(cf, classes_meta):
     if info is not None and getattr(info, "has_op_new", False):
         return f"{cf}_new(sizeof(struct {cf}))"
     return f"malloc(sizeof(struct {cf}))"
+
+
+def aug_try_body(body):
+    """try 体循环条件增补：cond && !__ex_active（中段 throw 退出循环）。
+    不下探嵌套 Try（其体由自身机制守卫）。AST 级原位修改——sema 已完成。"""
+    for s in body:
+        _aug_stmt(s)
+
+
+def _aug_stmt(s):
+    if isinstance(s, While):
+        s.cond = Bin("&&", s.cond, Un("!", Id("__ex_active")))
+        _aug_stmt(s.body)
+    elif isinstance(s, For):
+        if s.cond is not None:
+            s.cond = Bin("&&", s.cond, Un("!", Id("__ex_active")))
+        if s.body is not None:
+            _aug_stmt(s.body)
+    elif isinstance(s, If):
+        _aug_stmt(s.then)
+        if s.els is not None:
+            _aug_stmt(s.els)
+    elif isinstance(s, BlockStmt):
+        for x in s.stmts:
+            _aug_stmt(x)
 
 
 def _ctor_is_copy(ctor, cname):
@@ -250,6 +282,7 @@ def lower_free_func(f):
     scope = {n: obj_param_as_ref(p) for (p, n) in f.params}
     scope["__cls__"], scope["__const__"] = None, False
     scope["__method__"] = f
+    scope["__ret_void__"] = f.ret.kind == "void"
     body = stmts(f.body, scope, False)
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
 
@@ -353,6 +386,7 @@ def lower_methods(cd):
         scope = {n: obj_param_as_ref(p) for (p, n) in meth.params}
         scope["__cls__"] = getattr(cd, "key", cd.name)
         scope["__const__"] = meth.is_const
+        scope["__ret_void__"] = meth.ret.kind == "void"   # 0.0.35 EH 上浮
         scope["__method__"] = meth
         body = stmts(meth.body, scope, meth.is_const)
         out.append(f"{render_ret(meth.ret)} {meth.mname}({', '.join(params)}) "
@@ -477,6 +511,39 @@ def _stmt(s, scope, is_const):
         args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
         call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
         return f"struct {cf} {s.var}; {call}"
+    if isinstance(s, Throw):
+        if s.expr is None:
+            return "throw;"                    # 0.0.36（sema 已拒——防御）
+        retz = "return;" if scope.get("__ret_void__") else "return 0;"
+        return (f"__throw_int({expr(s.expr, {'value'}, scope)}); {retz}"
+                f"  /* throw 即返——本帧展开起点 */")
+    if isinstance(s, Try):
+        # 方案 C 检查点展开（docs/EXCEPTION-DESIGN.md）
+        aug_try_body(s.try_body)               # 循环条件增补
+        parts = []
+        for x in s.try_body:
+            if isinstance(x, VarDecl) and x.init is not None \
+                    and has_call(x.init):
+                # 声明提升（不守卫）+ 赋值守卫——decl/uses 作用域割裂防御
+                base = type_name(x.ty)
+                cpre = "const " if x.ty.is_const else ""
+                c = expr(x.init, {"value"}, scope)
+                parts.append(f"{cpre}{base} {x.name};")
+                parts.append(f"if (!__ex_active) {{ {x.name} = {c}; }}")
+                continue
+            if isinstance(x, VarDecl):
+                parts.append(stmt(x, scope, is_const))   # 纯声明不守卫
+                continue
+            parts.append(f"if (!__ex_active) {{ {stmt(x, scope, is_const)} }}")
+        (cty, cvar, cbody) = s.catches[0]
+        csc = dict(scope)
+        csc[cvar] = TInt()               # catch 形参（int，0.0.35）
+        cbody_c = " ".join(stmt(x, csc, is_const) for x in cbody)
+        ret_c = "return;" if scope.get("__ret_void__") else "return 0;"
+        catch_c = (f"if (__ex_ti == 1) {{ __ex_active = 0; "
+                   f"int {cvar} = __ex_obj; {cbody_c} }} "
+                   f"else {{ {ret_c} }}")
+        return " ".join(parts) + f"if (__ex_active) {{ {catch_c} }}"
     if isinstance(s, DeleteStmt):
         c = expr(s.expr, {"value"}, scope)
         parts = []
@@ -756,6 +823,7 @@ def recv_expr(o, scope):
 
 # ============ main ============
 def lower_main(main):
-    scope = {"__cls__": None, "__const__": False, "__method__": None}
+    scope = {"__cls__": None, "__const__": False, "__method__": None,
+             "__ret_void__": False}
     body = " ".join(stmt(s, scope, False) for s in main)
     return f"int main(void) {{ {body} }}"

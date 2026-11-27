@@ -116,6 +116,20 @@ class NamedCast:
         self.kind, self.ty, self.expr = kind, ty, expr
 
 
+class Throw:
+    """throw expr; / throw;（0.0.35；bare rethrow=0.0.36）。"""
+
+    def __init__(self, expr):
+        self.expr = expr
+
+
+class Try:
+    """try { } catch (T v) { } …（0.0.35：单 int catch）。"""
+
+    def __init__(self, try_body, catches):
+        self.try_body, self.catches = try_body, catches
+
+
 class Bin:
     def __init__(self, op, l, r):
         self.op, self.l, self.r = op, l, r
@@ -174,6 +188,8 @@ class For:
 
 
 BASIC = {"int": "int", "char": "char", "void": "void", "bool": "bool"}
+
+EH_FLAG = [False]           # TU 含 throw/try（0.0.35 序言门控，sema 置位 lower 读）
 
 
 class Parser:
@@ -611,6 +627,27 @@ class Parser:
             c = self.expr()
             self.expect("PUNCT", ")")
             return While(c, self.stmt())
+        if t[0] == "KW" and t[1] == "throw":
+            self.next()                       # 0.0.35 throw（bare=0.0.36）
+            e = None if self.peek()[1] == ";" else self.expr()
+            self.expect("PUNCT", ";")
+            return Throw(e)
+        if t[0] == "KW" and t[1] == "try":
+            self.next()                       # 0.0.35 try/catch
+            tbody = self.block()
+            catches = []
+            while self.peek() == ("KW", "catch") or \
+                    (self.peek()[0] == "KW" and self.peek()[1] == "catch"):
+                self.next()
+                self.expect("PUNCT", "(")
+                if self.accept("PUNCT", "..."):
+                    catches.append((None, None, self.block()))
+                    continue
+                cty = self.parse_type()
+                cvar = self.expect("ID")[1]
+                self.expect("PUNCT", ")")
+                catches.append((cty, cvar, self.block()))
+            return Try(tbody, catches)
         if t[0] == "KW" and t[1] == "delete":
             self.next()
             e = self.expr()

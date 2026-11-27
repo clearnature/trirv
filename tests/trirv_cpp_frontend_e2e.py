@@ -70,6 +70,7 @@ BEHAVIOR = [
     ("test32_typeid.cpp", 13),       # 需链 libc——0.0.32 RTTI typeinfo+typeid
     ("test31c_dynamic.cpp", 0),      # 需链无——0.0.33 落地后转正：dynamic_cast 零对象→0
     ("test33_dyncast.cpp", 44),      # 需链 libc——0.0.33 dynamic_cast
+    ("test35_eh.cpp", 89),           # 0.0.35 throw/catch 基础（方案 C 检查点展开）
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -83,6 +84,7 @@ REJECT = [
     ("test31b_static_int_ptr.cpp", "reinterpret_cast"),  # 0.0.31：int→指针指向 reinterpret
     ("test32b_operand.cpp", "typeid"),            # 0.0.32：typeid 基本型操作数
     ("test33b_unrelated.cpp", "无关类型"),        # 0.0.33：dynamic_cast 无关类型
+    ("test35b_rethrow.cpp", "rethrow"),           # 0.0.35：bare rethrow=0.0.36
 ]
 
 os.makedirs(TMP, exist_ok=True)

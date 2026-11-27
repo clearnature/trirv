@@ -192,7 +192,7 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.32 | **RTTI·typeinfo + typeid**（TDD：test32 先红后绿）：vtbl 扩展 `__ti` 首槽（0.0.26 共享槽布局直接复用）+ 每类全局 `char X_ti[] = "key"`（有虚类随 vtbl / 非虚类独立发射，去重守卫）；ctor 期 `X_vt.__ti = X_ti`；`typeid(对象)` 有虚类=动态 ti（基指针穿越取派生——多态可观测）/非虚类=静态 ti 直发；`typeid(类名)`=静态 ti（Id 类名回退通道：未声明标识符终端路径新增类引用解析）；指针同一性比较。坑：8 位 exit 截断三犯（1101→77）——测试位权重改 1/2/4/8/16 | ✓ 已验证（e2e 89 项：38 行为 + 10 拒绝 + 7 ADT，双 VM） |
 | 0.0.33 | **RTTI·dynamic_cast**（TDD：test33 先红后绿，Phase B 收官）：上行/同类=直达恒真（共享槽零调整）；下行=运行期 ti 同一性检查（`__dc_N(obj, dyn)` helper——可接受集=target ∪ 编译期枚举 descendants，null 守卫首行，注册表后置发射避开前向引用）；无关类型=编译期 E0（sema 静态可判）；test31c 拒绝契约转正（0.0.33 落地后 dynamic_cast 可用） | ✓ 已验证（e2e 93 项：41 行为 + 11 拒绝 + 7 ADT，双 VM） |
 | 0.0.34 | **异常探针+决策**：setjmp/longjmp 支持（trirv_cc/musl_tri）vs 表驱动 unwinding；cpprt_tri 运行时设计文档 | 规划 |
-| 0.0.35 | **异常·throw/catch 基础**：cpprt_tri（堆抛出对象+类型标签）+ try/catch 单类型匹配（无展开） | 规划 |
+| 0.0.35 | **异常·throw/catch 基础**（TDD：test35 先红后绿；方案 C 检查点展开落地——0.0.34 决策）：`throw v` → `__throw_int(v)` **+ 立即 return**（本帧展开起点）；try 体语句守卫 `if (!__ex_active)` + **VarDecl 声明提升**（decl/uses 作用域割裂防御）+ 循环条件增补（AST 级 `cond && !__ex_active`）；`catch(int e)` 单类型匹配（__ex_ti==1）+ 未捕获上浮（`return 0`/`return;` 按 ret_void）；EH 序言自含发射（EH_FLAG 门控，无需独立 .trvo）。限 int 抛出/捕获（对象=0.0.38）；bare rethrow/catch(...)/多 catch=0.0.36 | ✓ 已验证（e2e 95 项：43 行为 + 12 拒绝 + 7 ADT，双 VM） |
 | 0.0.36 | **异常·多 catch** / rethrow / `catch(...)` | 规划 |
 | 0.0.37 | **异常·RAII 栈展开**：长跳前逐帧 dtor 调用（cleanup 注册链或编译器展开序列——按 0.0.34 决策） | 规划 |
 | 0.0.38 | **异常 × 继承协同**：catch 基类引用匹配派生 throw（typeinfo 链复用） | 规划 |
