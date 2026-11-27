@@ -194,7 +194,7 @@ class Sema:
                 self.canon_ty(meth.ret, ns)
                 for (pty, _pn) in meth.params:
                     self.canon_ty(pty, ns)
-                for ss in meth.body:
+                for ss in (meth.body or []):   # 纯虚声明无体
                     self.canon_stmt(ss, ns)
             for ctor in cd.ctors:
                 for (pty, _pn) in ctor.params:
@@ -250,6 +250,24 @@ class Sema:
                 meth.mname = mn2
             for ctor in cd.ctors:
                 self.check_defaults(ctor)
+
+    def chain_impl(self, ckey, slot):
+        """链上查找槽 impl——body None（纯虚声明）不算 impl。"""
+        c = ckey
+        while c:
+            for m in self.classes[c].methods:
+                if m.name == slot and m.body is not None:
+                    return m
+            c = self.classes[c].base
+        return None
+
+    def is_abstract(self, ckey):
+        """任一虚槽链上无 impl → 抽象类。"""
+        info = self.classes[ckey]
+        for slot in info.vslots:
+            if self.chain_impl(ckey, slot) is None:
+                return True
+        return False
 
     def find_member(self, cname, name):
         r = self.find_member_owner(cname, name)
@@ -390,7 +408,8 @@ class Sema:
             for ctor in cd.ctors:
                 rewrite_implicit_this(ctor.body, visible)
             for meth in cd.methods:
-                rewrite_implicit_this(meth.body, visible)
+                if meth.body is not None:
+                    rewrite_implicit_this(meth.body, visible)
             if self.classes[cd.key].dtor:
                 rewrite_implicit_this(self.classes[cd.key].dtor.body, visible)
             for ctor in cd.ctors:
@@ -413,7 +432,8 @@ class Sema:
                 sc = Scope(self.gscope)
                 for (pty, pn) in meth.params:
                     sc.declare(pn, pty)   # 0.0.21 指针形参放行
-                self.check_stmts(meth.body, sc, meth.is_const)
+                if meth.body is not None:      # 纯虚声明无体
+                    self.check_stmts(meth.body, sc, meth.is_const)
             if self.classes[cd.key].dtor:
                 self.cur_method = None
                 sc = Scope(self.gscope)
@@ -437,7 +457,8 @@ class Sema:
             for ctor in cd.ctors:
                 self._mat_body(ctor.body)
             for meth in cd.methods:
-                self._mat_body(meth.body)
+                if meth.body is not None:
+                    self._mat_body(meth.body)
             if self.classes[cd.key].dtor:
                 self._mat_body(self.classes[cd.key].dtor.body)
         for f in self.funcs_list:
@@ -473,6 +494,10 @@ class Sema:
             ckey = self.resolve_class_name(s.cls, self.cur_ns)
             if ckey is None:
                 raise SemaError("E0", f"类 {s.cls} 未定义")
+            if self.is_abstract(ckey):
+                raise SemaError("E0",
+                                f"抽象类 {ckey} 不可实例化"
+                                f"（含未覆盖的纯虚函数）")
             s.cls = ckey
             hits = []
             for c in self.classes[s.cls].ctors:
@@ -628,6 +653,10 @@ class Sema:
             ckey = self.resolve_class_name(e.cls, self.cur_ns)
             if ckey is None:
                 raise SemaError("E0", f"类 {e.cls} 未定义")
+            if self.is_abstract(ckey):
+                raise SemaError("E0",
+                                f"抽象类 {ckey} 不可实例化"
+                                f"（含未覆盖的纯虚函数）")
             e.cls = ckey
             hits = []
             for c in self.classes[ckey].ctors:

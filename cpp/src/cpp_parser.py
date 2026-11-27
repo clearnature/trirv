@@ -326,8 +326,23 @@ class Parser:
                 self.expect("PUNCT", ":")
             elif t[0] == "KW" and t[1] == "virtual":
                 self.next()                    # 0.0.24：虚函数标记
-                md = self.methoddef()
+                ty = self.parse_type()
+                nm = self.expect("ID")[1]
+                self.expect("PUNCT", "(")
+                params, defaults = self.parse_params()
+                self.expect("PUNCT", ")")
+                is_const = bool(self.accept("KW", "const"))
+                md = MethodDecl(nm, ty, params, is_const, None)
+                md.defaults = defaults
                 md.is_virtual = True
+                md.is_pure = False
+                if self.accept("PUNCT", "="):   # 0.0.27：纯虚 = 0（无体）
+                    if self.expect("NUM")[1] != "0":
+                        raise ParseError(f"L{t[2]}: 纯虚声明限 = 0")
+                    md.is_pure = True
+                    self.expect("PUNCT", ";")
+                else:
+                    md.body = self.block()
                 cd.methods.append(md)
             elif t[0] == "KW" and t[1] == "static":
                 self.next()

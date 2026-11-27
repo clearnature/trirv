@@ -184,7 +184,7 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.24 | **虚函数 vtable 预研**：探针矩阵（fn-ptr 间接调用/赋槽/void* 槽/前向声明死路）+ virtual 解析/is_virtual/vslots 槽序/override 遮蔽/隐式虚继承入册 + 虚调用暂 E0（详见 docs/VIRTUAL-VTABLE-PREFLIGHT.md） | ✓ 预研完成 |
 | 0.0.25 | **trirv_cc pointee 缓冲覆写修复**（v3 零开销：eval 后 pointee 与 member_find 相邻，bt=struct 表持有串；golden 165.9s≈基线） | ✓ 已验证 |
 | 0.0.26 | **虚函数切片落地（四根因连环修）**：①pointee 覆写 ②共享槽布局（vtbl 槽归根类子对象位 0，上转型零调整）③类型套用拆链 `(*(struct Root_v **)recv)->slot(…)` ④发射序修复（方法先于 ctor——fn-ptr 前向引用=地址 0）。test24 四形态（指针虚分派/describe 二级分派/基指针 upcast/override 槽位复用）=59 双 VM | ✓ 已验证（e2e 57 项） |
-| 0.0.27 | **纯虚函数/抽象类**：`= 0` 语法 + 槽=NULL + 纯虚调用运行期 abort（__cxa_pure_virtual 形态）+ 抽象类实例化 sema E0 | 规划 |
+| 0.0.27 | **纯虚函数/抽象类**（TDD：test27 先红后绿）：`= 0` 解析（无体 MethodDecl）；纯虚槽照常占 vtbl 位（签名取声明）但 ctor 不赋值（NULL）+ 纯虚声明不发射 C 函数；抽象类实例化（new/栈对象）sema E0——合法程序 NULL 槽不可达（C++ 法）；override 后全槽赋派生 impl 具体化 | ✓ 已验证（e2e 59 项：30 行为 + 2 拒绝 + 7 ADT，双 VM） |
 | 0.0.28 | **访问控制强制**：private/protected sema 实查（违反=E0）+ protected 继承成员可见性链（friend 真语义随本版评估） | 规划 |
 | 0.0.29 | **拷贝构造/拷贝赋值**：隐式逐字复制（成员级）+ 用户定义 `X(const X&)`/`operator=` | 规划 |
 | 0.0.30 | **operator new/delete**（类专属分配器）+ explicit 单参 ctor 禁隐式转换 | 规划 |

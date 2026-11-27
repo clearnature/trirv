@@ -117,6 +117,9 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         slots = []
         for slot in info.vslots:
             m = find_slot_impl(cd, info, slot, classes_meta)
+            if m is None:
+                # 纯虚槽：签名取声明（任意层含 body=None 的声明）
+                m = find_slot_decl(cd, info, slot, classes_meta)
             rtxt = render_ret(m.ret)
             ps = ["void *slf"] + \
                  [decl_param(p, n) for (p, n) in m.params]
@@ -183,6 +186,8 @@ def lower_ctors(cd, classes_meta=None):
             for slot in classes_meta[cd.key].vslots:
                 m = find_slot_impl(cd, classes_meta[cd.key], slot,
                                    classes_meta)
+                if m is None:
+                    continue                 # 纯虚槽=NULL（抽象类不可实例化保证不可达）
                 vset.append(f"{cname}_vt.{slot} = {m.mname};")
         for (tgt, args) in ctor.inits:
             rargs = ", ".join(expr(a, {"value"}, scope) for a in args)
@@ -222,8 +227,8 @@ def _root_of(cname, classes_meta):
     return c
 
 
-def find_slot_impl(cd, info, slot, classes_meta):
-    """槽 impl：本类 override → 本类方法；否则沿基类链找。"""
+def find_slot_decl(cd, info, slot, classes_meta):
+    """槽声明（含 body=None 纯虚）——vtbl 签名发射用。"""
     for m in cd.methods:
         if m.name == slot:
             return m
@@ -233,6 +238,25 @@ def find_slot_impl(cd, info, slot, classes_meta):
         if bi:
             for m in bi.methods:
                 if m.name == slot:
+                    return m
+            c = bi.base
+        else:
+            break
+    return None
+
+
+def find_slot_impl(cd, info, slot, classes_meta):
+    """槽 impl：本类 override → 本类方法；否则沿基类链找。
+    body None（纯虚声明）不算 impl（0.0.27）。"""
+    for m in cd.methods:
+        if m.name == slot and m.body is not None:
+            return m
+    c = info.base
+    while c:
+        bi = classes_meta.get(c)
+        if bi:
+            for m in bi.methods:
+                if m.name == slot and m.body is not None:
                     return m
             c = bi.base
         else:
@@ -254,6 +278,8 @@ def lower_dtor(cd, dt):
 def lower_methods(cd):
     out = []
     for meth in cd.methods:
+        if meth.body is None:
+            continue                         # 纯虚声明：无 C 函数可发射
         cname = flat(getattr(cd, "key", cd.name))
         if getattr(meth, "is_static", False):
             params = [decl_param(p, n) for (p, n) in meth.params]
