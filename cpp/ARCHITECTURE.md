@@ -181,13 +181,29 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.21 | **前向声明 + 指针成员/形参解锁**：`class B;`（不完整类型，注册期 incomplete 标记+完整定义填充）→ `B* p` 成员（decl_class 成员类型渲染）+ `f(B* q)` 指针形参（0.0.15 守卫解除）+ `&lvalue` 一元取址（指针实参面，&lvalue→TPtr）+ 指针成员穿透 `peer->get()`（member_obj/recv_expr/form_is_ptr 三通道）；类型渲染 type_c TPtr `struct B *` | ✓ 已验证（e2e 51 项：23 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.22 | **嵌套类 + friend no-op**：`class Outer { class Inner {…}; }`——键 `Outer::Inner`（ns 机制同构：限定键/组件 mangle `_ZN5Outer5Inner3getEv`/扁平结构体 `Outer_Inner` 全复用）+ 外层体内裸名可见（resolve 回退 cur_cls 键）+ friend 解析为语义 no-op（子集无访问控制强制，诚实注明） | ✓ 已验证（e2e 53 项：25 行为 + 1 N8 + 7 ADT，双 VM） |
 | 0.0.23 | **指针/算子面收尾**：一元 `*` 解引用（读+写穿——对象左值，结构体赋值通道；int 语义写=非法 C++ 由混算 E0 拦）+ 算子表扩 operator-（mi）/<（lt）/>（gt）/!=（ne） | ✓ 已验证（e2e 55 项：27 行为 + 1 N8 + 7 ADT，双 VM） |
-| 0.0.24 | **虚函数 vtable 预研（增量=研究结论+诚实 E0）**：探针矩阵——fn-ptr 间接调用 ✓/主函数内赋槽 ✓/`void *slf` 槽+vtbl 前置发射 ✓/**函数内槽赋值 flaky**（p24g✗ p24h✓，边界待查）/`struct X;` 前向声明 ✗（vtbl 首成员布局死路→void* 槽方案）/全局 fn 地址初始化 ✗（→ctor 运行时赋槽）。**裁定**：vtable 切片设计就绪（槽序=base 先序+override 保位+隐式虚），解锁前置=trirv_cc 函数内 fn-ptr 槽赋值修复（0.0.25）；virtual 调用暂 E0（要么对、要么报错），virtual 解析/is_virtual/vslots 槽序已入 sema | ✓ 预研完成（e2e 57 项：27 行为 + 2 拒绝 + 7 ADT，双 VM） |
-| 0.0.25 | **trirv_cc pointee 缓冲覆写修复**：双箭头 `o->w->q` unknown member 实证 → 根因=pointee() 单一 static 缓冲被内层 eval 覆写 → **求值先行重排**（eval 先、pointee→member_find 相邻，零分配；strdup 快照版 2 倍编译期开销已弃，golden 38/0 @376s）。虚函数切片仍挂：ctor 赋槽不持久（t24diag 全零位图，见 VIRTUAL-VTABLE-PREFLIGHT.md）→ 0.0.26 | ✓ 已验证（e2e 57 项不变，test24 保持拒绝契约） |
-| **0.0.26** | **+ trirv_cc ctor store 持久性排查（t24diag 全零位图）→ 虚函数切片落地** | **下一个** |
-| 0.0.16–0.0.50 | 类：static 成员 / 友元 / 嵌套类 / 前向声明 | |
-| 0.0.51–0.0.80 | 模板：函数模板 → 类模板 → 按需实例化 | |
-| 0.0.81–0.0.100 | 虚函数 + vtable + 纯虚/抽象类 | |
-| **0.1.0** | 多继承（不含虚继承） | 里程碑 |
+| 0.0.24 | **虚函数 vtable 预研**：探针矩阵（fn-ptr 间接调用/赋槽/void* 槽/前向声明死路）+ virtual 解析/is_virtual/vslots 槽序/override 遮蔽/隐式虚继承入册 + 虚调用暂 E0（详见 docs/VIRTUAL-VTABLE-PREFLIGHT.md） | ✓ 预研完成 |
+| 0.0.25 | **trirv_cc pointee 缓冲覆写修复**（v3 零开销：eval 后 pointee 与 member_find 相邻，bt=struct 表持有串；golden 165.9s≈基线） | ✓ 已验证 |
+| 0.0.26 | **虚函数切片落地（四根因连环修）**：①pointee 覆写 ②共享槽布局（vtbl 槽归根类子对象位 0，上转型零调整）③类型套用拆链 `(*(struct Root_v **)recv)->slot(…)` ④发射序修复（方法先于 ctor——fn-ptr 前向引用=地址 0）。test24 四形态（指针虚分派/describe 二级分派/基指针 upcast/override 槽位复用）=59 双 VM | ✓ 已验证（e2e 57 项） |
+| 0.0.27 | **纯虚函数/抽象类**：`= 0` 语法 + 槽=NULL + 纯虚调用运行期 abort（__cxa_pure_virtual 形态）+ 抽象类实例化 sema E0 | 规划 |
+| 0.0.28 | **访问控制强制**：private/protected sema 实查（违反=E0）+ protected 继承成员可见性链（friend 真语义随本版评估） | 规划 |
+| 0.0.29 | **拷贝构造/拷贝赋值**：隐式逐字复制（成员级）+ 用户定义 `X(const X&)`/`operator=` | 规划 |
+| 0.0.30 | **operator new/delete**（类专属分配器）+ explicit 单参 ctor 禁隐式转换 | 规划 |
+| 0.0.31 | **命名 cast 糖**：static_cast/reinterpret_cast/const_cast → C cast 直发（语义检查=sema） | 规划 |
+| 0.0.32 | **RTTI·typeinfo**：vtbl 扩展 `__ti` 首槽（类型名串指针）+ `typeid(对象/类型)`（指针同一性比较） | 规划 |
+| 0.0.33 | **RTTI·dynamic_cast**：单继承上行/下行（typeinfo 链走查 + 偏移算术）；下行失败→0 | 规划 |
+| 0.0.34 | **异常探针+决策**：setjmp/longjmp 支持（trirv_cc/musl_tri）vs 表驱动 unwinding；cpprt_tri 运行时设计文档 | 规划 |
+| 0.0.35 | **异常·throw/catch 基础**：cpprt_tri（堆抛出对象+类型标签）+ try/catch 单类型匹配（无展开） | 规划 |
+| 0.0.36 | **异常·多 catch** / rethrow / `catch(...)` | 规划 |
+| 0.0.37 | **异常·RAII 栈展开**：长跳前逐帧 dtor 调用（cleanup 注册链或编译器展开序列——按 0.0.34 决策） | 规划 |
+| 0.0.38 | **异常 × 继承协同**：catch 基类引用匹配派生 throw（typeinfo 链复用） | 规划 |
+| 0.0.39 | **模板·函数模板**：单类型参数按需实例化（单态化） | 规划 |
+| 0.0.40 | **模板·函数模板多参数** + 显式模板实参 | 规划 |
+| 0.0.41 | **模板·类模板**（单参数）+ 成员函数外联定义 | 规划 |
+| 0.0.42 | **模板·类模板多参数** + 默认模板参数 + 全特化 | 规划 |
+| 0.0.43 | **多继承·布局**：base 偏移表 + this 调整（per-base vtable） | 规划 |
+| 0.0.44 | **多继承·分派**：多继承虚函数 + dynamic_cast/typeinfo 多基面 | 规划 |
+| **0.1.0** | **完整子集里程碑**：多继承落地 + 全带集成回归（虚基类/菱形继承=0.2.0+） | 里程碑 |
+| 0.1.x | **C 移植**：五层 .c/.h（≤300 行/文件）——Python 原型冻结为规格，逐层直译 | 0.1.0 后启动 |
 
 ## 七、验证策略
 
@@ -201,12 +217,12 @@ _ZN1XC2Ev       → X::X() base ctor
 | 特性 | 理由 |
 |---|---|
 | C++23 全集 | 人年级工程 |
-| 模板元编程（TMP） | 图灵完备子语言，不必要 |
-| 异常（EH/landing pad） | 复杂度/体积不可控 |
-| RTTI/typeid | 依赖 EH |
-| 多继承虚继承 | ABI 复杂度爆炸 |
-| operator overloading 全集 | 限算术/比较即可 |
+| 模板元编程（TMP）/变参模板/概念 | 图灵完备子语言，不必要 |
+| ~~异常~~ / ~~RTTI~~ | **2026-11-28 拍板废止——纳入范围**（0.0.32–0.0.38 带；困难已解决：vtable/malloc/dtor/全局面全部就位） |
+| 多继承虚继承（菱形） | ABI 复杂度爆炸（0.2.0+ 再评估） |
+| operator overloading 全集 | 限算术/比较即可（operator[]/()/-> 按需评估） |
 | STL 兼容 | 用三值原生数据结构替代 |
+| 协程/模块/多线程/freestanding 外运行时 | 与 TriRV 定位冲突 |
 
 ## 九、与 trirv_cc 的关系
 
