@@ -13,7 +13,7 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (New, DeleteStmt, DtorDecl, CopyInit, Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
@@ -872,6 +872,32 @@ class Sema:
                 self.resolve_binop(e, sc, is_const)
             else:
                 e.ty, e.lval = tval("int"), False
+        elif isinstance(e, NamedCast):
+            ut = self.check_expr(e.expr, sc, is_const)
+            tt = e.ty
+            if e.kind == "dynamic_cast":
+                raise SemaError("E0",
+                                "dynamic_cast=0.0.33 RTTI 带（typeinfo 链）")
+            ub = ut.pointee if ut.kind == "ref" else ut
+            num = ("int", "char", "bool")
+            if e.kind == "static_cast":
+                if not ((ub.kind in num and tt.kind in num)
+                        or (ub.kind == "ptr" and tt.kind == "ptr")):
+                    from cpp_types import type_name as _tn3
+                    raise SemaError("E0",
+                                    f"static_cast {_tn3(ub)}→{_tn3(tt)} 子集外"
+                                    f"（ptr↔num 用 reinterpret_cast）")
+            elif e.kind == "reinterpret_cast":
+                if ub.kind in num and tt.kind in num:
+                    raise SemaError("E0",
+                                    "数值↔数值用 static_cast"
+                                    "（reinterpret 限 ptr 面）")
+            elif e.kind == "const_cast":
+                if tt.kind != ub.kind or (tt.kind == "ptr"
+                                          and tt.pointee.kind != ub.pointee.kind):
+                    raise SemaError("E0",
+                                    "const_cast 仅限 const 性变更")
+            e.ty, e.lval = tt, False
         elif isinstance(e, Un):
             ut = self.check_expr(e.e, sc, is_const)
             if e.op == "&":

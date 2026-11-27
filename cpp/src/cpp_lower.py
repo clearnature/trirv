@@ -15,7 +15,7 @@
 scope 约定（降级期小符号表）：形参/局部名 → Type；元键：
   __cls__ 当前类名 / __const__ 方法 const 性 / __recv_owner__ 接收者声明类
 """
-from cpp_parser import (New, DeleteStmt, CtorDecl, CopyInit, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
+from cpp_parser import (New, DeleteStmt, CtorDecl, CopyInit, NamedCast, Num, StrLit, Id, This, Member, MethodCall, FreeCall, Bin, Un,
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
@@ -26,6 +26,8 @@ BASE_KEY = "__base"
 
 def has_call(e):
     """AST 侧调用检测（物化临时量两步发射判定）。"""
+    if isinstance(e, NamedCast):
+        return has_call(e.expr)             # 内层调用 → 两步发射
     if isinstance(e, New):
         return getattr(e, "sig", None) is not None
     if isinstance(e, (MethodCall, FreeCall)):
@@ -420,8 +422,12 @@ def _stmt(s, scope, is_const):
                 rhs = expr(ie, {"ref"}, scope)          # 引用转发指针本体
                 return f"{c}{pt} *{s.name} = {rhs};"
             return f"{c}{pt} *{s.name} = &({expr(ie, {'value'}, scope)});"
-        base = type_name(s.ty)
-        cpre = "const " if s.ty.is_const else ""
+        if isinstance(s.ty, TPtr):
+            base = type_c(s.ty)             # 0.0.31：指针形完整渲染（const int *)
+            cpre = ""
+        else:
+            base = type_name(s.ty)
+            cpre = "const " if s.ty.is_const else ""
         if isinstance(s.ty, TPtr) and isinstance(s.init, New):
             # Box* p = new Box(args);（§四 规划行：malloc 单声明 + ctor 后句）
             cf = flat(s.init.cls)
@@ -516,6 +522,9 @@ def expr(e, ctx, scope):
             return flat(getattr(e, "owner")) + "_" + e.name   # 静态成员=全局
         sep = "->" if form_is_ptr(form, e.obj, scope) else "."
         return f"{form}{sep}{e.name}"
+    if isinstance(e, NamedCast):
+        # 0.0.31 命名 cast → C cast 直发（sema 已定边界）
+        return f"({type_c(e.ty)})({expr(e.expr, {'value'}, scope)})"
     if isinstance(e, New):
         raise AssertionError("lower: 裸 New 未经物化改写（sema/_mat 通道缺失）")
     if isinstance(e, (MethodCall, FreeCall)):

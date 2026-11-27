@@ -9,7 +9,8 @@ KEYWORDS = {
     "int", "char", "void", "bool", "const", "unsigned", "static",
     "return", "if", "else", "while", "for", "new", "delete", "this",
     "namespace", "template", "typename", "try", "catch", "throw", "extern",
-    "explicit",
+    "explicit", "static_cast", "dynamic_cast", "reinterpret_cast",
+    "const_cast",
     "true", "false", "nullptr", "enum", "operator", "friend",
 }
 

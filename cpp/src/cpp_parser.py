@@ -109,6 +109,13 @@ class CopyInit:
         self.cls, self.var, self.init = cls, var, init
 
 
+class NamedCast:
+    """static_cast<T>(e) 等（0.0.31）——C cast 直发，sema 定边界。"""
+
+    def __init__(self, kind, ty, expr):
+        self.kind, self.ty, self.expr = kind, ty, expr
+
+
 class Bin:
     def __init__(self, op, l, r):
         self.op, self.l, self.r = op, l, r
@@ -611,8 +618,8 @@ class Parser:
             return DeleteStmt(e)
         if t[0] == "KW" and t[1] == "for":
             return self.forstmt()
-        if t[0] == "KW" and (t[1] == "const" or t[1] in ("int", "char")):
-            ty = self.parse_type()   # const int& x / int& x / const int x / int x
+        if t[0] == "KW" and (t[1] == "const" or t[1] in ("int", "char", "void")):
+            ty = self.parse_type()   # const int& x / int& x / void* p / int x
             nm = self.expect("ID")[1]
             init = None
             if self.accept("PUNCT", "="):
@@ -763,6 +770,16 @@ class Parser:
                 self.expect("PUNCT", ")")
                 return FreeCall(nm, args)
             return Id(nm)
+        if t[0] == "KW" and t[1] in ("static_cast", "reinterpret_cast",
+                                     "const_cast", "dynamic_cast"):
+            kind = t[1]                       # 0.0.31 命名 cast
+            self.expect("PUNCT", "<")
+            ty = self.parse_type()
+            self.expect("PUNCT", ">")
+            self.expect("PUNCT", "(")
+            e = self.expr()
+            self.expect("PUNCT", ")")
+            return NamedCast(kind, ty, e)
         if t[0] == "KW" and t[1] == "this":
             return This()
         if t[0] == "KW" and t[1] == "new":
