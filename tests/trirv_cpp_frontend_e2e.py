@@ -68,6 +68,8 @@ BEHAVIOR = [
     ("test30_newdel.cpp", 42),       # 需链 libc——0.0.30 类专属分配器+explicit
     ("test31_casts.cpp", 177),       # 需链 libc——0.0.31 命名 cast（Phase A 收官）
     ("test32_typeid.cpp", 13),       # 需链 libc——0.0.32 RTTI typeinfo+typeid
+    ("test31c_dynamic.cpp", 0),      # 需链无——0.0.33 落地后转正：dynamic_cast 零对象→0
+    ("test33_dyncast.cpp", 44),      # 需链 libc——0.0.33 dynamic_cast
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -79,8 +81,8 @@ REJECT = [
     ("test29b_mismatch.cpp", "拷贝初始化"),       # 0.0.29：拷贝初始化类型不匹配
     ("test30b_explicit.cpp", "explicit"),         # 0.0.30：explicit 禁隐式转换
     ("test31b_static_int_ptr.cpp", "reinterpret_cast"),  # 0.0.31：int→指针指向 reinterpret
-    ("test31c_dynamic.cpp", "dynamic_cast"),      # 0.0.31：RTTI=0.0.33 带
     ("test32b_operand.cpp", "typeid"),            # 0.0.32：typeid 基本型操作数
+    ("test33b_unrelated.cpp", "无关类型"),        # 0.0.33：dynamic_cast 无关类型
 ]
 
 os.makedirs(TMP, exist_ok=True)
@@ -91,8 +93,8 @@ LIBC_SRC = os.path.join(ROOT, "cc", "trirv_libc.c")
 LIBC_TVO = os.path.join(TMP, "trirv_libc.trvo")
 _needs_libc = any(f in ("test15_new.cpp", "test19_dtor.cpp",
                         "test23_ops_ptr.cpp", "test24_virtual.cpp",
-                        "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp",
-                        "test32_typeid.cpp") for f, _w in BEHAVIOR)
+                        "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp",
+                        "test31c_dynamic.cpp", "test33_dyncast.cpp") for f, _w in BEHAVIOR)
 if _needs_libc and not os.path.exists(LIBC_TVO):
     r = subprocess.run([CC, LIBC_SRC, LIBC_TVO], capture_output=True, text=True)
     assert r.returncode == 0, f"libc trvo 构建失败: {r.stderr[:120]}"
@@ -107,7 +109,7 @@ for fn, want in BEHAVIOR:
     if r.returncode != 0:
         check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
         continue
-    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp") else []),
+    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp", "test31c_dynamic.cpp", "test33_dyncast.cpp") else []),
                        capture_output=True, text=True)
     if r.returncode != 0:
         check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")

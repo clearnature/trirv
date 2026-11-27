@@ -86,6 +86,8 @@ CLASSES_META = [None]      # 当前 TU 类表（虚调用根指针查询用）
 
 def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     CLASSES_META[0] = classes_meta
+    DC_HELPERS[0] = []
+    DC_SEQ[0] = 0
     for cd in decls:
         for meth in cd.methods:
             if not hasattr(meth, "mname"):
@@ -170,6 +172,12 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     for f in funcs:
         funcs_c.extend(lower_free_func(f))
     main_c = lower_main(main) if main is not None else None
+    # 0.0.33 dc helper 发射（注册发生在 main 降级期间——须后置）
+    for (hname, tis) in (DC_HELPERS[0] or []):
+        ifs = " ".join(f"if (dyn == (void *)&{t}) {{ return obj; }}"
+                       for t in tis)
+        funcs_c.append(f"void *{hname}(void *obj, void *dyn) {{ "
+                       f"if (obj == 0) {{ return 0; }} {ifs} return 0; }}")
     return {"structs": structs, "globals": gdecls_c, "funcs": funcs_c,
             "main": main_c}
 
@@ -244,6 +252,19 @@ def lower_free_func(f):
     scope["__method__"] = f
     body = stmts(f.body, scope, False)
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
+
+
+DC_HELPERS = [None]        # [(hname, target_flat, [acceptable_flat…])]
+DC_SEQ = [0]
+
+
+def _lower_is_ancestor(anc, cur, meta):
+    c = cur
+    while c:
+        if c == anc:
+            return True
+        c = meta[c].base if c in meta else None
+    return False
 
 
 def _root_of(cname, classes_meta):
@@ -532,6 +553,27 @@ def expr(e, ctx, scope):
         sep = "->" if form_is_ptr(form, e.obj, scope) else "."
         return f"{form}{sep}{e.name}"
     if isinstance(e, NamedCast):
+        if getattr(e, "dc_kind", None):
+            # 0.0.33 dynamic_cast：上行/同类直达；下行运行期 ti 检查
+            cf = flat(e.ty.pointee.name)
+            src = expr(e.expr, {"value"}, scope)
+            if e.dc_kind in ("same", "up"):
+                return f"({type_c(e.ty)})({src})"
+            src_cls = e.expr.ty.pointee.name
+            root = _root_of(src_cls, CLASSES_META[0])
+            rf = flat(root)
+            meta = CLASSES_META[0]
+            acc = [e.ty.pointee.name]
+            for k in meta:
+                if k != e.ty.pointee.name and \
+                        _lower_is_ancestor(e.ty.pointee.name, k, meta):
+                    acc.append(k)           # target ∪ descendants
+            DC_SEQ[0] += 1
+            hname = f"__dc_{DC_SEQ[0]}"
+            DC_HELPERS[0] = (DC_HELPERS[0] or []) + \
+                [(hname, [flat(t) + "_ti" for t in acc])]
+            dyn = f"((struct {rf} *){src})->__vtbl->__ti"
+            return f"((struct {cf} *){hname}({src}, {dyn}))"
         # 0.0.31 命名 cast → C cast 直发（sema 已定边界）
         return f"({type_c(e.ty)})({expr(e.expr, {'value'}, scope)})"
     if isinstance(e, New):

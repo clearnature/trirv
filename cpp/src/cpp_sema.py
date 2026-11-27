@@ -315,6 +315,15 @@ class Sema:
             c = self.classes[c].base
         return None
 
+    def _is_ancestor(self, anc, cur):
+        """anc 是否 cur 的祖先（含相等）——0.0.33 dynamic_cast 分型。"""
+        c = cur
+        while c:
+            if c == anc:
+                return True
+            c = self.classes[c].base
+        return False
+
     def is_abstract(self, ckey):
         """任一虚槽链上无 impl → 抽象类。"""
         info = self.classes[ckey]
@@ -905,9 +914,25 @@ class Sema:
         elif isinstance(e, NamedCast):
             ut = self.check_expr(e.expr, sc, is_const)
             tt = e.ty
+            ub = ut.pointee if ut.kind == "ref" else ut
             if e.kind == "dynamic_cast":
-                raise SemaError("E0",
-                                "dynamic_cast=0.0.33 RTTI 带（typeinfo 链）")
+                # 0.0.33：单继承 dynamic_cast（上行直达/下行运行期检查）
+                if tt.kind != "ptr" or tt.pointee.kind != "class":
+                    raise SemaError("E0", "dynamic_cast 目标须为类指针")
+                if ub.kind != "ptr" or ub.pointee.kind != "class":
+                    raise SemaError("E0", "dynamic_cast 源须为类指针")
+                tgt_cls = tt.pointee.name
+                src_cls = ub.pointee.name
+                if tgt_cls == src_cls or self._is_ancestor(tgt_cls, src_cls):
+                    e.dc_kind = "up"          # 上行/同类：恒真直达
+                elif self._is_ancestor(src_cls, tgt_cls):
+                    e.dc_kind = "down"        # 下行：运行期 ti 检查
+                else:
+                    raise SemaError("E0",
+                                    f"dynamic_cast 无关类型："
+                                    f"{src_cls} ↔ {tgt_cls}")
+                e.ty, e.lval = tt, False
+                return e.ty
             ub = ut.pointee if ut.kind == "ref" else ut
             num = ("int", "char", "bool")
             if e.kind == "static_cast":
