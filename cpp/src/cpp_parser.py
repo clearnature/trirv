@@ -359,6 +359,23 @@ class Parser:
             elif t[0] == "KW" and t[1] == "static":
                 self.next()
                 ty = self.parse_type()
+                if self.peek()[0] == "KW" and self.peek()[1] == "operator":
+                    self.next()                   # 0.0.30 显式 static 分配器
+                    nxt = self.next()
+                    if nxt[1] not in ("new", "delete"):
+                        raise ParseError(
+                            f"L{t[2]}: static 后仅支持 operator new/delete")
+                    self.expect("PUNCT", "(")
+                    params, defaults = self.parse_params()
+                    self.expect("PUNCT", ")")
+                    md = MethodDecl("operator " + nxt[1], ty, params,
+                                    False, self.block())
+                    md.defaults = defaults
+                    md.is_static = True
+                    md.is_special = nxt[1]
+                    md.access = acc
+                    cd.methods.append(md)
+                    continue
                 nm = self.expect("ID")[1]
                 if self.peek()[1] == "(":
                     cd.methods.append(self.methoddef_static(nm, ty, acc))
@@ -366,6 +383,9 @@ class Parser:
                     cd.statics.append((nm, ty))
                     cd.static_access[nm] = acc    # 0.0.28
                     self.expect("PUNCT", ";")
+            elif t[0] == "KW" and t[1] == "explicit":
+                self.next()                       # 0.0.30 explicit ctor
+                cd.ctors.append(self.ctordef(name, explicit=True))
             elif t[0] == "ID" and t[1] == name and self.peek(1)[1] == "(":
                 cd.ctors.append(self.ctordef(name))
             elif t[0] == "KW" and t[1] == "int":
@@ -441,7 +461,10 @@ class Parser:
         elif t[0] == "KW" and t[1] == "void":
             ty = tvoid()                      # const void 不可表达
         elif t[0] == "ID":
-            ty = tcls(self.qual_name(t[1]), is_const)   # geo::Box 限定类型
+            if t[1] == "size_t":
+                ty = tint(is_const)             # 0.0.30 size_t=int 别名
+            else:
+                ty = tcls(self.qual_name(t[1]), is_const)   # geo::Box 限定类型
         else:
             raise ParseError(f"L{t[2]}: 不支持的类型 {t[1]!r}")
         if self.accept("PUNCT", "&"):
@@ -466,7 +489,7 @@ class Parser:
                 break
         return ps, dfl
 
-    def ctordef(self, clsname):
+    def ctordef(self, clsname, explicit=False):
         self.expect("ID", clsname)
         self.expect("PUNCT", "(")
         params, defaults = self.parse_params()
@@ -484,6 +507,7 @@ class Parser:
         body = self.block()
         cd = CtorDecl(params, inits, body)
         cd.defaults = defaults
+        cd.is_explicit = explicit             # 0.0.30
         return cd
 
     def methoddef_static(self, nm, ty, acc="public"):
@@ -506,6 +530,8 @@ class Parser:
         t = self.next()
         if t[0] == "PUNCT" and t[1] in ("+", "=", "==", "-", "<", ">", "!="):
             return "operator" + t[1]
+        if t[0] == "KW" and t[1] in ("new", "delete"):
+            return "operator " + t[1]           # 0.0.30 类专属分配器
         raise ParseError(f"L{t[2]}: 操作符 {t[1]!r} 子集外"
                          f"（限算术：= + == - < > !=）")
 
@@ -513,6 +539,19 @@ class Parser:
         ty = self.parse_type()
         if self.peek()[0] == "KW" and self.peek()[1] == "operator":
             nm = self.op_name()
+            if nm in ("operator new", "operator delete"):
+                # 0.0.30 类专属分配器（C++ 法：隐式静态）
+                self.expect("PUNCT", "(")
+                params, defaults = self.parse_params()
+                self.expect("PUNCT", ")")
+                if self.accept("KW", "const"):
+                    raise ParseError(f"operator new/delete 无 const")
+                md = MethodDecl(nm, ty, params, False, self.block())
+                md.defaults = defaults
+                md.is_static = True
+                md.is_special = nm.split()[1]
+                md.access = acc
+                return md
         else:
             nm = self.expect("ID")[1]
         self.expect("PUNCT", "(")

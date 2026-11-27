@@ -65,6 +65,7 @@ BEHAVIOR = [
     ("test27_purevirtual.cpp", 30),  # 需链 libc（new/delete）——0.0.27 纯虚/抽象
     ("test28_access.cpp", 36),       # 0.0.28 访问控制合法面
     ("test29_copy.cpp", 161),        # 0.0.29 拷贝构造/赋值
+    ("test30_newdel.cpp", 42),       # 需链 libc——0.0.30 类专属分配器+explicit
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -74,6 +75,7 @@ REJECT = [
     ("test28c_protected_ext.cpp", "访问控制"),    # 0.0.28：protected 类外访问
     ("test28d_private_derived.cpp", "访问控制"),  # 0.0.28：基类 private 派生不可见
     ("test29b_mismatch.cpp", "拷贝初始化"),       # 0.0.29：拷贝初始化类型不匹配
+    ("test30b_explicit.cpp", "explicit"),         # 0.0.30：explicit 禁隐式转换
 ]
 
 os.makedirs(TMP, exist_ok=True)
@@ -84,7 +86,7 @@ LIBC_SRC = os.path.join(ROOT, "cc", "trirv_libc.c")
 LIBC_TVO = os.path.join(TMP, "trirv_libc.trvo")
 _needs_libc = any(f in ("test15_new.cpp", "test19_dtor.cpp",
                         "test23_ops_ptr.cpp", "test24_virtual.cpp",
-                        "test27_purevirtual.cpp") for f, _w in BEHAVIOR)
+                        "test27_purevirtual.cpp", "test30_newdel.cpp") for f, _w in BEHAVIOR)
 if _needs_libc and not os.path.exists(LIBC_TVO):
     r = subprocess.run([CC, LIBC_SRC, LIBC_TVO], capture_output=True, text=True)
     assert r.returncode == 0, f"libc trvo 构建失败: {r.stderr[:120]}"
@@ -99,7 +101,7 @@ for fn, want in BEHAVIOR:
     if r.returncode != 0:
         check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
         continue
-    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp") else []),
+    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp") else []),
                        capture_output=True, text=True)
     if r.returncode != 0:
         check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")

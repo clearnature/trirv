@@ -238,6 +238,10 @@ class Sema:
                 raise SemaError("E0", f"{cd.key} 多个析构（至多一个）")
             if getattr(cd, "dtors", []):
                 info.dtor = cd.dtors[0]
+            info.has_op_new = any(getattr(m, "is_special", None) == "new"
+                                  for m in cd.methods)
+            info.has_op_delete = any(getattr(m, "is_special", None) == "delete"
+                                     for m in cd.methods)
             # 0.0.24 vtable 槽序：base 槽拷贝 → 本类虚方法（override 保位/新槽追加）
             if info.base:
                 info.vslots = list(self.classes[info.base].vslots)
@@ -249,6 +253,9 @@ class Sema:
                     info.vslots.append(meth.name)
             seen = {}
             for meth in cd.methods:
+                if getattr(meth, "is_special", None):
+                    meth.mname = meth.name          # 约定名由 lower 发射
+                    continue
                 self.check_defaults(meth)
                 mn2 = mangle_method(cd.key, meth)
                 if mn2 in seen:
@@ -377,15 +384,17 @@ class Sema:
         for f in funcs:
             clink = getattr(f, "c_link", False)
             if clink:
-                # C 链接面：引用/对象/默认形参拒绝（ABI=指针，子集先守基本型）
-                if f.ret.kind not in ("int", "char", "bool", "void"):
+                # C 链接面（0.0.30 放宽：指针=合法 C ABI 面——void* 分配器对接）
+                if f.ret.kind not in ("int", "char", "bool", "void") \
+                        and f.ret.kind != "ptr":
                     raise SemaError("E0",
-                                    f'extern "C" {f.name} 返回类型限基本型')
+                                    f'extern "C" {f.name} 返回类型限基本型/指针')
                 for (pty, _pn) in f.params:
-                    if pty.kind not in ("int", "char", "bool"):
+                    if pty.kind not in ("int", "char", "bool") \
+                            and pty.kind != "ptr":
                         raise SemaError("E0",
-                                        f'extern "C" {f.name} 形参限基本型'
-                                        f"（引用/对象=指针 ABI，后续版本）")
+                                        f'extern "C" {f.name} 形参限基本型/指针'
+                                        f"（引用/对象=后续版本）")
             else:
                 for (pty, _pn) in f.params:
                     self.canon_ty(pty, f.ns)
@@ -582,6 +591,24 @@ class Sema:
             rt = self.check_expr(s.init, sc, is_const)
             base_t = rt.pointee if rt.kind == "ref" else rt
             if base_t.kind != "class" or base_t.name != ckey:
+                # 0.0.30 隐式转换：单参非拷贝 ctor（explicit 拒绝）
+                if base_t.kind in ("int", "char"):
+                    hits = [c for c in self.classes[ckey].ctors
+                            if not _is_copy_ctor(c, ckey)
+                            and len(c.params) == 1]
+                    if len(hits) != 1:
+                        raise SemaError("E0",
+                                        f"拷贝初始化无唯一转换构造：{ckey}"
+                                        f" ← {base_t.kind}")
+                    if getattr(hits[0], "is_explicit", False):
+                        raise SemaError("E0",
+                                        f"explicit 构造 {ckey} 禁止隐式转换"
+                                        f"（{ckey} ← {base_t.kind}）")
+                    s.conv = hits[0]
+                    s.user_copy = False
+                    s.ty = tobj(ckey)
+                    sc.declare(s.var, tobj(ckey))
+                    return
                 from cpp_types import type_name as _tn
                 raise SemaError("E0",
                                 f"拷贝初始化类型不匹配：{ckey} ← "
@@ -603,6 +630,9 @@ class Sema:
             s.ty = et
             dinfo = self.classes.get(et.pointee.name)
             s.dtor_key = dinfo.key if (dinfo and dinfo.dtor) else None
+            s.op_delete = dinfo.key \
+                if (dinfo and getattr(dinfo, "has_op_delete", False)) \
+                else None
         elif isinstance(s, ExprStmt):
             self.check_expr(s.expr, sc, is_const)
         elif isinstance(s, Return):

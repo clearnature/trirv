@@ -165,6 +165,14 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
 
 
 # ============ 构造器（this 非 const，基类 cast 无 const 侧） ============
+def _alloc_expr(cf, classes_meta):
+    """new 分配形态：类有 operator new → X_new(sizeof)；否则 malloc。"""
+    info = classes_meta.get(cf) if classes_meta else None
+    if info is not None and getattr(info, "has_op_new", False):
+        return f"{cf}_new(sizeof(struct {cf}))"
+    return f"malloc(sizeof(struct {cf}))"
+
+
 def _ctor_is_copy(ctor, cname):
     """拷贝 ctor 判定（lower 侧镜像 sema._is_copy_ctor）。"""
     if len(ctor.params) != 1:
@@ -292,6 +300,18 @@ def lower_methods(cd):
         if meth.body is None:
             continue                         # 纯虚声明：无 C 函数可发射
         cname = flat(getattr(cd, "key", cd.name))
+        sp = getattr(meth, "is_special", None)
+        if sp:
+            # 0.0.30 类专属分配器：X_new/X_delete（无 this，约定名）
+            params = [decl_param(p, n) for (p, n) in meth.params]
+            scope = {n: p for (p, n) in meth.params}
+            scope["__cls__"], scope["__const__"] = cd.key, False
+            scope["__method__"] = meth
+            body = stmts(meth.body, scope, False)
+            fname = f"{cname}_{'new' if sp == 'new' else 'delete'}"
+            out.append(f"{render_ret(meth.ret)} {fname}({', '.join(params)}) "
+                       f"{{ {' '.join(body)} }}")
+            continue
         if getattr(meth, "is_static", False):
             params = [decl_param(p, n) for (p, n) in meth.params]
         else:
@@ -352,13 +372,13 @@ def hoist_pre(s, scope):
                 c = expr(e, {"value"}, scope)
                 parts.append(f"struct {cf} {tn}; {tn} = {c};")
         elif isinstance(e, New):
-            # 0.0.15：new X(args) → malloc + ctor（§四 规划行落地）
+            # 0.0.15：new X(args) → 分配 + ctor（0.0.30：类专属分配器接管）
             cf = flat(e.cls)
             args = ", ".join(expr(a, {"value"}, scope) for a in e.args)
             ctor = f" {cf}_ctor({tn}{', ' + args if args else ''});" \
                 if getattr(e, "sig", None) is not None else ""
-            parts.append(f"struct {cf} *{tn} = malloc(sizeof(struct {cf}));"
-                         f"{ctor}")
+            parts.append(f"struct {cf} *{tn} = "
+                         f"{_alloc_expr(cf, CLASSES_META[0])};{ctor}")
         elif getattr(e, "ty", None) is not None and e.ty.kind == "ptr":
             # 0.0.26 vtbl 指针提升（虚分派拆链）——正确 v 表指针类型
             rf = flat(type_name(e.ty.pointee))
@@ -383,6 +403,9 @@ def _stmt(s, scope, is_const):
             return f"struct {cf} {s.var}; {cf}_ctor(&{s.var}, {args});"
         rhs = expr(s.init, {"value"}, scope)
         scope[s.var] = s.ty              # 局部类型入 scope
+        if getattr(s, "conv", None) is not None:
+            # 0.0.30 隐式转换（单参非 explicit ctor）
+            return f"struct {cf} {s.var}; {cf}_ctor(&{s.var}, {rhs});"
         if s.user_copy:
             return f"struct {cf} {s.var}; {cf}_ctor_copy(&{s.var}, &({rhs}));"
         return f"struct {cf} {s.var}; {s.var} = {rhs};"   # 隐式=两步结构体赋值
@@ -406,7 +429,7 @@ def _stmt(s, scope, is_const):
             ctor = f" {cf}_ctor({s.name}{', ' + args if args else ''});" \
                 if getattr(s.init, "sig", None) is not None else ""
             return (f"struct {cf} *{s.name} = "
-                    f"malloc(sizeof(struct {cf}));{ctor}")
+                    f"{_alloc_expr(cf, CLASSES_META[0])};{ctor}")
         if s.init is not None:
             c = expr(s.init, {"value"}, scope)
             if has_call(s.init):
@@ -419,11 +442,17 @@ def _stmt(s, scope, is_const):
         call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
         return f"struct {cf} {s.var}; {call}"
     if isinstance(s, DeleteStmt):
-        e = f"free({expr(s.expr, {'value'}, scope)});"
+        c = expr(s.expr, {"value"}, scope)
+        parts = []
         dk = getattr(s, "dtor_key", None)
         if dk:
-            e = f"{flat(dk)}_dtor({expr(s.expr, {'value'}, scope)}); " + e
-        return e
+            parts.append(f"{flat(dk)}_dtor({c});")
+        od = getattr(s, "op_delete", None)
+        if od:
+            parts.append(f"{flat(od)}_delete({c});")   # 0.030 类专属回收
+        else:
+            parts.append(f"free({c});")
+        return " ".join(parts)
     if isinstance(s, ExprStmt):
         return f"{expr(s.expr, {'value'}, scope)};"
     if isinstance(s, Return):
