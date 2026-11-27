@@ -87,6 +87,7 @@ CLASSES_META = [None]      # 当前 TU 类表（虚调用根指针查询用）
 def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
     CLASSES_META[0] = classes_meta
     DC_HELPERS[0] = []
+    CM_HELPERS[0] = []
     DC_SEQ[0] = 0
     for cd in decls:
         for meth in cd.methods:
@@ -132,12 +133,16 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
                       f"{' '.join(slots)} }};")
         vtbl_c.append(f"struct {cname}_v {cname}_vt;")
         vtbl_c.append('char ' + cname + '_ti[] = "' + getattr(info, 'key', cname) + '";')
+    tiid_seq = [0]
     for cd in order:
+        tiid_seq[0] += 1
+        fkey = flat(getattr(cd, "key", cd.name))
         info = classes_meta.get(getattr(cd, "key", cd.name))
         if info is not None and info.vslots:
             continue                         # 有虚类已在 vtbl_c 发射（0.0.32 去重）
-        structs.append('char ' + flat(getattr(cd, "key", cd.name)) + '_ti[] = "'
+        structs.append('char ' + fkey + '_ti[] = "'
                        + getattr(cd, "key", cd.name) + '";')
+        structs.append(f"int {fkey}_tiid = {tiid_seq[0] * 11};")
     structs = vtbl_c + structs
 
     gdecls_c = []
@@ -155,6 +160,12 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         gdecls_c.append("int __ex_rth = 0;")
         eh_prologue.append("void __throw(int v, int ti) { __ex_obj = v; "
                            "__ex_ti = ti; __ex_active = 1; }")
+        gdecls_c.append("char __ex_buf[72];")
+        eh_prologue.append(
+            "void __throw_obj(void *p, int sz, int ti) { int *s = p; "
+            "int *d = (int*)__ex_buf; int i = 0; "
+            "while (i * 9 < sz) { d[i] = s[i]; i = i + 1; } "
+            "__ex_obj = (int)__ex_buf; __ex_ti = ti; __ex_active = 1; }")
     for (cn2, nm2, ty2, i2) in sdefs:
         cf2 = flat(cn2)
         base2 = type_name(ty2)
@@ -188,6 +199,9 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
                        for t in tis)
         funcs_c.append(f"void *{hname}(void *obj, void *dyn) {{ "
                        f"if (obj == 0) {{ return 0; }} {ifs} return 0; }}")
+    for (hname, tis) in (CM_HELPERS[0] or []):
+        ifs = " ".join(f"if (dyn == {t}) {{ return 1; }}" for t in tis)
+        funcs_c.append(f"int {hname}(int dyn) {{ {ifs} return 0; }}")
     return {"structs": structs, "globals": gdecls_c, "funcs": funcs_c,
             "main": main_c}
 
@@ -304,6 +318,7 @@ def lower_free_func(f):
 
 
 TRYD = [0]                 # try 嵌套深度（0.0.36 函数级上浮守卫）
+CM_HELPERS = [None]        # [(hname, [ti_global…])]（0.0.38 类 catch 匹配）
 DC_HELPERS = [None]        # [(hname, target_flat, [acceptable_flat…])]
 DC_SEQ = [0]
 
@@ -522,7 +537,7 @@ def _stmt(s, scope, is_const):
             c = expr(s.init, {"value"}, scope)
             if has_call(s.init):
                 cp = f" if (__ex_active) {{ {_eh_ret(scope)} }}" \
-                    if EH_FLAG[0] else ""
+                    if EH_FLAG[0] and not scope.get("__eh_suppress__") else ""
                 return f"{cpre}{base} {s.name}; {s.name} = {c};{cp}"
             return f"{cpre}{base} {s.name} = {c};"
         return f"{cpre}{base} {s.name};"
@@ -534,13 +549,25 @@ def _stmt(s, scope, is_const):
         if info is not None and info.dtor:
             scope.setdefault("__dtors_so_far__", []).append((s.var, s.cls))
         eh_cp = (f" if (__ex_active) {{ {_eh_ret(scope)} }}"
-                 if TRYD[0] == 0 and EH_FLAG[0] else "")
+                 if TRYD[0] == 0 and EH_FLAG[0]
+                 and not scope.get("__eh_suppress__") else "")
         return f"struct {cf} {s.var}; {call}{eh_cp}"
     if isinstance(s, Throw):
         if s.expr is None:
             # 0.0.36 bare rethrow：rth 标记——arm 清位跳过，active 保持，
             # 同帧外层 catch 接续（无 goto 的结构化等价）
             return "__ex_rth = 1;"
+        if s.expr.ty.kind == "class":
+            # 0.0.38 类对象抛出：拷入 __ex_buf + tiid 值（零指针转换）
+            cf = flat(s.throw_cls)
+            ti_expr = f"{cf}_tiid"
+            if TRYD[0] > 0:
+                return (f"__throw_obj(&({expr(s.expr, {'value'}, scope)}), "
+                        f"sizeof(struct {cf}), {ti_expr});")
+            retz = "return;" if scope.get("__ret_void__") else "return 0;"
+            return (f"__throw_obj(&({expr(s.expr, {'value'}, scope)}), "
+                    f"sizeof(struct {cf}), {ti_expr}); {retz}"
+                    f"  /* throw 即返——本帧展开起点 */")
         ti = 2 if s.expr.ty.kind == "char" else 1
         if TRYD[0] > 0:
             # 同帧 try 体内：设异常即 fall-through——守卫跳过后续语句，
@@ -570,6 +597,7 @@ def _stmt(s, scope, is_const):
             parts.append(f"if (!__ex_active) {{ {stmt(x, scope, is_const)} }}")
         TRYD[0] -= 1                           # arms 属 try 语句层（else 深度判定）
         arms = []
+        cm_needed = []
         for (cty, cvar, cbody) in s.catches:
             if cty is None:
                 # catch(...)：无条件匹配（if(1) 化——bare 块不可接 else）
@@ -577,8 +605,30 @@ def _stmt(s, scope, is_const):
                 arms.append(f"if (1) {{ {body_c} if (!__ex_rth) "
                            f"{{ __ex_active = 0; }} __ex_rth = 0; }}")
                 continue
+            if cty.kind == "ref":
+                # 0.0.38 类引用捕获：__cm_N 匹配（target∪descendants）+
+                # 形参 = (struct X *)__ex_obj（引用→指针，共享槽零调整）
+                cf = flat(cty.pointee.name)
+                DC_SEQ[0] += 1
+                hname = f"__cm_{DC_SEQ[0]}"
+                acc = [flat(cf) + "_tiid"]
+                meta = CLASSES_META[0]
+                for k in meta:
+                    if k != cf and _lower_is_ancestor(cf, k, meta):
+                        acc.append(flat(k) + "_tiid")
+                cm_needed.append((hname, acc))
+                csc = dict(scope)
+                csc["__eh_suppress__"] = True   # catch 体：上浮检查点停用
+                csc[cvar] = tref(cty.pointee)
+                cbody_c = " ".join(stmt(x, csc, is_const) for x in cbody)
+                arms.append(f"if ({hname}(__ex_ti)) {{ "
+                            f"struct {cf} *{cvar} = (struct {cf} *)__ex_obj; "
+                            f"{cbody_c} if (!__ex_rth) {{ __ex_active = 0; }} "
+                            f"__ex_rth = 0; }}")
+                continue
             ti = 2 if cty.kind == "char" else 1
             csc = dict(scope)
+            csc["__eh_suppress__"] = True       # catch 体：上浮检查点停用
             csc[cvar] = TInt() if cty.kind == "int" else TChar()
             cbody_c = " ".join(stmt(x, csc, is_const) for x in cbody)
             arms.append(f"if (__ex_ti == {ti}) {{ int {cvar} = __ex_obj; "
@@ -588,6 +638,8 @@ def _stmt(s, scope, is_const):
         if scope.get("__terminate__") and TRYD[0] == 0:
             chain += " else { return 134; }"   # main 顶层未匹配 = terminate
             #（TRYD>0=有外层 try：fall-through——外层 catch 接续）
+        if cm_needed:
+            CM_HELPERS[0] = (CM_HELPERS[0] or []) + cm_needed   # 0.0.38 flush
         return " ".join(parts) + f"if (__ex_active) {{ {chain} }}"
     if isinstance(s, DeleteStmt):
         c = expr(s.expr, {"value"}, scope)
@@ -603,7 +655,8 @@ def _stmt(s, scope, is_const):
         return " ".join(parts)
     if isinstance(s, ExprStmt):
         c = f"{expr(s.expr, {'value'}, scope)};"
-        if has_call(s.expr) and TRYD[0] == 0 and EH_FLAG[0]:
+        if has_call(s.expr) and TRYD[0] == 0 and EH_FLAG[0] \
+                and not scope.get("__eh_suppress__"):
             c += f" if (__ex_active) {{ {_eh_ret(scope)} }}"   # 0.0.36 函数级上浮（EH 门控）
         return c
     if isinstance(s, Return):

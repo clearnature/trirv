@@ -74,6 +74,7 @@ BEHAVIOR = [
     ("test36_multicatch.cpp", 146),  # 0.0.36 多 catch/rethrow/catch(...)/函数级上浮
     ("test36c_terminate.cpp", 134),  # 0.0.36 main 未捕获 = terminate 134
     ("test37_raii.cpp", 8),          # 需链 libc——0.0.37 RAII 栈展开
+    ("test38_exinherit.cpp", 11),    # 0.0.38 异常×继承（Phase C 收官）
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [

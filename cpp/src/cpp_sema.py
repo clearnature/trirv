@@ -607,10 +607,12 @@ class Sema:
                                     "bare rethrow 须在 catch 内")
                 return                        # 0.0.36 转正（无表达式可查）
             self.check_expr(s.expr, sc, is_const)
-            if s.expr.ty.kind not in ("int", "char"):
+            if s.expr.ty.kind == "class" and getattr(s.expr, "lval", False):
+                s.throw_cls = s.expr.ty.name    # 0.0.38 类对象抛出（左值）
+            elif s.expr.ty.kind not in ("int", "char"):
                 raise SemaError("E0",
-                                f"throw 操作数限 int（得 {s.expr.ty.kind}）"
-                                f"——对象抛出=0.0.38")
+                                f"throw 操作数限 int/char/类左值"
+                                f"（得 {s.expr.ty.kind}）——类右值抛出=E0 子集")
         elif isinstance(s, Try):
             EH_FLAG[0] = True
             self.check_stmts(s.try_body, Scope(sc), is_const)
@@ -619,12 +621,17 @@ class Sema:
                 if cty is None:
                     self.check_stmts(cbody, Scope(sc), is_const)   # catch(...)
                     continue
-                if cty.kind not in ("int", "char"):
+                if cty.kind == "ref" and cty.pointee.kind == "class":
+                    pass                          # 0.0.38 类引用捕获 ✓
+                elif cty.kind not in ("int", "char"):
                     raise SemaError("E0",
-                                    f"catch 类型限 int/char（得 {cty.kind}）"
-                                    f"——对象捕获=0.0.38")
+                                    f"catch 类型限 int/char/类引用"
+                                    f"（得 {cty.kind}）——按值捕获=E0 子集")
                 csc = Scope(sc)
-                csc.declare(cvar, tval(cty.kind))
+                if cty.kind == "ref":
+                    csc.declare(cvar, cty)            # 类引用形参（0.0.38）
+                else:
+                    csc.declare(cvar, tval(cty.kind))
                 self.check_stmts(cbody, csc, is_const)
             CUR_CATCH[0] -= 1
         elif isinstance(s, CopyInit):
