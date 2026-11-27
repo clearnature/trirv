@@ -38,6 +38,8 @@ class ClassInfo:
         self.dtor = None       # DtorDecl（0.0.19）
         self.static_members = {}   # name → Type（0.0.20）
         self.vslots = []           # 虚槽名序（0.0.24，base 先序+override 保位）
+        self.member_access = {}    # name → 访问级（0.0.28）
+        self.static_access = {}    # static 成员访问级（0.0.28）
         self.key = None
 
 
@@ -221,8 +223,12 @@ class Sema:
             for meth in cd.methods:
                 if not hasattr(meth, "is_static"):
                     meth.is_static = False
+                if not hasattr(meth, "access"):
+                    meth.access = "public"    # 0.0.28 默认（旧路径兜底）
             info.methods.extend(cd.methods)
             info.ctors.extend(cd.ctors)
+            info.member_access.update(getattr(cd, "member_access", {}))
+            info.static_access.update(getattr(cd, "static_access", {}))
             for (sn, sty) in getattr(cd, "statics", []):
                 info.static_members[sn] = sty
             if len(getattr(cd, "dtors", [])) > 1:
@@ -250,6 +256,44 @@ class Sema:
                 meth.mname = mn2
             for ctor in cd.ctors:
                 self.check_defaults(ctor)
+
+    def _access_ok(self, owner, level):
+        """0.0.28 访问控制可见性：private=仅 owner 自身方法；protected=
+        owner 链上派生类方法；public=任意。偏差（文档化）：protected 经
+        基指针访问未细分；friend 授权未实现（0.0.22 no-op 延续）；
+        ctor/dtor 访问不强制。"""
+        if level == "public":
+            return True
+        cur = getattr(self.cur_cls, "key", None) \
+            if self.cur_cls is not None else None
+        if cur is None:
+            return False
+        if cur == owner:
+            return True
+        if level == "protected":
+            c = cur
+            while c:
+                if c == owner:
+                    return True
+                c = self.classes[c].base
+        return False
+
+    def _guard_method_access(self, owner, meth):
+        """方法访问守卫（0.0.28）——复用成员守卫通道。"""
+        lvl = getattr(meth, "access", "public")
+        if not self._access_ok(owner, lvl):
+            cn = {"private": "私有", "protected": "受保护"}.get(lvl, lvl)
+            raise SemaError("E0",
+                            f"访问控制：{owner}::{meth.name} 是{cn}方法，"
+                            f"当前语境不可访问")
+
+    def _guard_access(self, owner, name, table):
+        lvl = table.get(name, "public")
+        if not self._access_ok(owner, lvl):
+            cn = {"private": "私有", "protected": "受保护"}.get(lvl, lvl)
+            raise SemaError("E0",
+                            f"访问控制：{owner}::{name} 是{cn}成员，"
+                            f"当前语境不可访问")
 
     def chain_impl(self, ckey, slot):
         """链上查找槽 impl——body None（纯虚声明）不算 impl。"""
@@ -590,9 +634,13 @@ class Sema:
                     if getattr(self.cur_method, "is_static", False):
                         raise SemaError("E0",
                                         f"静态方法引用非静态成员 {e.name}")
+                    self._guard_access(owner, e.name,
+                                       self.classes[owner].member_access)
                     e.ref_kind, e.ty, e.lval, e.owner = "member", mt, True, owner
                 elif shit is not None:
                     mt, owner = shit
+                    self._guard_access(owner, e.name,
+                                       self.classes[owner].static_access)
                     e.ref_kind, e.ty, e.lval, e.owner = "static", mt, True, owner
                 else:
                     raise SemaError("E0", f"未声明标识符 {e.name!r}")
@@ -604,6 +652,8 @@ class Sema:
                 if shit is None:
                     raise SemaError("E0", f"未声明标识符 {e.name!r}")
                 mt, owner = shit
+                self._guard_access(owner, parts2[1],
+                                   self.classes[owner].static_access)
                 e.ref_kind, e.ty, e.lval, e.owner = "static", mt, True, owner
                 e.name = parts2[1]           # 短名（lower 拼全局名用）
             else:
@@ -622,11 +672,15 @@ class Sema:
             shit = self.find_static_owner(ot.name, e.name)
             if hit is None and shit is not None:
                 mt, e.owner = shit
+                self._guard_access(e.owner, e.name,
+                                   self.classes[e.owner].static_access)
                 e.ref_kind, e.ty, e.lval = "static", mt, True
                 return e.ty
             if hit is None:
                 raise SemaError("E0", f"{ot.name} 无成员 {e.name!r}")
             mt, e.owner = hit
+            self._guard_access(e.owner, e.name,
+                               self.classes[e.owner].member_access)
             e.ty, e.lval = mt, True
         elif isinstance(e, MethodCall):
             ot = self.check_expr(e.obj, sc, is_const)
@@ -640,6 +694,7 @@ class Sema:
             if hit is None:
                 raise SemaError("E0", f"{ot.name}.{e.name} 无 {len(e.args)} 参重载")
             meth, e.sig_owner = hit
+            self._guard_method_access(e.sig_owner, meth)   # 0.0.28
             # 0.0.26：cfront 共享槽布局落地——虚调用解锁
             if getattr(meth, "is_static", False):
                 e.static_call = True

@@ -27,6 +27,8 @@ class ClassDecl:
         self.name, self.base = name, base
         self.ns = None             # 所属命名空间（0.0.13）
         self.nested_in = None      # 外层类键（0.0.22 嵌套类）
+        self.member_access = {}    # name → public/private/protected（0.0.28）
+        self.static_access = {}    # static 成员访问级（0.0.28）
         self.members = []          # [(name, Type)]
         self.ctors = []            # [CtorDecl]
         self.dtors = []            # [DtorDecl]（0.0.19，至多一个）
@@ -307,7 +309,8 @@ class Parser:
         return fd
 
     def classdef(self):
-        self.next()                                   # class/struct
+        kind = self.next()[1]                         # class/struct（0.0.28 默认访问级）
+        acc = "private" if kind == "class" else "public"
         name = self.expect("ID")[1]
         base = None
         if self.accept("PUNCT", ":"):
@@ -324,6 +327,7 @@ class Parser:
             if t[0] == "KW" and t[1] in ("public", "private", "protected"):
                 self.next()
                 self.expect("PUNCT", ":")
+                acc = t[1]                            # 0.0.28 访问级切换
             elif t[0] == "KW" and t[1] == "virtual":
                 self.next()                    # 0.0.24：虚函数标记
                 ty = self.parse_type()
@@ -336,6 +340,7 @@ class Parser:
                 md.defaults = defaults
                 md.is_virtual = True
                 md.is_pure = False
+                md.access = acc              # 0.0.28
                 if self.accept("PUNCT", "="):   # 0.0.27：纯虚 = 0（无体）
                     if self.expect("NUM")[1] != "0":
                         raise ParseError(f"L{t[2]}: 纯虚声明限 = 0")
@@ -349,9 +354,10 @@ class Parser:
                 ty = self.parse_type()
                 nm = self.expect("ID")[1]
                 if self.peek()[1] == "(":
-                    cd.methods.append(self.methoddef_static(nm, ty))
+                    cd.methods.append(self.methoddef_static(nm, ty, acc))
                 else:
                     cd.statics.append((nm, ty))
+                    cd.static_access[nm] = acc    # 0.0.28
                     self.expect("PUNCT", ";")
             elif t[0] == "ID" and t[1] == name and self.peek(1)[1] == "(":
                 cd.ctors.append(self.ctordef(name))
@@ -360,21 +366,21 @@ class Parser:
                 if (self.peek(1)[0] == "ID" and self.peek(2)[1] == "(") \
                         or self.peek(1)[1] == "&" \
                         or (self.peek(1)[0] == "KW" and self.peek(1)[1] == "operator"):
-                    cd.methods.append(self.methoddef())
+                    cd.methods.append(self.methoddef(acc))
                 else:
-                    self.memberdecl(cd)
+                    self.memberdecl(cd, acc)
             elif (t[0] == "KW" and t[1] in ("char", "void", "bool", "const")) or \
                     (t[0] == "KW" and t[1] == "operator") or \
                     (t[0] == "ID" and self.peek(1)[1] == "*"):
                 if t[0] == "ID":
-                    self.memberdecl(cd)    # B* p; 指针成员
+                    self.memberdecl(cd, acc)    # B* p; 指针成员
                 else:
-                    cd.methods.append(self.methoddef())
+                    cd.methods.append(self.methoddef(acc))
             elif (t[0] == "ID" and self.peek(1)[0] == "ID" and
                     self.peek(2)[1] == "(") or \
                     (t[0] == "ID" and self.peek(1)[0] == "KW" and
                      self.peek(1)[1] == "operator"):
-                cd.methods.append(self.methoddef())
+                cd.methods.append(self.methoddef(acc))
             elif t[0] == "KW" and t[1] in ("class", "struct"):
                 inner = self.classdef()
                 outer = f"{cd.ns}::{cd.name}" if cd.ns else cd.name
@@ -404,12 +410,13 @@ class Parser:
         self.expect("PUNCT", ";")
         return cd
 
-    def memberdecl(self, cd):
+    def memberdecl(self, cd, acc="public"):
         """成员：int x; / B* p;（指针成员=0.0.21）。"""
         ty = self.parse_type()
         while True:
             nm = self.expect("ID")[1]
             cd.members.append((nm, ty))
+            cd.member_access[nm] = acc        # 0.0.28
             if not self.accept("PUNCT", ","):
                 break
         self.expect("PUNCT", ";")
@@ -472,7 +479,7 @@ class Parser:
         cd.defaults = defaults
         return cd
 
-    def methoddef_static(self, nm, ty):
+    def methoddef_static(self, nm, ty, acc="public"):
         """static int name(params) { body }——无 this（0.0.20）。"""
         self.expect("PUNCT", "(")
         params, defaults = self.parse_params()
@@ -483,6 +490,7 @@ class Parser:
         md = MethodDecl(nm, ty, params, False, body)
         md.defaults = defaults
         md.is_static = True
+        md.access = acc                       # 0.0.28
         return md
 
     def op_name(self):
@@ -494,7 +502,7 @@ class Parser:
         raise ParseError(f"L{t[2]}: 操作符 {t[1]!r} 子集外"
                          f"（限算术：+ == - < > !=）")
 
-    def methoddef(self):
+    def methoddef(self, acc="public"):
         ty = self.parse_type()
         if self.peek()[0] == "KW" and self.peek()[1] == "operator":
             nm = self.op_name()
@@ -508,6 +516,7 @@ class Parser:
         md = MethodDecl(nm, ty, params, is_const, body)
         md.defaults = defaults
         md.is_static = False
+        md.access = acc                       # 0.0.28
         return md
 
     def maindef(self):
