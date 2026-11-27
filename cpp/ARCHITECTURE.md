@@ -193,7 +193,7 @@ _ZN1XC2Ev       → X::X() base ctor
 | 0.0.33 | **RTTI·dynamic_cast**（TDD：test33 先红后绿，Phase B 收官）：上行/同类=直达恒真（共享槽零调整）；下行=运行期 ti 同一性检查（`__dc_N(obj, dyn)` helper——可接受集=target ∪ 编译期枚举 descendants，null 守卫首行，注册表后置发射避开前向引用）；无关类型=编译期 E0（sema 静态可判）；test31c 拒绝契约转正（0.0.33 落地后 dynamic_cast 可用） | ✓ 已验证（e2e 93 项：41 行为 + 11 拒绝 + 7 ADT，双 VM） |
 | 0.0.34 | **异常探针+决策**：setjmp/longjmp 支持（trirv_cc/musl_tri）vs 表驱动 unwinding；cpprt_tri 运行时设计文档 | 规划 |
 | 0.0.35 | **异常·throw/catch 基础**（TDD：test35 先红后绿；方案 C 检查点展开落地——0.0.34 决策）：`throw v` → `__throw_int(v)` **+ 立即 return**（本帧展开起点）；try 体语句守卫 `if (!__ex_active)` + **VarDecl 声明提升**（decl/uses 作用域割裂防御）+ 循环条件增补（AST 级 `cond && !__ex_active`）；`catch(int e)` 单类型匹配（__ex_ti==1）+ 未捕获上浮（`return 0`/`return;` 按 ret_void）；EH 序言自含发射（EH_FLAG 门控，无需独立 .trvo）。限 int 抛出/捕获（对象=0.0.38）；bare rethrow/catch(...)/多 catch=0.0.36 | ✓ 已验证（e2e 95 项：43 行为 + 12 拒绝 + 7 ADT，双 VM） |
-| 0.0.36 | **异常·多 catch** / rethrow / `catch(...)` | 规划 |
+| 0.0.36 | **异常·多 catch / rethrow / catch(...) / 函数级上浮**（TDD：test36 先红后绿）：多 catch=`__ex_ti` 链（int=1/char=2）if/else-if；未匹配 else=**fall-through 无 return**（外层 try catch 接续——0.0.35 的 return 0 会截断外层）；catch arm 清位**后置**（`__ex_rth` 标记条件化——bare rethrow/new throw 替换语义）+ bare rethrow=`__ex_rth=1`（须在 catch 内=CUR_CATCH 计数 E0）；catch(...)=if(1) 化（bare 块不可接 else——trirv_cc 解析实证）；**函数级上浮**=非 try 调用点后 `if (__ex_active) { ret }`（EH_FLAG+TRYD 双门控；main=terminate 134 / 非 main 按签名转发）——0.0.35「沉默继续」偏差消除 | ✓ 已验证（e2e 101 项：47 行为 + 13 拒绝 + 7 ADT，双 VM） |
 | 0.0.37 | **异常·RAII 栈展开**：长跳前逐帧 dtor 调用（cleanup 注册链或编译器展开序列——按 0.0.34 决策） | 规划 |
 | 0.0.38 | **异常 × 继承协同**：catch 基类引用匹配派生 throw（typeinfo 链复用） | 规划 |
 | 0.0.39 | **模板·函数模板**：单类型参数按需实例化（单态化） | 规划 |

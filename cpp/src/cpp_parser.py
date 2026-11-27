@@ -190,6 +190,7 @@ class For:
 BASIC = {"int": "int", "char": "char", "void": "void", "bool": "bool"}
 
 EH_FLAG = [False]           # TU 含 throw/try（0.0.35 序言门控，sema 置位 lower 读）
+CUR_CATCH = [0]             # catch 嵌套深度（0.0.36 bare rethrow 域判定）
 
 
 class Parser:
@@ -641,6 +642,7 @@ class Parser:
                 self.next()
                 self.expect("PUNCT", "(")
                 if self.accept("PUNCT", "..."):
+                    self.expect("PUNCT", ")")
                     catches.append((None, None, self.block()))
                     continue
                 cty = self.parse_type()

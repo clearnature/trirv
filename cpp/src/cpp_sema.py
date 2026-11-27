@@ -13,7 +13,7 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (EH_FLAG, New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Throw, Try, Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (CUR_CATCH, EH_FLAG, New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Throw, Try, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
@@ -592,7 +592,10 @@ class Sema:
         elif isinstance(s, Throw):
             EH_FLAG[0] = True                 # 0.0.35 序言发射门控
             if s.expr is None:
-                raise SemaError("E0", "bare rethrow=0.0.36")
+                if CUR_CATCH[0] == 0:
+                    raise SemaError("E0",
+                                    "bare rethrow 须在 catch 内")
+                return                        # 0.0.36 转正（无表达式可查）
             self.check_expr(s.expr, sc, is_const)
             if s.expr.ty.kind not in ("int", "char"):
                 raise SemaError("E0",
@@ -601,18 +604,19 @@ class Sema:
         elif isinstance(s, Try):
             EH_FLAG[0] = True
             self.check_stmts(s.try_body, Scope(sc), is_const)
-            if len(s.catches) > 1:
-                raise SemaError("E0", "多 catch=0.0.36")
-            (cty, cvar, cbody) = s.catches[0]
-            if cty is None:
-                raise SemaError("E0", "catch(...)=0.0.36")
-            if cty.kind != "int":
-                raise SemaError("E0",
-                                f"catch 类型限 int（得 {cty.kind}）"
-                                f"——对象捕获=0.0.38")
-            csc = Scope(sc)
-            csc.declare(cvar, tval("int"))
-            self.check_stmts(cbody, csc, is_const)
+            CUR_CATCH[0] += 1
+            for (cty, cvar, cbody) in s.catches:
+                if cty is None:
+                    self.check_stmts(cbody, Scope(sc), is_const)   # catch(...)
+                    continue
+                if cty.kind not in ("int", "char"):
+                    raise SemaError("E0",
+                                    f"catch 类型限 int/char（得 {cty.kind}）"
+                                    f"——对象捕获=0.0.38")
+                csc = Scope(sc)
+                csc.declare(cvar, tval(cty.kind))
+                self.check_stmts(cbody, csc, is_const)
+            CUR_CATCH[0] -= 1
         elif isinstance(s, CopyInit):
             ckey = self.resolve_class_name(s.cls, self.cur_ns)
             if ckey is None:

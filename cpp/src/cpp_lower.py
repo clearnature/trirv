@@ -19,7 +19,7 @@ from cpp_parser import (New, DeleteStmt, CtorDecl, CopyInit, NamedCast, Throw, T
                         Assign, VarDecl, CtorStmt, ExprStmt, Return, If,
                         While, For, BlockStmt)
 from cpp_mangle import mangle_method
-from cpp_types import tref, type_name, TRef, TPtr, TInt
+from cpp_types import tref, type_name, TRef, TPtr, TInt, TChar
 
 BASE_KEY = "__base"
 
@@ -152,8 +152,9 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         gdecls_c.append("int __ex_active = 0;")
         gdecls_c.append("int __ex_obj = 0;")
         gdecls_c.append("int __ex_ti = 0;")
-        eh_prologue.append("void __throw_int(int v) { __ex_obj = v; "
-                           "__ex_ti = 1; __ex_active = 1; }")
+        gdecls_c.append("int __ex_rth = 0;")
+        eh_prologue.append("void __throw(int v, int ti) { __ex_obj = v; "
+                           "__ex_ti = ti; __ex_active = 1; }")
     for (cn2, nm2, ty2, i2) in sdefs:
         cf2 = flat(cn2)
         base2 = type_name(ty2)
@@ -196,6 +197,13 @@ def _alloc_expr(cf, classes_meta):
     if info is not None and getattr(info, "has_op_new", False):
         return f"{cf}_new(sizeof(struct {cf}))"
     return f"malloc(sizeof(struct {cf}))"
+
+
+def _eh_ret(scope):
+    """函数级上浮返回面：main=terminate 134 / 非 main 按签名。"""
+    if scope.get("__terminate__"):
+        return "return 134;"
+    return "return;" if scope.get("__ret_void__") else "return 0;"
 
 
 def aug_try_body(body):
@@ -287,6 +295,7 @@ def lower_free_func(f):
     return [f"{sig} {{ {' '.join(body)} }}" if body else f"{sig} {{ }}"]
 
 
+TRYD = [0]                 # try 嵌套深度（0.0.36 函数级上浮守卫）
 DC_HELPERS = [None]        # [(hname, target_flat, [acceptable_flat…])]
 DC_SEQ = [0]
 
@@ -503,23 +512,31 @@ def _stmt(s, scope, is_const):
         if s.init is not None:
             c = expr(s.init, {"value"}, scope)
             if has_call(s.init):
-                return f"{cpre}{base} {s.name}; {s.name} = {c};"
+                cp = f" if (__ex_active) {{ {_eh_ret(scope)} }}" \
+                    if EH_FLAG[0] else ""
+                return f"{cpre}{base} {s.name}; {s.name} = {c};{cp}"
             return f"{cpre}{base} {s.name} = {c};"
         return f"{cpre}{base} {s.name};"
     if isinstance(s, CtorStmt):
         cf = flat(s.cls)
         args = ", ".join(expr(a, {"value"}, scope) for a in s.args)
         call = f"{cf}_ctor(&{s.var}{', ' + args if args else ''});"
-        return f"struct {cf} {s.var}; {call}"
+        eh_cp = (f" if (__ex_active) {{ {_eh_ret(scope)} }}"
+                 if TRYD[0] == 0 and EH_FLAG[0] else "")
+        return f"struct {cf} {s.var}; {call}{eh_cp}"
     if isinstance(s, Throw):
         if s.expr is None:
-            return "throw;"                    # 0.0.36（sema 已拒——防御）
+            # 0.0.36 bare rethrow：rth 标记——arm 清位跳过，active 保持，
+            # 同帧外层 catch 接续（无 goto 的结构化等价）
+            return "__ex_rth = 1;"
+        ti = 2 if s.expr.ty.kind == "char" else 1
         retz = "return;" if scope.get("__ret_void__") else "return 0;"
-        return (f"__throw_int({expr(s.expr, {'value'}, scope)}); {retz}"
+        return (f"__throw({expr(s.expr, {'value'}, scope)}, {ti}); {retz}"
                 f"  /* throw 即返——本帧展开起点 */")
     if isinstance(s, Try):
         # 方案 C 检查点展开（docs/EXCEPTION-DESIGN.md）
         aug_try_body(s.try_body)               # 循环条件增补
+        TRYD[0] += 1                           # 体期间：函数级上浮停用
         parts = []
         for x in s.try_body:
             if isinstance(x, VarDecl) and x.init is not None \
@@ -535,15 +552,27 @@ def _stmt(s, scope, is_const):
                 parts.append(stmt(x, scope, is_const))   # 纯声明不守卫
                 continue
             parts.append(f"if (!__ex_active) {{ {stmt(x, scope, is_const)} }}")
-        (cty, cvar, cbody) = s.catches[0]
-        csc = dict(scope)
-        csc[cvar] = TInt()               # catch 形参（int，0.0.35）
-        cbody_c = " ".join(stmt(x, csc, is_const) for x in cbody)
-        ret_c = "return;" if scope.get("__ret_void__") else "return 0;"
-        catch_c = (f"if (__ex_ti == 1) {{ __ex_active = 0; "
-                   f"int {cvar} = __ex_obj; {cbody_c} }} "
-                   f"else {{ {ret_c} }}")
-        return " ".join(parts) + f"if (__ex_active) {{ {catch_c} }}"
+        TRYD[0] -= 1                           # arms 属 try 语句层（else 深度判定）
+        arms = []
+        for (cty, cvar, cbody) in s.catches:
+            if cty is None:
+                # catch(...)：无条件匹配（if(1) 化——bare 块不可接 else）
+                body_c = " ".join(stmt(x, scope, is_const) for x in cbody)
+                arms.append(f"if (1) {{ {body_c} if (!__ex_rth) "
+                           f"{{ __ex_active = 0; }} __ex_rth = 0; }}")
+                continue
+            ti = 2 if cty.kind == "char" else 1
+            csc = dict(scope)
+            csc[cvar] = TInt() if cty.kind == "int" else TChar()
+            cbody_c = " ".join(stmt(x, csc, is_const) for x in cbody)
+            arms.append(f"if (__ex_ti == {ti}) {{ int {cvar} = __ex_obj; "
+                        f"{cbody_c} if (!__ex_rth) {{ __ex_active = 0; }} "
+                        f"__ex_rth = 0; }}")
+        chain = " else ".join(arms)
+        if scope.get("__terminate__") and TRYD[0] == 0:
+            chain += " else { return 134; }"   # main 顶层未匹配 = terminate
+            #（TRYD>0=有外层 try：fall-through——外层 catch 接续）
+        return " ".join(parts) + f"if (__ex_active) {{ {chain} }}"
     if isinstance(s, DeleteStmt):
         c = expr(s.expr, {"value"}, scope)
         parts = []
@@ -557,7 +586,10 @@ def _stmt(s, scope, is_const):
             parts.append(f"free({c});")
         return " ".join(parts)
     if isinstance(s, ExprStmt):
-        return f"{expr(s.expr, {'value'}, scope)};"
+        c = f"{expr(s.expr, {'value'}, scope)};"
+        if has_call(s.expr) and TRYD[0] == 0 and EH_FLAG[0]:
+            c += f" if (__ex_active) {{ {_eh_ret(scope)} }}"   # 0.0.36 函数级上浮（EH 门控）
+        return c
     if isinstance(s, Return):
         return ret_stmt(s, scope)
     if isinstance(s, If):
@@ -824,6 +856,6 @@ def recv_expr(o, scope):
 # ============ main ============
 def lower_main(main):
     scope = {"__cls__": None, "__const__": False, "__method__": None,
-             "__ret_void__": False}
+             "__ret_void__": False, "__terminate__": True}
     body = " ".join(stmt(s, scope, False) for s in main)
     return f"int main(void) {{ {body} }}"
