@@ -126,8 +126,16 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
             ps = ["void *slf"] + \
                  [decl_param(p, n) for (p, n) in m.params]
             slots.append(f"{rtxt} (*{slot})({', '.join(ps)});")
-        vtbl_c.append(f"struct {cname}_v {{ {' '.join(slots)} }};")
+        vtbl_c.append(f"struct {cname}_v {{ const char *__ti; "
+                      f"{' '.join(slots)} }};")
         vtbl_c.append(f"struct {cname}_v {cname}_vt;")
+        vtbl_c.append('char ' + cname + '_ti[] = "' + getattr(info, 'key', cname) + '";')
+    for cd in order:
+        info = classes_meta.get(getattr(cd, "key", cd.name))
+        if info is not None and info.vslots:
+            continue                         # 有虚类已在 vtbl_c 发射（0.0.32 去重）
+        structs.append('char ' + flat(getattr(cd, "key", cd.name)) + '_ti[] = "'
+                       + getattr(cd, "key", cd.name) + '";')
     structs = vtbl_c + structs
 
     gdecls_c = []
@@ -204,6 +212,7 @@ def lower_ctors(cd, classes_meta=None):
             rkey = _root_of(cd.key, classes_meta)
             rf = flat(rkey) if rkey else cname
             vset.append(f"((struct {rf} *)this_)->__vtbl = &{cname}_vt;")
+            vset.append(f"{cname}_vt.__ti = {cname}_ti;")
             for slot in classes_meta[cd.key].vslots:
                 m = find_slot_impl(cd, classes_meta[cd.key], slot,
                                    classes_meta)
@@ -527,6 +536,13 @@ def expr(e, ctx, scope):
         return f"({type_c(e.ty)})({expr(e.expr, {'value'}, scope)})"
     if isinstance(e, New):
         raise AssertionError("lower: 裸 New 未经物化改写（sema/_mat 通道缺失）")
+    if isinstance(e, FreeCall) and getattr(e, "ti_kind", None):
+        # 0.0.32 RTTI·typeid（sig=None——先于 call() 的 meth 解引用）
+        if e.ti_kind == "static":
+            return flat(e.ti_class) + "_ti"
+        recv = recv_expr(e.args[0], scope)
+        rf = flat(_root_of(e.ti_class, CLASSES_META[0]))
+        return f"((struct {rf} *){recv})->__vtbl->__ti"
     if isinstance(e, (MethodCall, FreeCall)):
         return call(e, ctx, scope)
     if isinstance(e, Assign):

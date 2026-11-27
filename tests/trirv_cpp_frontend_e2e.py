@@ -67,6 +67,7 @@ BEHAVIOR = [
     ("test29_copy.cpp", 161),        # 0.0.29 拷贝构造/赋值
     ("test30_newdel.cpp", 42),       # 需链 libc——0.0.30 类专属分配器+explicit
     ("test31_casts.cpp", 177),       # 需链 libc——0.0.31 命名 cast（Phase A 收官）
+    ("test32_typeid.cpp", 13),       # 需链 libc——0.0.32 RTTI typeinfo+typeid
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -79,6 +80,7 @@ REJECT = [
     ("test30b_explicit.cpp", "explicit"),         # 0.0.30：explicit 禁隐式转换
     ("test31b_static_int_ptr.cpp", "reinterpret_cast"),  # 0.0.31：int→指针指向 reinterpret
     ("test31c_dynamic.cpp", "dynamic_cast"),      # 0.0.31：RTTI=0.0.33 带
+    ("test32b_operand.cpp", "typeid"),            # 0.0.32：typeid 基本型操作数
 ]
 
 os.makedirs(TMP, exist_ok=True)
@@ -89,8 +91,8 @@ LIBC_SRC = os.path.join(ROOT, "cc", "trirv_libc.c")
 LIBC_TVO = os.path.join(TMP, "trirv_libc.trvo")
 _needs_libc = any(f in ("test15_new.cpp", "test19_dtor.cpp",
                         "test23_ops_ptr.cpp", "test24_virtual.cpp",
-                        "test27_purevirtual.cpp", "test30_newdel.cpp",
-                        "test31_casts.cpp") for f, _w in BEHAVIOR)
+                        "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp",
+                        "test32_typeid.cpp") for f, _w in BEHAVIOR)
 if _needs_libc and not os.path.exists(LIBC_TVO):
     r = subprocess.run([CC, LIBC_SRC, LIBC_TVO], capture_output=True, text=True)
     assert r.returncode == 0, f"libc trvo 构建失败: {r.stderr[:120]}"
@@ -105,7 +107,7 @@ for fn, want in BEHAVIOR:
     if r.returncode != 0:
         check(f"{fn} 降级", f"exit={r.returncode} {r.stderr[:80]}", "exit=0")
         continue
-    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp") else []),
+    r = subprocess.run([CC, c_out, trv] + (LIBC_LINK if fn in ("test15_new.cpp", "test19_dtor.cpp", "test23_ops_ptr.cpp", "test24_virtual.cpp", "test27_purevirtual.cpp", "test30_newdel.cpp", "test31_casts.cpp", "test32_typeid.cpp") else []),
                        capture_output=True, text=True)
     if r.returncode != 0:
         check(f"{fn} trirv_cc", r.stderr[:80], "exit=0")

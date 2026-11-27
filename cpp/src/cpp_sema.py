@@ -705,7 +705,11 @@ class Sema:
                                        self.classes[owner].static_access)
                     e.ref_kind, e.ty, e.lval, e.owner = "static", mt, True, owner
                 else:
-                    raise SemaError("E0", f"未声明标识符 {e.name!r}")
+                    ckey = self.resolve_class_name(e.name, self.cur_ns)
+                    if ckey is None:
+                        raise SemaError("E0", f"未声明标识符 {e.name!r}")
+                    e.ref_kind, e.ty, e.lval = "class", tobj(ckey), False
+                    e.cname = ckey              # 0.0.32 类名引用（typeid 面）
             elif "::" in e.name:
                 # Cls::static_member 限定访问
                 parts2 = e.name.rsplit("::", 1)
@@ -719,7 +723,11 @@ class Sema:
                 e.ref_kind, e.ty, e.lval, e.owner = "static", mt, True, owner
                 e.name = parts2[1]           # 短名（lower 拼全局名用）
             else:
-                raise SemaError("E0", f"未声明标识符 {e.name!r}")
+                ckey = self.resolve_class_name(e.name, self.cur_ns)
+                if ckey is None:
+                    raise SemaError("E0", f"未声明标识符 {e.name!r}")
+                e.ref_kind, e.ty, e.lval = "class", tobj(ckey), False
+                e.cname = ckey              # 0.0.32 类名引用（含限定名）
         elif isinstance(e, Member):
             ot = self.check_expr(e.obj, sc, is_const)
             if ot.kind == "ref":
@@ -809,6 +817,28 @@ class Sema:
                     self.check_expr(a, sc, is_const)
                     a.bind = "value"
                 e.ty, e.lval = tobj(ckey), False
+                return e.ty
+            if e.name == "typeid":
+                # 0.0.32 RTTI·typeid：类名=静态 ti / 对象左值=动态 ti（有虚类）
+                if len(e.args) != 1:
+                    raise SemaError("E0", "typeid 恰一操作数")
+                arg = e.args[0]
+                at = self.check_expr(arg, sc, is_const)
+                ab = at.pointee if at.kind == "ref" else at
+                if getattr(arg, "ref_kind", None) == "class":
+                    e.ti_kind, e.ti_class = "static", arg.cname
+                elif ab.kind == "class" and getattr(arg, "lval", False) \
+                        and self.classes.get(ab.name) \
+                        and self.classes[ab.name].vslots:
+                    e.ti_kind, e.ti_class = "dyn", ab.name
+                elif ab.kind == "class":
+                    e.ti_kind, e.ti_class = "static", ab.name
+                else:
+                    raise SemaError("E0",
+                                    "typeid 操作数须为对象/类名"
+                                    f"（得 {ab.kind}）")
+                from cpp_types import tchar as _tch, tptr as _tp
+                e.ty, e.lval = _tp(_tch(True)), False   # const char*
                 return e.ty
             f = None
             if "::" in e.name:
@@ -1197,7 +1227,9 @@ def _install_mat(cls):
                 self._mat_expr(e.obj, h)     # FreeCall 无接收者
             for a in e.args:
                 self._mat_expr(a, h)
-            meth = e.sig
+            meth = getattr(e, "sig", None)
+            if meth is None:
+                return                          # typeid 等特殊 FreeCall（0.0.32）
             for i, a in enumerate(e.args):
                 if getattr(a, "bind", None) == "mat":
                     tn = self._fresh()
