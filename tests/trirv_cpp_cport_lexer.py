@@ -6,6 +6,7 @@ token 流逐行恒等（TSV：KIND\\x1fVAL\\x1fLINE；错误=LEXERROR\\x1fline�
 """
 import glob
 import os
+import glob
 import subprocess
 import sys
 import tempfile
@@ -18,10 +19,9 @@ from cpp_lexer import lex, LexError  # noqa: E402
 
 def build_tricpp():
     out = os.path.join(tempfile.gettempdir(), f"tricpp_{os.getpid()}")
+    srcs = sorted(glob.glob(os.path.join(CSRC, "*.c")))   # L8：全量层
     r = subprocess.run(
-        ["gcc", "-std=gnu11", "-O2", "-I", CSRC,
-         "-o", out, os.path.join(CSRC, "tricpp.c"),
-         os.path.join(CSRC, "cpp_types.c"), os.path.join(CSRC, "cpp_lexer.c")],
+        ["gcc", "-std=gnu11", "-O2", "-I", CSRC, "-o", out] + srcs,
         capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         print(f"tricpp 构建失败: {r.stderr[:300]}")

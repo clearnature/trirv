@@ -249,9 +249,10 @@ C++ 前端 = 独立的预处理层（.cpp → .c），trirv_cc 只看到合法 C
 |---|---|---|
 | 0.1.2 | tricpp 骨架 + types ADT（tagged union+构造不变式） | selftest-types | ✓ 已验证（cpp/c/{cpp_types.h,cpp_types.c,tricpp.c}；ADT 不变式 7 项 C 镜像——匿名类/ref-of-ref abort 经 fork 验证；门禁第 76 套套件内动态构建 L8） |
 | 0.1.3 | lexer.c（token 流） | 63 语料 token 流恒等 vs cpp_lexer.py | ✓ 已验证（141 行 ≤300；差分 **89/89 恒等一次通过**——63 语料+26 探针[PUNCTS 最长前缀/字符串转义/块注释跨行/错误行号/NUL 字节]；显式长度遍历+`strchr` NUL 陷阱守卫+≥0x80 字母近似已文档化；L8 全量 glob 构建——types 套件连坐修正） |
-| 0.1.4 | ast.h + parser 表达式/语句 | AST dump 恒等 |
+| 0.1.4 | ast.h + parser 表达式/语句 | parse 结果恒等 |
 | 0.1.5 | parser 声明/类/成员 | 同上 |
 | 0.1.6 | parser 模板/EH/cast（全 TU 解析完） | 同上 |
+| **0.1.4c 合并** | **（2026-11-28 计划修订）0.1.4–6 三版合并一次交付**——通用槽 tagged union AST（cfront 式）+ 全语法解析器六文件（ast.h/ast.c/parser.c/type.c/class.c/method.c/tmpl.c/stmt.c/expr.c ~1500 行）+ **setjmp 恢复栈**（L3 试探语义——_try_tcall/_try_tspec 的 ParseError 回退对应物；p_parse_type 错误出口统一走 parse_err 入栈）+ **入口硬编码常量表**；parse 差分 **75/75 恒等一次通过**（70 ok + 5 双拒；空实参守卫/测试47c 值域/测试42 特化 expect(">") 均实测挖出） | ✓ 已验证（门禁 78 套全绿；L8 重演——lexer/types 套件构建 glob 修正） |
 | 0.1.7 | sema 符号表/canon/重载 | 符号表投影+诊断码恒等 |
 | 0.1.8 | sema 类构建/检查点/EH 面 | 同上 |
 | 0.1.9 | sema 模板实例化/惰性 | 同上 |

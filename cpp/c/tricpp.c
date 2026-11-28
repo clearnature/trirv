@@ -4,6 +4,7 @@
  * L8：产物落套件 tmp/，无 bin 缓存。 */
 #include "cpp_types.h"
 #include "cpp_lexer.h"
+#include "cpp_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,23 @@ static char *read_file(const char *path, int *len_out) {
 int main(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "selftest-types"))
         return ctype_selftest();
+    if (argc == 3 && !strcmp(argv[1], "selftest-parse")) {
+        extern Node *cpp_parse_tu(const char *, int, int *);
+        int len;
+        FILE *fp = fopen(argv[2], "rb");
+        if (!fp) { perror(argv[2]); return 2; }
+        fseek(fp, 0, SEEK_END);
+        len = (int)ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        char *buf = malloc((size_t)len + 1);
+        if (fread(buf, 1, (size_t)len, fp) != (size_t)len) return 2;
+        buf[len] = 0;
+        fclose(fp);
+        int hm = 0;
+        cpp_parse_tu(buf, len, &hm);
+        printf("parse OK (main=%d)\n", hm);
+        return 0;
+    }
     if (argc == 3 && !strcmp(argv[1], "selftest-lex")) {
         int len;
         char *src = read_file(argv[2], &len);
