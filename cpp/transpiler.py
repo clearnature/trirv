@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.43 —— C++ -> C 降级器（多继承布局：base 偏移+this 调整）。
+"""transpiler v0.0.44 —— C++ -> C 降级器（多继承分派：per-base vtable+thunk）。
 
 用法：python3 cpp/transpiler.py input.cpp output.c
 
@@ -28,7 +28,7 @@ from cpp_lower import lower_tu                         # noqa: E402
 from cpp_emit import emit                              # noqa: E402
 from cpp_types import TypeError_                       # noqa: E402
 
-VERSION = "0.0.43"
+VERSION = "0.0.44"
 
 
 def transpile(src):

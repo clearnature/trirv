@@ -469,8 +469,17 @@ class Sema:
                                   for m in cd.methods)
             info.has_op_delete = any(getattr(m, "is_special", None) == "delete"
                                      for m in cd.methods)
-            # 0.0.24 vtable 槽序：base 槽拷贝 → 本类虚方法（override 保位/新槽追加）
-            if info.base:
+            # 0.0.24 vtable 槽序；0.0.44 多基并集（位 0 子树全序→位 1 新槽…）
+            if info.bases:
+                info.vslots = []
+                for b in info.bases:
+                    for sl in self.classes[b].vslots:
+                        if sl in info.vslots:
+                            raise SemaError(
+                                "E0", f"{key} 多基类同名虚槽 {sl}"
+                                f"（子集拒绝——二义分派）")
+                        info.vslots.append(sl)
+            elif info.base:
                 info.vslots = list(self.classes[info.base].vslots)
             for meth in cd.methods:
                 if meth.name in info.vslots:

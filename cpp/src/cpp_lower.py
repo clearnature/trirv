@@ -73,6 +73,7 @@ def decl_class(cd, classes_meta=None):
     is_virt_root = info is not None and info.vslots and not cd.base
     if is_virt_root:
         parts.append(f"struct {cname}_v *__vtbl;")
+        parts.append("void *__owner;")    # 0.0.44 thunk this 回指完整对象
     for i, bk in enumerate(bkeys):        # 0.0.43 多基类子对象顺次嵌入
         fname = BASE_KEY if i == 0 else f"__base{i}"
         parts.append(f"struct {flat(bk)} {fname};")
@@ -134,6 +135,15 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         vtbl_c.append(f"struct {cname}_v {{ const char *__ti; "
                       f"{' '.join(slots)} }};")
         vtbl_c.append(f"struct {cname}_v {cname}_vt;")
+        # 0.0.44 per-base vtable：位 i>0 虚基子对象各一表（VB_v 形态）
+        bkeys = getattr(cd, "bases_keys", None) or             ([cd.base_key] if getattr(cd, "base_key", None) else [])
+        for i, bk in enumerate(bkeys):
+            if i == 0:
+                continue
+            r = _root_of(bk, classes_meta)
+            ri = classes_meta.get(r) if r else None
+            if ri is not None and ri.vslots:
+                vtbl_c.append(f"struct {flat(r)}_v {cname}_vt{i};")
         vtbl_c.append('char ' + cname + '_ti[] = "' + getattr(info, 'key', cname) + '";')
     tiid_seq = [0]
     for cd in order:
@@ -183,6 +193,7 @@ def lower_tu(decls, funcs, gdecls, sdefs, main, classes_meta):
         # 0.0.26 修复：方法先于 ctor 发射——trirv_cc fn-ptr 赋值引用后
         # 定义函数=地址 0（p26r=0 p26s=25 实证），前序发射消除前向引用
         funcs_c.extend(lower_methods(cd))
+        funcs_c.extend(lower_thunks(cd, classes_meta))   # 0.0.44
     for cd in decls:
         if getattr(cd, "forward", False):
             continue
@@ -279,16 +290,55 @@ def lower_ctors(cd, classes_meta=None):
         body = []
         vset = []
         if classes_meta.get(cd.key) and classes_meta[cd.key].vslots:
-            # 派生类：cast 到根类后单箭头（trirv_cc 不支持 ->x.__y 混合链）
-            rkey = _root_of(cd.key, classes_meta)
-            rf = flat(rkey) if rkey else cname
-            vset.append(f"((struct {rf} *)this_)->__vtbl = &{cname}_vt;")
-            vset.append(f"{cname}_vt.__ti = {cname}_ti;")
-            for slot in classes_meta[cd.key].vslots:
-                m = find_slot_impl(cd, classes_meta[cd.key], slot,
-                                   classes_meta)
+            # 0.0.44 per-base vtable：每个虚根子对象各设一表+__owner 回指。
+            # 位 0=cast this_（零调整）；位 i>0=&this_->__base{i} 子对象
+            # 取址（trirv_cc 不支持 ->x.__y 混合链——(&m)->f 单箭头形态）
+            info = classes_meta[cd.key]
+            bkeys = getattr(cd, "bases_keys", None) or \
+                ([getattr(cd, "base_key", None)]
+                 if getattr(cd, "base_key", None) else [])
+            own_slots = [sl for sl in info.vslots
+                         if not any(sl in (classes_meta.get(b).vslots
+                                           if classes_meta.get(b) else [])
+                                    for b in bkeys)]
+            if not bkeys:
+                # 虚根类自身：唯一虚子对象（0.0.44 重写时曾丢失——
+                # e2e 无纯虚根对象直接虚调用用例未抓到，test44 抓到）
+                vset.append(f"((struct {cname} *)this_)->__vtbl "
+                            f"= &{cname}_vt;")
+                vset.append(f"((struct {cname} *)this_)->__owner = this_;")
+                vset.append(f"{cname}_vt.__ti = {cname}_ti;")
+                for slot in info.vslots:
+                    m, _o = _slot_impl_owner(cd, info, slot, classes_meta)
+                    if m is not None:
+                        vset.append(f"{cname}_vt.{slot} = {m.mname};")
+            for i, bk in enumerate(bkeys):
+                r = _root_of(bk, classes_meta)
+                ri = classes_meta.get(r) if r else None
+                if ri is None or not ri.vslots:
+                    continue
+                rf = flat(r)
+                recv = f"((struct {rf} *)this_)" if i == 0 \
+                    else f"((struct {rf} *)&this_->__base{i})"
+                tname = f"{cname}_vt" if i == 0 else f"{cname}_vt{i}"
+                vset.append(f"{recv}->__vtbl = &{tname};")
+                vset.append(f"{recv}->__owner = this_;")
+                vset.append(f"{tname}.__ti = {cname}_ti;")
+                for slot in ri.vslots:
+                    m, owner = _slot_impl_owner(cd, info, slot,
+                                                classes_meta)
+                    if m is None:
+                        continue             # 纯虚槽=NULL（抽象类保证不可达）
+                    if i == 0 or owner == r:
+                        vset.append(f"{tname}.{slot} = {m.mname};")
+                    else:
+                        vset.append(f"{tname}.{slot} = "
+                                    f"{cname}_th{i}_{slot};")
+            # 本类新虚槽（不在任何基 vslots）→ 位 0 表追加
+            for slot in own_slots:
+                m, _owner = _slot_impl_owner(cd, info, slot, classes_meta)
                 if m is None:
-                    continue                 # 纯虚槽=NULL（抽象类不可实例化保证不可达）
+                    continue
                 vset.append(f"{cname}_vt.{slot} = {m.mname};")
         bkeys = getattr(cd, "bases_keys", None) or             ([bkey] if bkey else [])
         for (tgt, args) in ctor.inits:
@@ -366,6 +416,74 @@ def find_slot_decl(cd, info, slot, classes_meta):
         else:
             break
     return None
+
+
+def _slot_impl_owner(cd, info, slot, classes_meta):
+    """槽 impl DFS 多基版：(MethodDecl, 声明类键)（0.0.44 thunk 判定）。"""
+    for m in cd.methods:
+        if m.name == slot and m.body is not None:
+            return (m, getattr(cd, "key", cd.name))
+    for b in (getattr(info, "bases", None)
+              or ([info.base] if info.base else [])):
+        bi = classes_meta.get(b)
+        if bi:
+            bd = next((d for d in classes_meta if d == b), None)
+            # 经 ClassInfo 无法取 ClassDecl——DFS 用 ClassInfo.methods
+            for m in bi.methods:
+                if m.name == slot and m.body is not None:
+                    return (m, b)
+            # 多基 DFS 深入
+            r = _slot_impl_owner_info(b, bi, slot, classes_meta)
+            if r is not None:
+                return r
+    return (None, None)
+
+
+def _slot_impl_owner_info(c, info, slot, classes_meta):
+    for m in info.methods:
+        if m.name == slot and m.body is not None:
+            return (m, c)
+    for b in (getattr(info, "bases", None)
+              or ([info.base] if info.base else [])):
+        bi = classes_meta.get(b)
+        if bi:
+            r = _slot_impl_owner_info(b, bi, slot, classes_meta)
+            if r is not None:
+                return r
+    return (None, None)
+
+
+def lower_thunks(cd, classes_meta):
+    """0.0.44 位 i>0 虚基子对象 thunk：覆写 impl（this=派生类*）经
+    基类子对象表调用 → this_->__owner 回指完整对象再转调主实现。
+    位 0 零调整直接转发（现状语义）。"""
+    info = classes_meta.get(getattr(cd, "key", cd.name))
+    if not info or not info.vslots:
+        return []
+    cname = flat(getattr(cd, "key", cd.name))
+    bkeys = getattr(cd, "bases_keys", None) or         ([getattr(cd, "base_key", None)]
+         if getattr(cd, "base_key", None) else [])
+    out = []
+    for i, bk in enumerate(bkeys):
+        if i == 0:
+            continue
+        r = _root_of(bk, classes_meta)
+        ri = classes_meta.get(r) if r else None
+        if ri is None or not ri.vslots:
+            continue
+        for slot in ri.vslots:
+            m, owner = _slot_impl_owner(cd, info, slot, classes_meta)
+            if m is None or owner is None or owner == r:
+                continue               # 位 0 转发/未覆写（this 形态匹配）
+            tname = f"{cname}_th{i}_{slot}"
+            ps = [f"struct {flat(r)} *this_"] +                  [decl_param(p, n) for (p, n) in m.params]
+            args = ["this_->__owner"] +                    [pn for (_p, pn) in m.params]
+            rtxt = render_ret(m.ret)
+            kw = "" if m.ret.kind == "void" else "return "
+            call_args = ", ".join(args)
+            out.append(f"{rtxt} {tname}({', '.join(ps)}) {{ "
+                       f"{kw}{m.mname}({call_args}); }}")
+    return out
 
 
 def find_slot_impl(cd, info, slot, classes_meta):
@@ -865,7 +983,14 @@ def call(e, ctx, scope):
         scope["__recv_owner__"] = recv_owner
         # 0.0.26 类型套用拆链：(*(struct Root_v **)recv)->slot(…)
         # （trirv_cc 链式箭头 fn-ptr codegen 不工作——p26=42 探针实证）
-        root = _root_of(getattr(e, "sig_owner", None), CLASSES_META[0])
+        # 0.0.44 根=接收者静态类型（多基下 sig_owner 根≠接收者子对象根）
+        rc = getattr(e.obj, "ty", None)
+        root = None
+        if rc is not None:
+            rn = rc.pointee.name if rc.kind in ("ptr", "ref") else rc.name
+            root = _root_of(rn, CLASSES_META[0])
+        if not root:
+            root = _root_of(getattr(e, "sig_owner", None), CLASSES_META[0])
         if not root:
             root = _root_of(scope.get("__cls__"), CLASSES_META[0])
         rootf = flat(root) if root else "Object"
