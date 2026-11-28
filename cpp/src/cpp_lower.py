@@ -264,6 +264,8 @@ def lower_ctors(cd, classes_meta=None):
     cname = flat(getattr(cd, "key", cd.name))
     bkey = getattr(cd, "base_key", None) or cd.base
     for ctor in cd.ctors:
+        if ctor.body is None:
+            continue                         # 声明（体=外联定义并入实例）
         cfname = (f"{cname}_ctor_copy" if _ctor_is_copy(ctor, cname)
                   else f"{cname}_ctor")
         params = [f"struct {cname} *this_"]

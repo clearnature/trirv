@@ -139,6 +139,17 @@ class FuncTemplate:
         self.tvars, self.decl = tvars, decl
 
 
+class ClassTemplate:
+    """template<typename T> class X { ... }（0.0.41 按需实例化）。
+    ext_methods/ext_ctors：外联定义（Box<T>::member 形态，tvars 恒等
+    映射才归模板；具体实参外联=E0）。"""
+
+    def __init__(self, tvars, decl):
+        self.tvars, self.decl = tvars, decl
+        self.ext_methods = []            # [(cls_flat_name, MethodDecl)]
+        self.ext_ctors = []              # [(cls_flat_name, CtorDecl)]
+
+
 class Bin:
     def __init__(self, op, l, r):
         self.op, self.l, self.r = op, l, r
@@ -207,6 +218,7 @@ class Parser:
         self.toks = toks
         self.i = 0
         self.collected_inner = []      # 嵌套类冒泡（0.0.22）
+        self.class_templs = {}         # 类模板名 → ClassTemplate（0.0.41 外联归属）
 
     # ---- 基元 ----
     def peek(self, k=0):
@@ -290,7 +302,44 @@ class Parser:
             if not self.accept("PUNCT", ","):
                 break
         self.expect("PUNCT", ">")
+        t = self.peek()
+        if t[0] == "KW" and t[1] in ("class", "struct"):
+            # 0.0.41 类模板：template<typename T> class X {...}
+            kind = self.next()[1]
+            cname = self.expect("ID")[1]
+            if self.accept("PUNCT", ":"):
+                raise ParseError("类模板继承=0.0.43 多继承面，暂不支持")
+            cd = self.classdef(kind=kind, name=cname)
+            node = ClassTemplate(tvars, cd)
+            self.class_templs[cname] = node       # 外联定义归模板（0.0.41）
+            return node
         ty = self.parse_type()
+        t = self.peek()
+        if t[0] == "PUNCT" and t[1] == "::":
+            # 0.0.41 ctor 外联：Box<T>::Box(...)（ty=parse_type 吃的 Box<T>）
+            self.next()
+            cls_short = ty.name.split("__")[0]
+            t2 = self.peek()
+            if t2[0] != "ID" or t2[1] != cls_short:
+                raise ParseError(
+                    f"外联 ctor 形态限 类名::类名(...)：得 {t2[1]!r}")
+            ct = self.ctordef(t2[1])      # ctordef 自行消费 ID+参数+体
+            return self._ext_class_member(tvars, ty.name,
+                                          ("ext_ctors", ct))
+        if t[0] == "ID" and self.peek(1)[0] == "PUNCT" and \
+                self.peek(1)[1] == "<":
+            # 0.0.41 方法外联：T Box<T>::get(...)（ty=ret）
+            cls_ty = self.parse_type()
+            self.expect("PUNCT", "::")
+            nm = self.expect("ID")[1]
+            self.expect("PUNCT", "(")
+            params, defaults = self.parse_params()
+            self.expect("PUNCT", ")")
+            is_const = bool(self.accept("KW", "const"))
+            md = MethodDecl(nm, ty, params, is_const, self.block())
+            md.defaults = defaults
+            return self._ext_class_member(tvars, cls_ty.name,
+                                          ("ext_methods", md))
         nm = self.expect("ID")[1]
         self.expect("PUNCT", "(")
         params, defaults = self.parse_params()
@@ -302,6 +351,21 @@ class Parser:
         fd.defaults = defaults
         fd.tvars = tvars
         return FuncTemplate(tvars, fd)
+
+    def _ext_class_member(self, tvars, cls_flat, pair):
+        """外联成员归模板：cls_flat 须= Name__T（tvars 恒等映射）；
+        具体实参外联=E0；类模板未定义=ParseError。"""
+        tag, member = pair
+        ct = self.class_templs.get(cls_flat.split("__")[0])
+        if ct is None:
+            raise ParseError(f"类模板 {cls_flat.split('__')[0]} 未定义"
+                             f"（外联定义须在类模板之后）")
+        flat_tvars = ct.decl.name + "__" + "__".join(ct.tvars)
+        if cls_flat != flat_tvars:
+            raise ParseError(
+                f"外联定义限模板参数形态 {flat_tvars}（具体实参外联=E0）")
+        getattr(ct, tag).append((cls_flat, member))
+        return ct
 
     def extern_c(self, funcs):
         """extern "C" { fdecl… } / extern "C" int f(params);——裸名链接面。
@@ -374,10 +438,13 @@ class Parser:
         fd.c_link = c_link
         return fd
 
-    def classdef(self):
-        kind = self.next()[1]                         # class/struct（0.0.28 默认访问级）
+    def classdef(self, kind=None, name=None):
+        """kind/name 预传=类模板分支已消费 class/struct+名（0.0.41）。"""
+        if kind is None:
+            kind = self.next()[1]                     # class/struct（0.0.28 默认访问级）
         acc = "private" if kind == "class" else "public"
-        name = self.expect("ID")[1]
+        if name is None:
+            name = self.expect("ID")[1]
         base = None
         if self.accept("PUNCT", ":"):
             self.expect("KW", "public")
@@ -490,6 +557,9 @@ class Parser:
                 self.expect("PUNCT", "(")
                 self.expect("PUNCT", ")")
                 cd.dtors.append(DtorDecl(self.block()))
+            elif t[0] == "ID" and self.peek(1)[0] == "ID" and \
+                    self.peek(2)[1] in (";", "=", "["):
+                self.memberdecl(cd, acc)    # 类类型成员 T v;（0.0.41 模板）
             else:
                 raise ParseError(f"L{t[2]}: 类体内不支持 {t[1]!r}"
                                  f"（成员限 int；char 成员/访问控制外语法=后续版本）")
@@ -524,6 +594,10 @@ class Parser:
                 ty = tint(is_const)             # 0.0.30 size_t=int 别名
             else:
                 ty = tcls(self.qual_name(t[1]), is_const)   # geo::Box 限定类型
+                if self.peek()[0] == "PUNCT" and self.peek()[1] == "<":
+                    tspec = self._try_tspec(ty)   # 0.0.41 类模板实参 Box<int>
+                    if tspec is not None:
+                        ty = tspec
         else:
             raise ParseError(f"L{t[2]}: 不支持的类型 {t[1]!r}")
         if self.accept("PUNCT", "&"):
@@ -531,6 +605,26 @@ class Parser:
         while self.accept("PUNCT", "*"):
             ty = tptr(ty)                     # Box* p（0.0.15 指针声明）
         return ty
+
+    def _try_tspec(self, base):
+        """ID 后 <类型序列> 形态 → 平化实例类型 Box<int>→Box__int；
+        失配游标复原返回 None（声明位/cast/new 位共用 parse_type——
+        表达式位比较不经此）。嵌套 Box<Box<int>>：平化名拆分歧义，
+        子集边界文档化拒绝（>> 单 token 词法实证）。"""
+        mark = self.i
+        try:
+            self.expect("PUNCT", "<")
+            args = [self.parse_type()]
+            while self.accept("PUNCT", ","):
+                args.append(self.parse_type())
+            self.expect("PUNCT", ">")
+        except ParseError:
+            self.i = mark
+            return None
+        flat = "__".join(a.name if a.kind == "class" else a.kind
+                         for a in args)
+        return tcls(f"{base.name}__{flat.replace('::', '_')}",
+                    base.is_const)
 
     def parse_params(self):
         """返回 (params, defaults)：defaults[i] = 默认实参 AST|None。
@@ -554,6 +648,7 @@ class Parser:
         params, defaults = self.parse_params()
         self.expect("PUNCT", ")")
         inits = []
+        body = None
         if self.accept("PUNCT", ":"):
             while True:
                 tgt = self.expect("ID")[1]
@@ -563,7 +658,11 @@ class Parser:
                 inits.append((tgt, args))
                 if not self.accept("PUNCT", ","):
                     break
-        body = self.block()
+            body = self.block()
+        elif self.accept("PUNCT", ";"):
+            pass                          # ctor 声明（体=外联定义，0.0.41）
+        else:
+            body = self.block()
         cd = CtorDecl(params, inits, body)
         cd.defaults = defaults
         cd.is_explicit = explicit             # 0.0.30
@@ -617,7 +716,10 @@ class Parser:
         params, defaults = self.parse_params()
         self.expect("PUNCT", ")")
         is_const = bool(self.accept("KW", "const"))
-        body = self.block()
+        if self.accept("PUNCT", ";"):
+            body = None                       # 方法声明（外联定义，0.0.41）
+        else:
+            body = self.block()
         md = MethodDecl(nm, ty, params, is_const, body)
         md.defaults = defaults
         md.is_static = False
@@ -708,6 +810,35 @@ class Parser:
                 init = self.expr()
             self.expect("PUNCT", ";")
             return VarDecl(nm, ty, init)
+        if t[0] == "ID" and self.peek(1)[0] == "PUNCT" and \
+                self.peek(1)[1] == "<":
+            # 0.0.41 类模板实例声明：Box<int> var; / var(args); / var = expr;
+            cls = self.qual_name(self.next()[1])
+            ty = self._try_tspec(tcls(cls))
+            if ty is None:
+                raise ParseError(f"L{t[2]}: 语句级 < 后非类型形态"
+                                 f"（Box<int> var; 系=子集）")
+            cls = ty.name
+            if self.peek()[0] == "ID" and self.peek(1)[1] == "=":
+                var = self.next()[1]
+                self.expect("PUNCT", "=")
+                init = self.expr()
+                self.expect("PUNCT", ";")
+                return CopyInit(cls, var, init)
+            if self.peek()[0] == "ID" and self.peek(1)[1] == ";":
+                var = self.next()[1]
+                self.expect("PUNCT", ";")
+                return CtorStmt(cls, var, [])
+            if self.peek()[0] == "ID" and self.peek(1)[1] == "(":
+                var = self.next()[1]
+                self.expect("PUNCT", "(")
+                args = [] if self.peek()[1] == ")" else self.exprlist()
+                self.expect("PUNCT", ")")
+                self.expect("PUNCT", ";")
+                return CtorStmt(cls, var, args)
+            raise ParseError(
+                f"L{t[2]}: {cls} 声明形态限 var;/var(args);/var = expr;"
+                f"（Box<T>* p=子集边界）")
         if t[0] == "ID" and self.peek(1)[0] == "ID" and \
                 self.peek(2)[1] == "=":
             cls = self.qual_name(self.next()[1])   # X var = expr;（0.0.29）

@@ -14,7 +14,8 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
 import copy as _copy
-from cpp_parser import (CUR_CATCH, EH_FLAG, FuncTemplate, New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Throw, Try, Num, StrLit, Id, This, Member, MethodCall,
+from cpp_parser import (CUR_CATCH, EH_FLAG, ClassTemplate,
+ FuncTemplate, New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Throw, Try, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
@@ -79,6 +80,9 @@ class Sema:
         self.main_dtors = []
         self.templates = {}           # name → FuncTemplate（0.0.39 按需实例化）
         self.instantiated = {}        # inst_name → MethodDecl（单态化缓存）
+        self.class_templates = {}     # name → ClassTemplate（0.0.41）
+        self.cls_insts = {}           # inst_key → True（类单态化缓存）
+        self.decls_list = None        # decls 别名（实例类就地注入→lower）
         self.classes = {}
         self.cur_method = None
         self.cur_cls = None
@@ -100,7 +104,188 @@ class Sema:
             k = getattr(self.cur_cls, "key", self.cur_cls.name)
             if f"{k}::{name}" in self.classes:
                 return f"{k}::{name}"
+        k = self._try_class_inst(name)     # 0.0.41 类模板惰性实例化
+        if k is not None:
+            return k
         return None
+
+    def _try_class_inst(self, name):
+        """平化实例名 → 类模板前缀匹配 → 惰性实例化（0.0.41）。
+        Box__int 前缀 Box（模板名）→ 单段 "__" 拆实参平化名 → 反解
+        → 实例化。T 形态（定义面 Box__T）不匹配任何具体反解 → None。"""
+        for tkey, tmpl in self.class_templates.items():
+            prefix = tkey + "__"
+            if not name.startswith(prefix):
+                continue
+            argstrs = name[len(prefix):].split("__")
+            if len(argstrs) != len(tmpl.tvars):
+                continue
+            concs = []
+            for a in argstrs:
+                ty = self._tflat(a)
+                if ty is None:
+                    return None            # T 形态/嵌套/未知平化名
+                concs.append(ty)
+            return self._instantiate_class(tkey, tmpl, concs, name)
+        return None
+
+    def _tflat(self, a):
+        """平化名反解：int/char/bool→基本型；其他=None（类实参嵌套
+        =子集边界文档化拒绝；size_t 别名同 int）。"""
+        return {"int": tint(), "size_t": tint(), "char": tchar(),
+                "bool": tbool()}.get(a)
+
+    def _instantiate_class(self, tkey, tmpl, concs, inst_name):
+        """类模板单态化：deepcopy+T→concrete 替换+外联并入+ClassInfo
+        构建（Phase C 复刻）+方法体重 check。"""
+        if inst_name in self.cls_insts:
+            return inst_name               # 已实例化（每类型一实例）
+        self.cls_insts[inst_name] = True
+        clone = _copy.deepcopy(tmpl.decl)
+        clone.name = inst_name
+        clone.ns = None
+        clone.nested_in = None
+        clone.base = None
+        pairs = list(zip(tmpl.tvars, concs))
+        self._subst_class(clone, tkey, pairs)
+        # 外联成员并入：同名同参数量 → 体并入类内声明（C++ 法——
+        # 声明+外联定义=一方法）；无声明 → 子集放宽（C++ 要求声明）
+        for (cfn, md) in tmpl.ext_methods:
+            m2 = _copy.deepcopy(md)
+            self._subst(m2, pairs)
+            hit = next((m for m in clone.methods
+                        if m.name == m2.name
+                        and len(m.params) == len(m2.params)), None)
+            if hit is not None:
+                hit.body, hit.params = m2.body, m2.params
+                hit.is_const = m2.is_const
+            else:
+                clone.methods.append(m2)
+        for (cfn, ct2) in tmpl.ext_ctors:
+            c2 = _copy.deepcopy(ct2)
+            for (tvar, conc) in pairs:
+                for i, (pty, _pn) in enumerate(c2.params):
+                    if pty.kind == "class" and pty.name == tvar:
+                        c2.params[i] = (_copy.deepcopy(conc), _pn)
+            hit = next((c for c in clone.ctors
+                        if len(c.params) == len(c2.params)
+                        and c.body is None), None)
+            if hit is not None:
+                hit.body, hit.inits, hit.params = c2.body, c2.inits, c2.params
+            else:
+                clone.ctors.append(c2)
+        self._fill_class_info(clone, inst_name)
+        self._check_class_body(clone)
+        self.decls_list.append(clone)      # 就地注入：lower 同列表可见
+        return inst_name
+
+    def _subst_class(self, cd, prefix, pairs):
+        """类模板体替换：members/statics 类型 + ctor params + 方法
+        （经 _subst）+ dtor 体 + 体内 CtorStmt/New 类名。"""
+        for (tvar, conc) in pairs:
+            inst_flat = f"{prefix}__" + type_name(conc).replace("::", "_")
+            cd.members = [(n, _copy.deepcopy(conc)
+                           if ty.kind == "class" and ty.name == tvar else ty)
+                          for (n, ty) in cd.members]
+            cd.statics = [(n, _copy.deepcopy(conc)
+                           if ty.kind == "class" and ty.name == tvar else ty)
+                          for (n, ty) in getattr(cd, "statics", [])]
+            for c in cd.ctors:
+                for i, (pty, _pn) in enumerate(c.params):
+                    if pty.kind == "class" and pty.name == tvar:
+                        c.params[i] = (_copy.deepcopy(conc), _pn)
+            for dt in getattr(cd, "dtors", []):
+                for ss in dt.body:
+                    self._subst_stmt(ss, tvar, conc, prefix, inst_flat)
+            for m in cd.methods:
+                self._subst(m, pairs)
+                for ss in (m.body or []):
+                    self._subst_stmt(ss, tvar, conc, prefix, inst_flat)
+            for c in cd.ctors:
+                for ss in (c.body or []):   # 声明 ctor 无体（0.0.41）
+                    self._subst_stmt(ss, tvar, conc, prefix, inst_flat)
+
+    def _fill_class_info(self, cd, key):
+        """Phase C 复刻（单类）：ClassInfo 构建+mangling。"""
+        info = ClassInfo(cd.name, None)
+        info.key = key
+        self.classes[key] = info
+        for (mn, mty) in cd.members:
+            info.members[mn] = mty
+        for meth in cd.methods:
+            if not hasattr(meth, "is_static"):
+                meth.is_static = False
+            if not hasattr(meth, "access"):
+                meth.access = "public"
+        info.methods.extend(cd.methods)
+        info.ctors.extend(cd.ctors)
+        info.member_access.update(getattr(cd, "member_access", {}))
+        info.static_access.update(getattr(cd, "static_access", {}))
+        for (sn, sty) in getattr(cd, "statics", []):
+            info.static_members[sn] = sty
+        if getattr(cd, "dtors", []):
+            info.dtor = cd.dtors[0]
+        info.has_op_new = any(getattr(m, "is_special", None) == "new"
+                              for m in cd.methods)
+        info.has_op_delete = any(getattr(m, "is_special", None) == "delete"
+                                 for m in cd.methods)
+        seen = {}
+        for meth in cd.methods:
+            if getattr(meth, "is_special", None):
+                meth.mname = meth.name
+                continue
+            self.check_defaults(meth)
+            mn2 = mangle_method(key, meth)
+            if mn2 in seen:
+                raise SemaError("E0",
+                                f"{key}.{meth.name} 重定义：mangled "
+                                f"{mn2} 撞 {seen[mn2]}（默认实参不进签名）")
+            seen[mn2] = meth.name
+            meth.mname = mn2
+        for ctor in cd.ctors:
+            self.check_defaults(ctor)
+        cd.key = key
+        return info
+
+    def _check_class_body(self, cd):
+        """实例类方法体重 check（check() 类循环复刻；无继承面）。"""
+        key = cd.key
+        self.cur_cls, self.cur_method = cd, None
+        self.cur_ns = None
+        visible = self.visible_method_names(key)
+        for ctor in cd.ctors:
+            if ctor.body is not None:
+                rewrite_implicit_this(ctor.body, visible)
+        for meth in cd.methods:
+            if meth.body is not None:
+                rewrite_implicit_this(meth.body, visible)
+        if self.classes[key].dtor:
+            rewrite_implicit_this(self.classes[key].dtor.body, visible)
+        for ctor in cd.ctors:
+            sc = Scope(self.gscope)
+            for (pty, pn) in ctor.params:
+                sc.declare(pn, pty)
+            for (tgt, args) in ctor.inits:
+                if self.find_member(key, tgt) is None:
+                    raise SemaError(
+                        f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
+                for a in args:
+                    self.check_expr(a, sc, False)
+            if ctor.body is not None:
+                self.check_stmts(ctor.body, sc, False)
+        for meth in cd.methods:
+            self.cur_method = meth
+            sc = Scope(self.gscope)
+            for (pty, pn) in meth.params:
+                sc.declare(pn, pty)
+            self.fn_dtors = []
+            if meth.body is not None:
+                self.check_stmts(meth.body, sc, meth.is_const)
+            meth.fn_dtors = list(self.fn_dtors)
+        if self.classes[key].dtor:
+            self.cur_method = None
+            sc = Scope(self.gscope)
+            self.check_stmts(self.classes[key].dtor.body, sc, False)
 
     def canon_ty(self, ty, ns):
         """TClass 短名 → 限定键（仅当该 ns 内确有此名——外部裸名保持）。"""
@@ -459,9 +644,13 @@ class Sema:
 
     # ============ 主体 ============
     def build_templates(self, tdecls):
-        """模板注册（体延迟——实例化时按具体类型 check）。"""
+        """模板注册（体延迟——实例化时按具体类型 check）。
+        FuncTemplate → 函数模板；ClassTemplate → 类模板（0.0.41）。"""
         for t in tdecls:
-            self.templates[t.decl.name] = t
+            if isinstance(t, ClassTemplate):
+                self.class_templates[t.decl.name] = t
+            else:
+                self.templates[t.decl.name] = t
 
     def instantiate(self, fname, concs):
         """单态化：deepcopy 模板体 + 类型参数→concrete 替换 + 重 check +
@@ -498,21 +687,29 @@ class Sema:
             for i, (pty, pn) in enumerate(decl.params):
                 if pty.kind == "class" and pty.name == tvar:
                     decl.params[i] = (_copy.deepcopy(conc), pn)
-            for ss in decl.body:
+            for ss in (decl.body or []):   # 声明形态方法无体（0.0.41）
                 self._subst_stmt(ss, tvar, conc)
 
-    def _subst_stmt(self, s, tvar, conc):
+    def _subst_stmt(self, s, tvar, conc, prefix=None, inst_flat=None):
         if isinstance(s, VarDecl):
             if s.ty.kind == "class" and s.ty.name == tvar:
                 s.ty = _copy.deepcopy(conc)
+        elif isinstance(s, CtorStmt):
+            # 0.0.41 体内 Box<T>(…) → Box__int(…)（限同类模板前缀）
+            if prefix and s.cls == f"{prefix}__{tvar}":
+                s.cls = inst_flat
+        elif isinstance(s, New):
+            if prefix and s.cls == f"{prefix}__{tvar}":
+                s.cls = inst_flat
         elif isinstance(s, Try):
             for x in s.try_body:
-                self._subst_stmt(x, tvar, conc)
+                self._subst_stmt(x, tvar, conc, prefix, inst_flat)
             for (_ct, _cv, cb) in s.catches:
                 for x in cb:
-                    self._subst_stmt(x, tvar, conc)
+                    self._subst_stmt(x, tvar, conc, prefix, inst_flat)
 
     def check(self, decls, funcs, gdecls, sdefs, tdecls, main):
+        self.decls_list = decls       # 别名：实例类就地注入（lower 同列表）
         self.build_classes(decls)
         self.build_funcs(funcs)
         self.build_templates(tdecls)
@@ -532,7 +729,8 @@ class Sema:
             self.cur_ns = cd.ns
             visible = self.visible_method_names(cd.key)
             for ctor in cd.ctors:
-                rewrite_implicit_this(ctor.body, visible)
+                if ctor.body is not None:     # 声明 ctor 无体（0.0.41）
+                    rewrite_implicit_this(ctor.body, visible)
             for meth in cd.methods:
                 if meth.body is not None:
                     rewrite_implicit_this(meth.body, visible)
@@ -553,9 +751,10 @@ class Sema:
                             f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
                     for a in args:
                         self.check_expr(a, sc, False)
-                self.check_stmts(ctor.body, sc, False)   # 0.0.29 修：体检查
-                # 曾错挂在 init-args 循环内（无 init-list 的 ctor 体从未被
-                # 检查——既有测试全带 init-list 掩盖的潜伏 bug）
+                if ctor.body is not None:    # 声明 ctor：体=外联定义（0.0.41）
+                    self.check_stmts(ctor.body, sc, False)   # 0.0.29 修：体检查
+                    # 曾错挂在 init-args 循环内（无 init-list 的 ctor 体从未被
+                    # 检查——既有测试全带 init-list 掩盖的潜伏 bug）
             for meth in cd.methods:
                 self.cur_method = meth
                 sc = Scope(self.gscope)
