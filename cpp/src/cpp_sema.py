@@ -117,9 +117,24 @@ class Sema:
             prefix = tkey + "__"
             if not name.startswith(prefix):
                 continue
+            # 0.0.42 全特化命中：特化体直接用（无替换）
+            if name in tmpl.specializations:
+                return self._instantiate_spec(
+                    tkey, name, tmpl.specializations[name])
             argstrs = name[len(prefix):].split("__")
-            if len(argstrs) != len(tmpl.tvars):
+            dfls = tmpl.tvar_dfls
+            if len(argstrs) > len(dfls):
                 continue
+            if len(argstrs) < len(dfls):
+                # 0.0.42 默认模板参数：尾部缺省位须全有默认
+                miss = range(len(argstrs), len(dfls))
+                if any(dfls[i][1] is None for i in miss):
+                    raise SemaError(
+                        "E0", f"模板 {tkey} 实参数 {len(argstrs)} 不足"
+                        f"且缺省位无默认（{len(dfls)} 类型参数）")
+                argstrs = argstrs + [
+                    type_name(dfls[i][1]).replace("::", "_")
+                    for i in miss]
             concs = []
             for a in argstrs:
                 ty = self._tflat(a)
@@ -128,6 +143,21 @@ class Sema:
                 concs.append(ty)
             return self._instantiate_class(tkey, tmpl, concs, name)
         return None
+
+    def _instantiate_spec(self, tkey, inst_name, spec_cd):
+        """全特化实例化：特化体已具体——deepcopy 无替换（0.0.42）。"""
+        if inst_name in self.cls_insts:
+            return inst_name               # 已实例化（每类型一实例）
+        self.cls_insts[inst_name] = True
+        clone = _copy.deepcopy(spec_cd)
+        clone.name = inst_name
+        clone.ns = None
+        clone.nested_in = None
+        clone.base = None
+        self._fill_class_info(clone, inst_name)
+        self._check_class_body(clone)
+        self.decls_list.append(clone)      # 就地注入：lower 同列表可见
+        return inst_name
 
     def _tflat(self, a):
         """平化名反解：int/char/bool→基本型；其他=None（类实参嵌套
@@ -1140,12 +1170,22 @@ class Sema:
                 tmpl = self.templates[e.name]
                 tvars = tmpl.tvars
                 if e.targs is not None:
-                    # 0.0.40 显式模板实参（无部分显式/空 <>）
-                    if len(e.targs) != len(tvars):
+                    # 0.0.40 显式模板实参；0.0.42 缺省位默认补齐
+                    if len(e.targs) > len(tvars):
                         raise SemaError(
                             "E0", f"模板 {e.name} 显式实参数 "
                             f"{len(e.targs)} ≠ 类型参数数 {len(tvars)}")
-                    inst = self.instantiate(e.name, list(e.targs))
+                    concs = list(e.targs)
+                    if len(concs) < len(tvars):
+                        dfls = tmpl.tvar_dfls
+                        miss = range(len(concs), len(tvars))
+                        if any(dfls[i][1] is None for i in miss):
+                            raise SemaError(
+                                "E0", f"模板 {e.name} 显式实参数 "
+                                f"{len(concs)} 不足且缺省位无默认")
+                        concs = concs + [_copy.deepcopy(dfls[i][1])
+                                         for i in miss]
+                    inst = self.instantiate(e.name, concs)
                     while len(e.args) < len(inst.params):
                         e.args.append(inst.defaults[len(e.args)])
                     self.check_args(e.args, inst, sc, is_const)

@@ -146,6 +146,8 @@ class ClassTemplate:
 
     def __init__(self, tvars, decl):
         self.tvars, self.decl = tvars, decl
+        self.tvar_dfls = [(v, None) for v in tvars]   # 0.0.42 默认模板参数
+        self.specializations = {}        # 0.0.42 全特化 flat→ClassDecl
         self.ext_methods = []            # [(cls_flat_name, MethodDecl)]
         self.ext_ctors = []              # [(cls_flat_name, CtorDecl)]
 
@@ -296,9 +298,15 @@ class Parser:
         self.expect("KW", "template")
         self.expect("PUNCT", "<")
         tvars = []                        # 0.0.40 多类型参数
+        tvar_dfls = []                    # 0.0.42 默认模板参数 [(名, Type|None)]
         while True:
+            if self.peek()[0] == "PUNCT" and self.peek()[1] == ">":
+                break                     # template<> = 全特化头（0.0.42）
             self.expect("KW", "typename")
-            tvars.append(self.expect("ID")[1])
+            vn = self.expect("ID")[1]
+            dfl = self.parse_type() if self.accept("PUNCT", "=") else None
+            tvars.append(vn)
+            tvar_dfls.append((vn, dfl))
             if not self.accept("PUNCT", ","):
                 break
         self.expect("PUNCT", ">")
@@ -309,8 +317,30 @@ class Parser:
             cname = self.expect("ID")[1]
             if self.accept("PUNCT", ":"):
                 raise ParseError("类模板继承=0.0.43 多继承面，暂不支持")
+            if tvars == [] and self.peek()[0] == "PUNCT" and \
+                    self.peek()[1] == "<":
+                # 0.0.42 全特化：template<> class Desc<int> {...}
+                self.next()
+                args = [self.parse_type()]
+                while self.accept("PUNCT", ","):
+                    args.append(self.parse_type())
+                self.expect("PUNCT", ">")
+                flat = cname + "__" + "__".join(
+                    a.name.replace("::", "_") if a.kind == "class"
+                    else a.kind for a in args)
+                ct = self.class_templs.get(cname)
+                if ct is None:
+                    raise ParseError(
+                        f"全特化 {flat} 须在主模板 {cname} 之后")
+                if self.peek()[0] == "PUNCT" and self.peek()[1] == ";":
+                    self.next()
+                    return ct            # 特化声明（子集：须完整定义）
+                cd = self.classdef(kind=kind, name=cname)
+                ct.specializations[flat] = cd
+                return ct
             cd = self.classdef(kind=kind, name=cname)
             node = ClassTemplate(tvars, cd)
+            node.tvar_dfls = tvar_dfls
             self.class_templs[cname] = node       # 外联定义归模板（0.0.41）
             return node
         ty = self.parse_type()
@@ -350,7 +380,9 @@ class Parser:
         fd = MethodDecl(nm, ty, params, False, body)
         fd.defaults = defaults
         fd.tvars = tvars
-        return FuncTemplate(tvars, fd)
+        ft = FuncTemplate(tvars, fd)
+        ft.tvar_dfls = tvar_dfls
+        return ft
 
     def _ext_class_member(self, tvars, cls_flat, pair):
         """外联成员归模板：cls_flat 须= Name__T（tvars 恒等映射）；
