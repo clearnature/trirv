@@ -12,6 +12,8 @@ CType *sema_find_member(Sema *S, const char *cname, const char *name);
 CType *sema_find_static_owner(Sema *S, const char *cname, const char *name,
                               char **owner_out);
 Node *sema_chain_impl(Sema *S, const char *ckey, const char *slot);
+Node *sema_instantiate_func(Sema *S, Node *tmpl, CType **concs, int nconcs,
+                            const char *fname);
 CType *sema_find_member_owner(Sema *S, const char *cname, const char *name,
                               char **owner_out);
 CType *sema_find_static_owner(Sema *S, const char *cname, const char *name,
@@ -293,6 +295,37 @@ CType *sema_check_expr(Sema *S, Node *e, Scope *sc, int is_const) {
         /* 0.0.39/40 模板调用 */
         for (int ti = 0; ti < S->ntemplates; ti++) {
             /* 模板名匹配（Node 链遍历） */
+        }
+        /* 0.0.39/40 模板调用：显式实参/推导 → instantiate（S3） */
+        for (int ti2 = 0; ti2 < S->ntemplates; ti2++) {
+            Node *tmpl = S->templates[ti2];
+            if (strcmp(tmpl->s, e->s)) continue;
+            CType *concs[16];
+            int nconcs = 0;
+            if (e->ntargs >= 0) {
+                if (e->ntargs > 16)
+                    sema_error("E0", "模板实参数超 16");
+                for (int i = 0; i < e->ntargs; i++)
+                    concs[i] = e->targs[i];
+                nconcs = e->ntargs;
+            } else {
+                /* 按参数位推导：param i 类型 Tj ← arg i（去 ref） */
+                Node *arg = e->items;
+                Node *tv = tmpl->c;         /* tvars 链 */
+                Node *pp = tmpl->items;     /* decl params（N_PARAM） */
+                for (; pp && arg; pp = pp->next, arg = arg->next) {
+                    CType *at = sema_check_expr(S, arg, sc, is_const);
+                    if (at->kind == TY_REF) at = at->pointee;
+                    if (pp->ty && pp->ty->kind == TY_CLASS) {
+                        concs[nconcs < 16 ? nconcs : 15] = at;
+                        nconcs++;
+                    }
+                }
+                (void)tv;
+            }
+            Node *inst = sema_instantiate_func(S, tmpl, concs, nconcs, e->s);
+            e->sig = inst; e->ty = inst->ty; e->lval = 0;
+            return e->ty;
         }
         if (!strcmp(e->s, "typeid")) {
             if (ast_count(e->items) != 1) sema_error("E0", "typeid 恰一操作数");

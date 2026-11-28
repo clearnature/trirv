@@ -88,6 +88,7 @@ struct Node {
 
 Node *ast_new(NKind k, int line);
 Node *cpp_ast_num(long long v, int line);
+Node *ast_deep_copy(Node *n);
 Node *ast_chain(Node *head, Node *item);   /* items 链追加，返回新头计数无效 */
 int ast_count(Node *chain);
 const char *acc_name(int f1);              /* ACC_* → "public"/... */
