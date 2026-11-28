@@ -335,7 +335,7 @@ static void lex(const char*src){
             /* 45-trit 字面量超出 long long：用 __int128 累加 */
             __int128 v=0; int base=10;
             if(p[0]=='0'&&(p[1]=='x'||p[1]=='X')){ base=16; p+=2; }
-            char*end=p;
+            char*end=p; char*lit_start=p;   /* C1 报错文本锚 */
             for(;;){
                 int d=-1;
                 char ch=*end;
@@ -344,6 +344,14 @@ static void lex(const char*src){
                 else if(ch>='A'&&ch<='F') d=ch-'A'+10;
                 if(d<0||d>=base) break;
                 v=v*base+d; end++;
+            }
+            {   /* 0.1.1a C1：45-trit 字值域检查（回审——超域字面量曾静默
+                 * 损坏且与 tri-tcc 不一致 132 vs 255；cpp 前端 G3 已挡
+                 * 直发 C 通道） */
+                __int128 lim=1; for(int i=0;i<45;i++) lim*=3;
+                if(v>=lim){ fprintf(stderr,
+                    "literal overflow: %.*s exceeds 45-trit word (3^45)\n",
+                    (int)(end-lit_start), lit_start); exit(1); }
             }
             t.kind=TK_NUM; t.num=(long long)v; t.numw=v; tok_push(t); p=end; continue;
         }
@@ -3019,12 +3027,30 @@ static int ends_with_return(Node*n){
     return 0;
 }
 
+/* 0.1.1a C2：goto/label 编译期校验（回审——未定义标签 JAL zero
+ * 曾跳进未知指令区挂死 halted=False；tri-tcc 一直拒绝） */
+static char GOTOL[64][64]; static int NGOTOL=0;
+static char GOTOG[64][64]; static int NGOTOG=0;
+static void ngtlbl(char tab[][64], const char*s){
+    for(int i=0;i<(tab==GOTOL?NGOTOL:NGOTOG);i++)
+        if(!strcmp(tab[i],s)) return;
+    strcpy(tab[tab==GOTOL?NGOTOL++:NGOTOG++],s);
+}
+static void goto_check(void){
+    for(int i=0;i<NGOTOG;i++){
+        int found=0;
+        for(int j=0;j<NGOTOL;j++) if(!strcmp(GOTOG[i],GOTOL[j])){found=1;break;}
+        if(!found){ fprintf(stderr,
+            "undefined label '%s' for goto\n", GOTOG[i]); exit(1); }
+    }
+}
+
 static void gen_stmt(Node*n){
     if(!n) return;
     switch(n->k){
     case N_BLOCK: for(int i=0;i<n->nitems;i++) gen_stmt(n->body[i]); break;
-    case N_LABEL: lbl(n->s); break;
-    case N_GOTO:  emitf("JAL zero, %s",n->s); break;
+    case N_LABEL: lbl(n->s); ngtlbl(GOTOL,n->s); break;
+    case N_GOTO:  emitf("JAL zero, %s",n->s); ngtlbl(GOTOG,n->s); break;
     case N_SWITCH: {
         /* switch 生成：cond 求值 → 逐 case BEQ 跳转；无匹配跳 default/end；
          * case 体顺序生成（fall-through）；break 落 end。 */
@@ -3309,6 +3335,8 @@ static int has_call(Node*n){
 }
 static void gen_func(Node*f){
     NLOC=0; memset(USEDREG,0,sizeof(USEDREG)); NLOOP=0; CURFN=f->s; NFIXED=f->nparams;
+    NGOTOL=NGOTOG=0;                                /* C2：per-function 标签集 */
+
     FUNC_EPILOGUE=newlbl("epi");
     int anycall=has_any_call(f->fbody);
     int hascall=has_call(f->fbody);
@@ -4356,6 +4384,7 @@ int main(int argc,char**argv){
                 emitf("JALR zero, 0(ra)");           /* TRVO 单元独编（无导入）时占位 */
             } else {
                 gen_func(FNS[i]);
+                goto_check();                        /* C2：未定义标签校验 */
                 /* 链接期未定义引用检测：此刻 findloc 恰好覆盖本函数的
                    形参+局部（gen_func 刚填完）。N_CALL 的 callee 四查：
                    FNS / syscall / 本函数形参（间接调用豁免）/ 全局。
