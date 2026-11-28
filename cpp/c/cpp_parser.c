@@ -67,9 +67,13 @@ PTok *P_expect(const char *kind, const char *val) {
 
 /* ---- 顶层 ---- */
 static Node *ch_tail(Node *head, Node *n) {
-    if (!head) return n;
+    /* 幂等尾插：同节点重复入链=自环（外联 return 的 TCLASS 曾三次
+     * 入 templates 链——ct->next=ct 自环挂死，sample 实证） */
+    if (!head) { n->next = NULL; return n; }
     Node *e = head;
-    while (e->next) e = e->next;
+    while (e->next) { if (e == n) return head; e = e->next; }
+    if (e == n) return head;
+    n->next = NULL;
     e->next = n;
     return head;
 }
@@ -79,7 +83,11 @@ Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
     P_i = 0;
     Node *classes = NULL, *funcs = NULL, *globals = NULL, *sdefs = NULL,
          *templates = NULL, *main_body = NULL;
+    int dbg_it = 0;
     while (strcmp(P_peek(0)->kind, "EOF")) {
+        if (++dbg_it % 1000 == 0)
+            fprintf(stderr, "[dbg] it=%d i=%d peek=%s/%s\n", dbg_it, P_i,
+                    P_peek(0)->kind, P_peek(0)->val);
         PTok *t = P_peek(0);
         if (t->kind == (const char *)"KW" &&
             (!strcmp(t->val, "int") || !strcmp(t->val, "char")) &&

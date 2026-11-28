@@ -173,6 +173,8 @@ static Node *p_primary_body(void) {
                         Node *fc = ast_new(NK_FREECALL, t->line);
                         fc->s = strdup(nm); fc->items = args;
                         fc->targs = tarr; fc->ntargs = ntargs;
+                        P_try_pop();          /* 0.1.5 成功路径 pop（泄漏曾致
+                                              * 后续 parse_err 跳死帧挂死） */
                         return fc;
                     }
                     P_i = mark;           /* 失配复原回退比较层 */
