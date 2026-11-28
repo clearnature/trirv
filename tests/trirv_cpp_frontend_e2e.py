@@ -75,6 +75,7 @@ BEHAVIOR = [
     ("test36c_terminate.cpp", 134),  # 0.0.36 main 未捕获 = terminate 134
     ("test37_raii.cpp", 8),          # 需链 libc——0.0.37 RAII 栈展开
     ("test38_exinherit.cpp", 11),    # 0.0.38 异常×继承（Phase C 收官）
+    ("test39_template.cpp", 81),     # 0.0.39 函数模板按需实例化（Phase D 首任务）
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -89,6 +90,7 @@ REJECT = [
     ("test32b_operand.cpp", "typeid"),            # 0.0.32：typeid 基本型操作数
     ("test33b_unrelated.cpp", "无关类型"),        # 0.0.33：dynamic_cast 无关类型
     ("test36b_rethrow_scope.cpp", "bare rethrow"),    # 0.0.36：bare rethrow 须在 catch 内
+    ("test39b_deduct_mismatch.cpp", "实参类型不一致"),  # 0.0.39：模板实参推导不一致 E0
 ]
 
 os.makedirs(TMP, exist_ok=True)

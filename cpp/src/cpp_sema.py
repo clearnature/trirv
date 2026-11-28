@@ -13,7 +13,8 @@ mangling 的 R/RK/NK 喂点全部由本层 Type 驱动，正则时代的布尔�
   E0  未声明/未解析标识符、重载无匹配、类不存在
   I1  声明初始化器含函数调用（trirv_cc INITLIST 限制——拆两步）
 """
-from cpp_parser import (CUR_CATCH, EH_FLAG, New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Throw, Try, Num, StrLit, Id, This, Member, MethodCall,
+import copy as _copy
+from cpp_parser import (CUR_CATCH, EH_FLAG, FuncTemplate, New, DeleteStmt, DtorDecl, CopyInit, NamedCast, Throw, Try, Num, StrLit, Id, This, Member, MethodCall,
                         FreeCall, Bin, Un, Assign, VarDecl, CtorStmt,
                         ExprStmt, Return, If, While, For, BlockStmt)
 from cpp_types import (tint, tchar, tbool, tvoid, tcls, tref, tptr, type_name,
@@ -76,6 +77,8 @@ class Sema:
         EH_FLAG[0] = False
         self.fn_dtors = []            # 本帧 dtor 对象 [(var, class_key)]（0.0.37）
         self.main_dtors = []
+        self.templates = {}           # name → FuncTemplate（0.0.39 按需实例化）
+        self.instantiated = {}        # inst_name → MethodDecl（单态化缓存）
         self.classes = {}
         self.cur_method = None
         self.cur_cls = None
@@ -455,9 +458,61 @@ class Sema:
         return cands[0] if cands else None
 
     # ============ 主体 ============
-    def check(self, decls, funcs, gdecls, sdefs, main):
+    def build_templates(self, tdecls):
+        """模板注册（体延迟——实例化时按具体类型 check）。"""
+        for t in tdecls:
+            self.templates[t.decl.name] = t
+
+    def instantiate(self, fname, conc_type):
+        """单态化：deepcopy 模板体 + T→concrete 替换 + 重 check + 注册。"""
+        tmpl = self.templates[fname]
+        inst_name = f"{fname}__{type_name(conc_type)}"
+        if inst_name in self.instantiated:
+            return self.instantiated[inst_name]
+        clone = _copy.deepcopy(tmpl.decl)
+        clone.name = inst_name
+        self._subst(clone, tmpl.tvar, conc_type)
+        clone.mname = inst_name                     # 约定名（单态化）
+        clone.call_key = inst_name
+        self.instantiated[inst_name] = clone
+        # 按具体类型重 check（cur_method=实例）
+        self.cur_cls, self.cur_method = None, clone
+        self.cur_ns = None
+        sc = Scope(self.gscope)
+        for (pty, pn) in clone.params:
+            sc.declare(pn, pty)
+        self.fn_dtors = []
+        self.check_stmts(clone.body, sc, False)
+        clone.fn_dtors = list(self.fn_dtors)
+        self.funcs.setdefault(clone.call_key, []).append(clone)
+        self.funcs_list.append(clone)
+        return clone
+
+    def _subst(self, decl, tvar, conc):
+        """T→concrete 类型替换（ret/params/body 类型通道）。"""
+        if decl.ret.kind == "class" and decl.ret.name == tvar:
+            decl.ret = _copy.deepcopy(conc)
+        for i, (pty, pn) in enumerate(decl.params):
+            if pty.kind == "class" and pty.name == tvar:
+                decl.params[i] = (_copy.deepcopy(conc), pn)
+        for ss in decl.body:
+            self._subst_stmt(ss, tvar, conc)
+
+    def _subst_stmt(self, s, tvar, conc):
+        if isinstance(s, VarDecl):
+            if s.ty.kind == "class" and s.ty.name == tvar:
+                s.ty = _copy.deepcopy(conc)
+        elif isinstance(s, Try):
+            for x in s.try_body:
+                self._subst_stmt(x, tvar, conc)
+            for (_ct, _cv, cb) in s.catches:
+                for x in cb:
+                    self._subst_stmt(x, tvar, conc)
+
+    def check(self, decls, funcs, gdecls, sdefs, tdecls, main):
         self.build_classes(decls)
         self.build_funcs(funcs)
+        self.build_templates(tdecls)
         self.gscope = Scope()
         for (gn, gty, _gi) in gdecls:
             self.gscope.declare(gn, gty)
@@ -874,6 +929,34 @@ class Sema:
                     self.check_expr(a, sc, is_const)
                     a.bind = "value"
                 e.ty, e.lval = tobj(ckey), False
+                return e.ty
+            if e.name not in self.templates and \
+                    self.resolve_class_name(e.name, self.cur_ns) is None:
+                pass
+            elif e.name in self.templates:
+                # 0.0.39 模板调用：实参推导 T → 单态化实例
+                if len(e.args) == 0:
+                    raise SemaError("E0", f"模板 {e.name} 至少一实参（推导源）")
+                arg_tys = []
+                for a in e.args:
+                    at = self.check_expr(a, sc, is_const)
+                    ab = at.pointee if at.kind == "ref" else at
+                    arg_tys.append(ab)
+                tvar = self.templates[e.name].tvar
+                conc = arg_tys[0]
+                if conc.kind != "class" or conc.name != tvar:
+                    pass   # 非 T 实参（混合）→ 0.0.40 显式实参面
+                for at2 in arg_tys[1:]:
+                    if at2 != conc:
+                        raise SemaError("E0",
+                                        f"模板 {e.name} 实参类型不一致"
+                                        f"（{type_name(conc)} vs {type_name(at2)}）"
+                                        f"——多类型参数=0.0.40")
+                inst = self.instantiate(e.name, conc)
+                while len(e.args) < len(inst.params):
+                    e.args.append(inst.defaults[len(e.args)])
+                self.check_args(e.args, inst, sc, is_const)
+                e.sig, e.ty, e.lval = inst, inst.ret, False
                 return e.ty
             if e.name == "typeid":
                 # 0.0.32 RTTI·typeid：类名=静态 ti / 对象左值=动态 ti（有虚类）

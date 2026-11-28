@@ -130,6 +130,13 @@ class Try:
         self.try_body, self.catches = try_body, catches
 
 
+class FuncTemplate:
+    """template<typename T> T name(...) { body }（0.0.39 按需实例化）。"""
+
+    def __init__(self, tvar, decl):
+        self.tvar, self.decl = tvar, decl
+
+
 class Bin:
     def __init__(self, op, l, r):
         self.op, self.l, self.r = op, l, r
@@ -224,7 +231,7 @@ class Parser:
     def parse_tu(self):
         """0.0.12：classes + 自由函数 + main 三类顶层声明。"""
         classes, funcs, main = [], [], None
-        globals_, sdefs = [], []
+        globals_, sdefs, templates = [], [], []
         ty_of = lambda kw: tchar() if kw == "char" else tint()
         while self.peek()[0] != "EOF":
             t = self.peek()
@@ -248,6 +255,8 @@ class Parser:
                 globals_.append((nm, ty, init))
             elif t[0] == "KW" and t[1] == "extern":
                 self.extern_c(funcs)
+            elif t[0] == "KW" and t[1] == "template":
+                templates.append(self.templatedef())
             elif t[0] == "KW" and t[1] == "namespace":
                 ns_name = self.nsdef(classes, funcs)
             elif t[0] == "KW" and t[1] in ("class", "struct"):
@@ -266,7 +275,27 @@ class Parser:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
         classes.extend(self.collected_inner)
         self.collected_inner = []
-        return classes, funcs, globals_, sdefs, main
+        return classes, funcs, globals_, sdefs, templates, main
+
+    def templatedef(self):
+        """template<typename T> T name(...) { body }——T 复用类通道。"""
+        self.expect("KW", "template")
+        self.expect("PUNCT", "<")
+        self.expect("KW", "typename")
+        tvar = self.expect("ID")[1]
+        self.expect("PUNCT", ">")
+        ty = self.parse_type()
+        nm = self.expect("ID")[1]
+        self.expect("PUNCT", "(")
+        params, defaults = self.parse_params()
+        self.expect("PUNCT", ")")
+        if self.accept("KW", "const"):
+            raise ParseError("模板函数无 const（无 this 可限定）")
+        body = self.block()
+        fd = MethodDecl(nm, ty, params, False, body)
+        fd.defaults = defaults
+        fd.tvar = tvar
+        return FuncTemplate(tvar, fd)
 
     def extern_c(self, funcs):
         """extern "C" { fdecl… } / extern "C" int f(params);——裸名链接面。
@@ -848,5 +877,5 @@ class Block:
 
 
 def parse(src):
-    """源码 → (classes, free_funcs, globals, static_defs, main)。"""
+    """源码 → (classes, funcs, globals, sdefs, templates, main)。"""
     return Parser(lex(src)).parse_tu()
