@@ -750,24 +750,34 @@ class VM:
             hi = prod // MOD                        # 向 3^45 取整的高半
             self.regs[rd] = u(hi)                   # 以 3 补码存回 word
         elif name == "DIV":
-            if b == 0:
-                self.regs[rd] = u(0)
-            else:
-                q = abs(a) // abs(b)
-                self.regs[rd] = u(q if (a >= 0) == (b >= 0) else -q)  # 向零取整
+            if b == 0:                        # 0.1.1b 除零 trap（拍板）：
+                self.exit_code = 136          #   exit=136（POSIX SIGFPE
+                self.halted = True            #   128+8 惯例）+ 停机——
+                return                        #   双 VM 一致定义故障
+            q = abs(a) // abs(b)
+            self.regs[rd] = u(q if (a >= 0) == (b >= 0) else -q)  # 向零取整
         elif name == "REM":
-            if b == 0:
-                self.regs[rd] = u(0)
-            else:
-                q = abs(a) // abs(b)
-                q = q if (a >= 0) == (b >= 0) else -q
-                self.regs[rd] = u(a - q * b)
+            if b == 0:                        # 0.1.1b 除零 trap
+                self.exit_code = 136
+                self.halted = True
+                return
+            q = abs(a) // abs(b)
+            q = q if (a >= 0) == (b >= 0) else -q
+            self.regs[rd] = u(a - q * b)
         elif name == "DIVU":
             av, bv = self.regs[rs1], self.regs[rs2]  # 无符号 word
-            self.regs[rd] = (av // bv) % MOD if bv else u(0)
+            if bv == 0:                       # 0.1.1b 除零 trap
+                self.exit_code = 136
+                self.halted = True
+                return
+            self.regs[rd] = (av // bv) % MOD
         elif name == "REMU":
             av, bv = self.regs[rs1], self.regs[rs2]
-            self.regs[rd] = (av % bv) % MOD if bv else u(0)
+            if bv == 0:                       # 0.1.1b 除零 trap
+                self.exit_code = 136
+                self.halted = True
+                return
+            self.regs[rd] = (av % bv) % MOD
         elif name == "ADDI":
             self.regs[rd] = u(a + s(isa.sign_extend_imm(imm)))
         elif name == "SLL":

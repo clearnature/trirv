@@ -82,7 +82,10 @@ BEHAVIOR = [
     ("test43_multiinherit.cpp", 21),  # 0.0.43 多继承布局：base 偏移+this 调整
     ("test44_mivirtual.cpp", 33),    # 0.0.44 多继承分派：per-base vtable+thunk
     ("test45_integration.cpp", 173),  # 0.1.0 里程碑：五带混合集成回归
+    ("test47e_eh_eightint.cpp", 36),  # 0.1.1 G2 边界：8 int 槽恰满通过
+    ("test48_div_zero.cpp", 136),    # 0.1.1b 除零 trap=136（SIGFPE 惯例）
 ]
+# (文件, stderr 必含码)——拒绝性用例
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
     ("test08a_n8_ref.cpp", "N8"),
@@ -108,6 +111,10 @@ REJECT = [
     ("test46d_try_nocatch.cpp", "try 无 catch"),     # 审计 F4：零 catch 误收
     ("test46e_ptr_int.cpp", "隐式转换"),             # 审计 F6：指针/整数互转
     ("test46f_undef_class.cpp", "未定义"),           # 审计 F7：签名未定义类
+    ("test47a_const_write.cpp", "K3"),               # 0.1.1 G1：const 写
+    ("test47b_eh_nineint.cpp", "容量"),              # 0.1.1 G2：buf 溢出
+    ("test47c_lit_range.cpp", "值域"),               # 0.1.1 G3：字面量值域
+    ("test47d_deep_blocks.cpp", "嵌套过深"),         # 0.1.1 G4：深度限制
 ]
 
 os.makedirs(TMP, exist_ok=True)

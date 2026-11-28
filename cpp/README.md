@@ -26,6 +26,7 @@ C 异常 34–38 / D 模板 39–42 / E 多继承 43–44；集成回归 test45 
 - RTTI：dynamic_cast 多基面=位 0 基指针保持；位>0 基/跨基=E0
 - 模板：嵌套类模板实参（`Box<Box<int>>`）拒绝（`>>` 单 token）；函数模板特化=E0；
   多基同名虚槽=E0；模板元编程永久不支持
+- 运行时（0.1.1b 拍板）：整数除零/模零（DIV/DIVU/REM/REMU）→ **trap exit 136**（POSIX SIGFPE 惯例；FDIV 浮点面自有语义）；char 243 → wrap=0（tryte 自然溢出）
 - 检查（0.1.1 起）：const 对象写=K3（**C 编译器不兜底实证**）；throw 对象
   ≤72 tryte（8 int 槽，`_class_size` 公式与 trirv_cc sizeof 实证对齐）；
   字面量 <3^45；块嵌套 ≤150 / 表达式括号 ≤45 / 同层链 ≤200（超限=诚实

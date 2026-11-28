@@ -1022,13 +1022,15 @@ static inline void step(VM *v){
         case OP_ADD:v->reg[rd]=u(a+b);break;
         case OP_SUB:v->reg[rd]=u(a-b);break;
         case OP_MUL:v->reg[rd]=mul90_lo(v->reg[rs1],v->reg[rs2]);break; /* 只需低半 mod 3^45 */
-        case OP_DIV:{__int128_t q;divmod_word(a,b,&q,NULL);v->reg[rd]=u(q);break;}   /* 无除法器 */
-        case OP_REM:{__int128_t r;divmod_word(a,b,NULL,&r);v->reg[rd]=u(r);break;}   /* 无除法器 */
+        case OP_DIV:{if(b==0){v->exit_code=136;v->halted=1;return;}   /* 0.1.1b 除零 trap */
+            __int128_t q;divmod_word(a,b,&q,NULL);v->reg[rd]=u(q);break;}   /* 无除法器 */
+        case OP_REM:{if(b==0){v->exit_code=136;v->halted=1;return;}   /* 0.1.1b 除零 trap */
+            __int128_t r;divmod_word(a,b,NULL,&r);v->reg[rd]=u(r);break;}   /* 无除法器 */
         case OP_MULH:case OP_MULHSU:case OP_MULHU:
             v->reg[rd]=mulh_hi(in->op,v->reg[rs1],v->reg[rs2]);break;  /* 90位高半,无除法 */
         case OP_DIVU:case OP_REMU:{
             __uint128_t av=v->reg[rs1],bv=v->reg[rs2];
-            if(bv==0){v->reg[rd]=0;break;}
+            if(bv==0){v->exit_code=136;v->halted=1;return;}  /* 0.1.1b 除零 trap */
             __int128_t q,r;
             divmod_word((__int128_t)av,(__int128_t)bv,&q,&r);  /* 正数幅值,无除法 */
             v->reg[rd]=(in->op==OP_DIVU)?(__uint128_t)q:(__uint128_t)r;
@@ -1333,14 +1335,16 @@ static void vm_run_cg(VM *v, long max_steps){
 L_ADD:   v->reg[rd]=u(a+b); NEXT();
 L_SUB:   v->reg[rd]=u(a-b); NEXT();
 L_MUL:   v->reg[rd]=mul90_lo(v->reg[rs1],v->reg[rs2]); NEXT(); /* 只需低半 mod 3^45 */
-L_DIV:   {__int128_t q;divmod_word(a,b,&q,NULL);v->reg[rd]=u(q);} NEXT();          /* 无除法器 */
-L_REM:   {__int128_t r;divmod_word(a,b,NULL,&r);v->reg[rd]=u(r);} NEXT();          /* 无除法器 */
+L_DIV:   {if(b==0){v->exit_code=136;v->halted=1;return;}   /* 0.1.1b 除零 trap */
+            __int128_t q;divmod_word(a,b,&q,NULL);v->reg[rd]=u(q);} NEXT();          /* 无除法器 */
+L_REM:   {if(b==0){v->exit_code=136;v->halted=1;return;}   /* 0.1.1b 除零 trap */
+            __int128_t r;divmod_word(a,b,NULL,&r);v->reg[rd]=u(r);} NEXT();          /* 无除法器 */
 L_MULH:   v->reg[rd]=mulh_hi(in->op,v->reg[rs1],v->reg[rs2]); NEXT();
 L_MULHSU: v->reg[rd]=mulh_hi(in->op,v->reg[rs1],v->reg[rs2]); NEXT();
 L_MULHU:  v->reg[rd]=mulh_hi(in->op,v->reg[rs1],v->reg[rs2]); NEXT();
-L_DIVU:   {__uint128_t av=v->reg[rs1],bv=v->reg[rs2];if(!bv)v->reg[rd]=0;
+L_DIVU:   {__uint128_t av=v->reg[rs1],bv=v->reg[rs2];if(!bv){v->exit_code=136;v->halted=1;return;}   /* 0.1.1b 除零 trap */
            else{__int128_t q;divmod_word((__int128_t)av,(__int128_t)bv,&q,NULL);v->reg[rd]=(__uint128_t)q;}} NEXT();
-L_REMU:   {__uint128_t av=v->reg[rs1],bv=v->reg[rs2];if(!bv)v->reg[rd]=0;
+L_REMU:   {__uint128_t av=v->reg[rs1],bv=v->reg[rs2];if(!bv){v->exit_code=136;v->halted=1;return;}   /* 0.1.1b 除零 trap */
            else{__int128_t r;divmod_word((__int128_t)av,(__int128_t)bv,NULL,&r);v->reg[rd]=(__uint128_t)r;}} NEXT();
 L_ADDI:  v->reg[rd]=u(a+imm); NEXT();
 L_SLL:   {long sh=(long)(umod2187(v->reg[rs2]));v->reg[rd]=shl3(v->reg[rs1],sh);} NEXT();          /* 2187=3^7 常量除数 */
