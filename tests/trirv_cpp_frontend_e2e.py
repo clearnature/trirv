@@ -81,6 +81,7 @@ BEHAVIOR = [
     ("test42_ctemplate2.cpp", 136),  # 0.0.42 多参数/默认参数/全特化（Phase D 收官）
     ("test43_multiinherit.cpp", 21),  # 0.0.43 多继承布局：base 偏移+this 调整
     ("test44_mivirtual.cpp", 33),    # 0.0.44 多继承分派：per-base vtable+thunk
+    ("test45_integration.cpp", 173),  # 0.1.0 里程碑：五带混合集成回归
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [

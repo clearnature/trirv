@@ -970,7 +970,50 @@ def call(e, ctx, scope):
         # 0.0.25 虚分派：recv->__vtbl->slot(recv, args…)
         recv_owner = scope.get("__recv_owner__")
         scope["__recv_owner__"] = getattr(e, "sig_owner", None)
+        # 0.0.26 类型套用拆链：(*(struct Root_v **)recv)->slot(…)
+        # （trirv_cc 链式箭头 fn-ptr codegen 不工作——p26=42 探针实证）
+        # 0.1.0 根=持有该槽名的虚根（sig_owner=覆写实现者而非原声明者
+        # ——D 覆写 VB::fb 时 sig_owner=D，root_of(D)=VA 错表）
+        rc = getattr(e.obj, "ty", None)
+        rn = rc.pointee.name if rc is not None and \
+            rc.kind in ("ptr", "ref") else \
+            (rc.name if rc is not None else None)
+        root = None
+        rinfo = (CLASSES_META[0] or {}).get(rn) if rn else None
+        if rinfo is not None:
+            rbks = getattr(rinfo, "bases", None) \
+                or ([rinfo.base] if rinfo.base else [])
+            for b in rbks:
+                r = _root_of(b, CLASSES_META[0])
+                ri = CLASSES_META[0].get(r) if r else None
+                if ri is not None and meth.name in ri.vslots:
+                    root = r
+                    break
+        if root is None:
+            root = _root_of(rn, CLASSES_META[0]) if rn \
+                else _root_of(getattr(e, "sig_owner", None),
+                              CLASSES_META[0])
+        if not root:
+            root = _root_of(scope.get("__cls__"), CLASSES_META[0])
         recv = recv_expr(e.obj, scope)
+        # 0.1.0 接收者子对象调整：接收者静态类型根≠槽根 → &recv.__base{i}
+        # （位 0=基址恒等零调整；test45 D 值调 fb 实证槽错位）
+        if rc is not None and root is not None:
+            rroot = _root_of(rn, CLASSES_META[0])
+            if rroot is not None and rroot != root:
+                info = (CLASSES_META[0] or {}).get(rn)
+                idx = None
+                if info is not None:
+                    bks = getattr(info, "bases", None) \
+                        or ([info.base] if info.base else [])
+                    for i, b in enumerate(bks):
+                        if _root_of(b, CLASSES_META[0]) == root:
+                            idx = i
+                            break
+                if idx == 0:
+                    pass                  # 位 0：基址恒等
+                elif idx is not None:
+                    recv = f"&({expr(e.obj, {'value'}, scope)}.__base{idx})"
         parts = [recv]
         for a in e.args:
             bind = getattr(a, "bind", "value")
@@ -981,18 +1024,26 @@ def call(e, ctx, scope):
             else:
                 parts.append(expr(a, {"value"}, scope))
         scope["__recv_owner__"] = recv_owner
-        # 0.0.26 类型套用拆链：(*(struct Root_v **)recv)->slot(…)
-        # （trirv_cc 链式箭头 fn-ptr codegen 不工作——p26=42 探针实证）
-        # 0.0.44 根=接收者静态类型（多基下 sig_owner 根≠接收者子对象根）
+        # 0.1.0 接收者子对象调整：接收者静态类型根≠声明根 → &recv.__base{i}
+        # （位 0=基址恒等零调整；test45 D 值调 fb 实证槽错位）
         rc = getattr(e.obj, "ty", None)
-        root = None
-        if rc is not None:
+        if rc is not None and root is not None:
             rn = rc.pointee.name if rc.kind in ("ptr", "ref") else rc.name
-            root = _root_of(rn, CLASSES_META[0])
-        if not root:
-            root = _root_of(getattr(e, "sig_owner", None), CLASSES_META[0])
-        if not root:
-            root = _root_of(scope.get("__cls__"), CLASSES_META[0])
+            rroot = _root_of(rn, CLASSES_META[0])
+            if rroot is not None and rroot != root:
+                info = (CLASSES_META[0] or {}).get(rn)
+                idx = None
+                if info is not None:
+                    bks = getattr(info, "bases", None) \
+                        or ([info.base] if info.base else [])
+                    for i, b in enumerate(bks):
+                        if _root_of(b, CLASSES_META[0]) == root:
+                            idx = i
+                            break
+                if idx == 0:
+                    pass                  # 位 0：基址恒等
+                elif idx is not None:
+                    recv = f"&({expr(e.obj, {'value'}, scope)}.__base{idx})"
         rootf = flat(root) if root else "Object"
         s = f"(*(struct {rootf}_v **){recv})->{meth.name}({', '.join(parts)})"
         if "ref" in ctx or e.ty.kind != "ref":
