@@ -65,6 +65,7 @@ def decl_class(cd, classes_meta=None):
     """class → struct（扁平名；基类嵌入 __base 首成员=upcast 通道）。"""
     cname = flat(getattr(cd, "key", cd.name))
     bkey = getattr(cd, "base_key", None) or cd.base
+    bkeys = getattr(cd, "bases_keys", None) or         ([bkey] if bkey else [])
     parts = []
     info = classes_meta.get(getattr(cd, "key", cd.name))
     # cfront 布局：vtbl 槽只在根类子对象位 0——派生类经 __base 共享同一
@@ -72,8 +73,9 @@ def decl_class(cd, classes_meta=None):
     is_virt_root = info is not None and info.vslots and not cd.base
     if is_virt_root:
         parts.append(f"struct {cname}_v *__vtbl;")
-    if bkey:
-        parts.append(f"struct {flat(bkey)} {BASE_KEY};")
+    for i, bk in enumerate(bkeys):        # 0.0.43 多基类子对象顺次嵌入
+        fname = BASE_KEY if i == 0 else f"__base{i}"
+        parts.append(f"struct {flat(bk)} {fname};")
     for (mn, mt) in cd.members:
         parts.append(f"{type_c(mt)} {mn};")
     inner = " ".join(parts)
@@ -288,11 +290,14 @@ def lower_ctors(cd, classes_meta=None):
                 if m is None:
                     continue                 # 纯虚槽=NULL（抽象类不可实例化保证不可达）
                 vset.append(f"{cname}_vt.{slot} = {m.mname};")
+        bkeys = getattr(cd, "bases_keys", None) or             ([bkey] if bkey else [])
         for (tgt, args) in ctor.inits:
             rargs = ", ".join(expr(a, {"value"}, scope) for a in args)
-            if bkey and tgt == bkey:
-                body.append(f"{flat(bkey)}_ctor((struct {flat(bkey)} *)this_, "
-                            f"{rargs});")
+            if tgt in bkeys:
+                i = bkeys.index(tgt)      # 0.0.43 多基类 init
+                bk = bkeys[i]
+                recv = f"(struct {flat(bk)} *)this_" if i == 0                     else f"&this_->__base{i}"
+                body.append(f"{flat(bk)}_ctor({recv}, {rargs});")
             else:
                 body.append(f"this_->{tgt} = {rargs};")
         ustmts = stmts(ctor.body, scope, False)
@@ -774,6 +779,9 @@ def expr(e, ctx, scope):
                 f"{expr(e.r, {'value'}, scope)})")
     if isinstance(e, Un):
         if e.op == "&":
+            if getattr(e, "up_base", None) is not None:
+                recv = expr(e.e, {"value"}, scope)
+                return f"&({recv}.__base{e.up_base})"
             return f"&({expr(e.e, {'value'}, scope)})"
         if e.op == "*":
             return f"*({expr(e.e, {'value'}, scope)})"
@@ -790,10 +798,18 @@ def this_member(name, owner, scope):
 
 
 def this_recv(owner, scope):
-    """this 作接收者：跨类（方法声明在祖先类）→ 基类指针 cast。"""
+    """this 作接收者：跨类（方法声明在祖先类）→ 基类指针 cast。
+    0.0.43 多继承：owner=位 i>0 基类 → &this_->__base{i} 子对象取址。"""
     if owner is None or scope.get("__cls__") in (None, owner):
         return "this_"
     c = "const " if scope.get("__const__") else ""
+    info = (CLASSES_META[0] or {}).get(scope.get("__cls__"))
+    if info is not None:
+        bkeys = getattr(info, "bases", None) \
+            or ([info.base] if info.base else [])
+        for i, b in enumerate(bkeys):
+            if b == owner and i > 0:
+                return f"({c}struct {flat(owner)} *)&this_->__base{i}"
     return f"({c}struct {flat(owner)} *)this_"
 
 
@@ -888,7 +904,13 @@ def call(e, ctx, scope):
         return f"*({s})"
     recv_owner = scope.get("__recv_owner__")
     scope["__recv_owner__"] = getattr(e, "sig_owner", None)
-    parts = [recv_expr(e.obj, scope)]
+    rb = getattr(e, "recv_base", None)
+    if rb is not None:
+        # 0.0.43 多继承：接收者=派生对象，方法声明在位 i>0 基类
+        # → &recv.__base{i}（子对象取址）
+        parts = [f"&({expr(e.obj, {'value'}, scope)}.__base{rb})"]
+    else:
+        parts = [recv_expr(e.obj, scope)]
     for a in e.args:
         bind = getattr(a, "bind", "value")
         if bind == "addr":

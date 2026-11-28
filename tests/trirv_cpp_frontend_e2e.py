@@ -79,6 +79,7 @@ BEHAVIOR = [
     ("test40_template.cpp", 74),     # 0.0.40 显式模板实参 + 多类型参数
     ("test41_ctemplate.cpp", 28),    # 0.0.41 类模板惰性实例化 + 外联定义
     ("test42_ctemplate2.cpp", 136),  # 0.0.42 多参数/默认参数/全特化（Phase D 收官）
+    ("test43_multiinherit.cpp", 21),  # 0.0.43 多继承布局：base 偏移+this 调整
 ]
 # (文件, stderr 必含码)——拒绝性用例
 REJECT = [
@@ -97,6 +98,7 @@ REJECT = [
     ("test40b_targ_count.cpp", "显式实参数"),        # 0.0.40：显式实参数≠类型参数数 E0
     ("test41b_ext_concrete.cpp", "外联定义限模板参数形态"),  # 0.0.41：具体实参外联=子集边界
     ("test42b_missing_nondefault.cpp", "实参数"),    # 0.0.42：非默认位缺失 E0
+    ("test43b_ambiguous_member.cpp", "二义"),        # 0.0.43：多基类同名字面 E0
 ]
 
 os.makedirs(TMP, exist_ok=True)

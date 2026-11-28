@@ -25,6 +25,7 @@ Type = CType            # 兼容旧引用名（ADT 基类）
 class ClassDecl:
     def __init__(self, name, base):
         self.name, self.base = name, base
+        self.bases = []            # 0.0.43 多基类全列表（base=位 0 别名）
         self.ns = None             # 所属命名空间（0.0.13）
         self.nested_in = None      # 外层类键（0.0.22 嵌套类）
         self.member_access = {}    # name → public/private/protected（0.0.28）
@@ -478,15 +479,22 @@ class Parser:
         if name is None:
             name = self.expect("ID")[1]
         base = None
+        bases = []                             # 0.0.43 多基类全列表
         if self.accept("PUNCT", ":"):
-            self.expect("KW", "public")
-            base = self.qual_name(self.expect("ID")[1])
+            while True:
+                self.expect("KW", "public")
+                bases.append(self.qual_name(self.expect("ID")[1]))
+                if not self.accept("PUNCT", ","):
+                    break
+        base = bases[0] if bases else None     # 位 0 基类（0.0.26 兼容）
         if self.accept("PUNCT", ";"):
             cd = ClassDecl(name, base)
+            cd.bases = bases
             cd.forward = True                  # 前向声明（不完整类型）
             return cd
         self.expect("PUNCT", "{")
         cd = ClassDecl(name, base)
+        cd.bases = bases
         while not self.accept("PUNCT", "}"):
             t = self.peek()
             if t[0] == "KW" and t[1] in ("public", "private", "protected"):

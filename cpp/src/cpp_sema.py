@@ -34,6 +34,7 @@ class SemaError(Exception):
 class ClassInfo:
     def __init__(self, name, base):
         self.name, self.base = name, base
+        self.bases = []        # 0.0.43 多基类键全列表（base=位 0 别名）
         self.members = {}      # name → Type
         self.methods = []      # MethodDecl
         self.ctors = []        # CtorDecl
@@ -297,8 +298,9 @@ class Sema:
                 sc.declare(pn, pty)
             for (tgt, args) in ctor.inits:
                 if self.find_member(key, tgt) is None:
-                    raise SemaError(
-                        f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
+                    raise SemaError("E0",
+                                    f"构造初始化目标 {tgt} 不是 "
+                                    f"{cd.name} 成员")
                 for a in args:
                     self.check_expr(a, sc, False)
             if ctor.body is not None:
@@ -430,16 +432,20 @@ class Sema:
             for dt in getattr(cd, "dtors", []):
                 for ss in dt.body:
                     self.canon_stmt(ss, ns)
-            if cd.base:
-                bkey = self.resolve_class_name(cd.base, ns)
+            cd.bases = getattr(cd, "bases", None) or                 ([cd.base] if cd.base else [])
+            cd.bases_keys = []
+            for b in cd.bases:
+                bkey = self.resolve_class_name(b, ns)
                 if bkey is None:
-                    raise SemaError("E0", f"基类 {cd.base} 未定义")
-                cd.base_key = bkey
+                    raise SemaError("E0", f"基类 {b} 未定义")
+                cd.bases_keys.append(bkey)
+            cd.base_key = cd.bases_keys[0] if cd.bases_keys else None
         # Phase C：完整构建 + mangling 守卫
         for cd in decls:
             if getattr(cd, "forward", False):
                 continue
             info = self.classes[cd.key]
+            info.bases = list(getattr(cd, "bases_keys", []))
             if cd.base:
                 info.base = getattr(cd, "base_key", None)
             for (mn, mty) in cd.members:
@@ -553,19 +559,90 @@ class Sema:
                 return True
         return False
 
+    def _is_derived_from(self, k, base_cls):
+        """k（类键）是否派生自 base_cls（类名/键）——多基 DFS。"""
+        if k is None or base_cls is None:
+            return False
+        seen = set()
+        stack = [k]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            info = self.classes.get(cur)
+            if info is None:
+                continue
+            if cur == base_cls or info.name == base_cls:
+                return True
+            for b in (getattr(info, "bases", None)
+                      or ([info.base] if info.base else [])):
+                stack.append(b)
+        return False
+
+    def _base_index(self, k, base_cls):
+        """base_cls 在 k 的基类子对象序（位 0=0）。"""
+        info = self.classes.get(k)
+        if info is None:
+            return None
+        bkeys = getattr(info, "bases", None)             or ([info.base] if info.base else [])
+        for i, b in enumerate(bkeys):
+            if b == base_cls:
+                return i
+        return None
+
+    def _note_upcast(self, rhs, lt):
+        """派生→基指针初始化/赋值：rhs=Un&(类对象) 且目标为基类指针
+        → rhs.up_base=子对象序（位 0 不标注=零调整）。复杂接收形态
+        （非 Id/This）=E0（子集）。"""
+        from cpp_parser import Un, Id, This
+        if not (isinstance(rhs, Un) and rhs.op == "&"):
+            return
+        if not (lt.kind == "ptr" and lt.pointee.kind == "class"):
+            return
+        ot = getattr(rhs.e, "ty", None)
+        if ot is None or ot.kind != "class":
+            return
+        k = self.resolve_class_name(ot.name, self.cur_ns) or ot.name
+        bp = lt.pointee.name
+        if not self._is_derived_from(k, bp):
+            return
+        idx = self._base_index(k, bp)
+        if idx is None or idx == 0:
+            return                      # 位 0：&obj 零调整（现状）
+        if not isinstance(rhs.e, (Id, This)):
+            raise SemaError("E0",
+                            f"上转型接收形态限 Id/This（{bp}* = &复杂表达式"
+                            f"=子集边界）")
+        rhs.up_base = idx               # lower 发射 &recv.__base{idx}
+
     def find_member(self, cname, name):
         r = self.find_member_owner(cname, name)
         return r[0] if r else None
 
     def find_member_owner(self, cname, name):
-        """(Type, 声明该成员的类名)——cast 一致性的归属喂点。"""
-        c = cname
-        while c:
-            info = self.classes[c]
+        """(Type, 声明该成员的类名)——cast 一致性的归属喂点。
+        0.0.43 多基类 DFS（声明序）；两分支同名=E0 二义。"""
+        matches = []
+        seen = set()
+        def dfs(k):
+            if k is None or k in seen:
+                return
+            seen.add(k)
+            info = self.classes.get(k)
+            if info is None:
+                return
             if name in info.members:
-                return (info.members[name], c)
-            c = info.base
-        return None
+                matches.append((info.members[name], k))
+            for b in (getattr(info, "bases", None)
+                      or ([info.base] if info.base else [])):
+                dfs(b)
+        dfs(cname)
+        if len(matches) > 1:
+            raise SemaError("E0",
+                            f"{cname}.{name} 成员二义"
+                            f"（多基类同名字面——子集拒绝）")
+        return matches[0] if matches else None
 
     def find_static_owner(self, cname, name):
         c = cname
@@ -583,10 +660,16 @@ class Sema:
     def find_method_owner(self, cname, name, nargs):
         """(MethodDecl, 声明类名)——跨类调用的 cast 喂点。
         0.0.11：缺省实参可补全；歧义报错。
-        0.0.24：override 语义——查找止于首个含该方法名的类（派生遮蔽基类）。"""
+        0.0.24：override 语义——查找止于首个含该方法名的类（派生遮蔽基类）。
+        0.0.43 多基类 DFS（声明序：位 0 子树全查 → 位 1 子树——先序先得
+        即遮蔽）；同层歧义仍 E0。"""
         hits = []
-        c = cname
-        while c:
+        seen = set()
+
+        def visit(c):
+            if c is None or c in seen:
+                return False              # False=未命中声明
+            seen.add(c)
             found_here = False
             for m in self.classes[c].methods:
                 if m.name != name:
@@ -599,8 +682,15 @@ class Sema:
                         m.defaults[i] is not None for i in range(nargs, n)):
                     hits.append((m, c))
             if found_here and hits:
-                break                     # 本类有声明：遮蔽基类（重载仍同层全查）
-            c = self.classes[c].base
+                return True               # 本类有声明：遮蔽基类
+            info = self.classes[c]
+            for b in (getattr(info, "bases", None)
+                      or ([info.base] if info.base else [])):
+                if visit(b):
+                    return True
+            return False
+
+        visit(cname)
         if len(hits) > 1:
             cands = ", ".join(f"{k[1]}::{name}/{len(k[0].params)}参"
                               for k in hits)
@@ -772,13 +862,12 @@ class Sema:
                     sc.declare(pn, pty)
                 for (tgt, args) in ctor.inits:
                     btgt = self.resolve_class_name(tgt, cd.ns) or tgt
-                    if btgt == getattr(cd, "base_key", None):
-                        if cd.base is None:
-                            raise SemaError("E0", f"{tgt} 不是 {cd.name} 基类")
+                    if btgt in getattr(cd, "bases_keys", []):
                         tgt = btgt           # 规范化为限定键（lower 用）
                     elif self.find_member(cd.key, tgt) is None:
-                        raise SemaError(
-                            f"E0: 构造初始化目标 {tgt} 不是 {cd.name} 成员")
+                        raise SemaError("E0",
+                                        f"构造初始化目标 {tgt} 不是 "
+                                        f"{cd.name} 成员/基类")
                     for a in args:
                         self.check_expr(a, sc, False)
                 if ctor.body is not None:    # 声明 ctor：体=外联定义（0.0.41）
@@ -840,18 +929,20 @@ class Sema:
             if s.ty.kind == "ref":
                 # 引用局部声明：const T& r = 42 物化延寿；T& r = 42 拒绝（N8）
                 if s.init is None:
-                    raise SemaError(
-                        f"E0: 引用声明 {s.name} 需初始化器")
+                    raise SemaError("E0",
+                                    f"引用声明 {s.name} 需初始化器")
                 self.check_expr(s.init, sc, is_const)
                 if not s.ty.pointee.is_const \
                         and not getattr(s.init, "lval", False) \
                         and s.init.ty.kind != "ref":
-                    raise SemaError(
-                        f"N8: 非 const 引用 {s.name} 绑临时量（{_fmt(s.init)}）"
-                        f"——C++ 法：保持拒绝")
+                    raise SemaError("N8",
+                                    f"非 const 引用 {s.name} 绑临时量"
+                                    f"（{_fmt(s.init)}）"
+                                    f"——C++ 法：保持拒绝")
                 # 物化改写在 check 末尾统一跑
             elif s.init is not None:
                 self.check_expr(s.init, sc, is_const)
+                self._note_upcast(s.init, s.ty)   # 0.0.43：声明类型为准
                 # 调用初始化不再报错——lower 两步发射
             sc.declare(s.name, s.ty)
         elif isinstance(s, CtorStmt):
@@ -876,8 +967,8 @@ class Sema:
                 raise SemaError("E0",
                                 f"{s.cls} 构造歧义（{len(s.args)} 实参）")
             if not hits:
-                raise SemaError(
-                    f"E0: {s.cls} 无 {len(s.args)} 参构造")
+                raise SemaError("E0",
+                                f"{s.cls} 无 {len(s.args)} 参构造")
             s.sig = hits[0]
             while len(s.args) < len(s.sig.params):      # 默认补全
                 s.args.append(s.sig.defaults[len(s.args)])
@@ -1009,11 +1100,13 @@ class Sema:
             if expr.ty.kind == "ref":
                 return                          # 引用转发 ✓
             if not getattr(expr, "lval", False):
-                raise SemaError(
-                    "R1: 引用返回绑非左值——临时量物化=0.0.9 生命周期扩展")
+                raise SemaError("R1",
+                                "引用返回绑非左值——临时量物化"
+                                "=0.0.9 生命周期扩展")
             if meth.is_const:
-                raise SemaError(
-                    "K1: const 方法引用返回绑自身成员——写通道穿透 const")
+                raise SemaError("K1",
+                                "const 方法引用返回绑自身成员"
+                                "——写通道穿透 const")
         # VALUE 返回 ← REF 表达式：自动解引用（C++ 语义），lower 落 *(…)
 
     # ============ 表达式 ============
@@ -1109,6 +1202,14 @@ class Sema:
                 raise SemaError("E0", f"{ot.name}.{e.name} 无 {len(e.args)} 参重载")
             meth, e.sig_owner = hit
             self._guard_method_access(e.sig_owner, meth)   # 0.0.28
+            # 0.0.43 接收者子对象调整：声明类≠接收者类且非位 0 → 标注
+            # recv_base（lower 发射 &recv.__base{i}）；虚调用/指针接收者
+            # 不标注（虚=根槽共享；指针=已是指向子对象的类型）
+            if ot.name != e.sig_owner                     and not getattr(meth, "is_static", False)                     and not getattr(meth, "is_virtual", False)                     and ot.kind == "class":
+                rkey = self.resolve_class_name(ot.name, self.cur_ns)                     or ot.name
+                idx = self._base_index(rkey, e.sig_owner)
+                if idx:
+                    e.recv_base = idx
             # 0.0.26：cfront 共享槽布局落地——虚调用解锁
             if getattr(meth, "is_static", False):
                 e.static_call = True
@@ -1269,6 +1370,7 @@ class Sema:
         elif isinstance(e, Assign):
             lt = self.check_expr(e.lhs, sc, is_const)
             rt = self.check_expr(e.rhs, sc, is_const)
+            self._note_upcast(e.rhs, lt)     # 0.0.43 派生→基指针偏移
             self.const_guard(e.lhs, is_const)
             if not getattr(e.lhs, "lval", False) and lt.kind != "ref":
                 raise SemaError("E0", "赋值目标非左值且非引用")
@@ -1414,9 +1516,10 @@ class Sema:
                 elif pty.pointee.is_const:
                     a.bind = "mat"       # 0.0.10：const T& 绑临时量→物化
                 else:
-                    raise SemaError(
-                        f"N8: 非 const 引用形参绑定临时量（{_fmt(a)}）"
-                        f"——C++ 法：非常量左值引用不延寿，保持拒绝")
+                    raise SemaError("N8",
+                                    f"非 const 引用形参绑定临时量"
+                                    f"（{_fmt(a)}）——C++ 法：非常量"
+                                    f"左值引用不延寿，保持拒绝")
             elif pty.kind == "class":
                 if at.kind == "ref" or getattr(a, "lval", False):
                     a.bind = "addr"          # 对象左值取址
