@@ -41,8 +41,7 @@ static void enc_type_r(char *out, size_t cap, CType *ty) {
         return;
     }
     const char *m = ty->kind == TY_INT ? "i" : ty->kind == TY_CHAR ? "c"
-                  : ty->kind == TY_BOOL ? "b" : ty->kind == TY_VOID ? "v"
-                  : ty->kind;
+                  : ty->kind == TY_BOOL ? "b" : "v";
     strncat(out, m, cap - strlen(out));
 }
 
