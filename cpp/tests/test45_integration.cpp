@@ -4,7 +4,7 @@
 //   C 异常×B RTTI×虚分派：throw 穿过基指针虚调用（检查点在调用点展开）
 //   B RTTI：typeid 动态穿越基指针 + dynamic_cast 下转回派生
 //   E 多继承×A RAII：双基虚分派 + 多继承对象函数尾 dtor（g_log 可观测）
-//   全部惯用法=各带已验证形态；期望值 8 位安全（<256 强制自检）
+//   全部惯用法=各带已验证形态；期望值 <256（exit 通道 POSIX 截断 ABI 自检）
 template<typename T>
 T tmax(T a, T b) {
     if (a > b) { return a; }

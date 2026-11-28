@@ -5,7 +5,7 @@
 //   throw 展开路径：catch else 上浮前插 try 体 body_dtors 逆序
 //   函数级上浮（0.0.36 通道）：_eh_ret 前插全帧 dtor 逆序
 //   双调防御：函数尾调全部清单一次；上浮路径 return 后不走函数尾
-// 析构可观测：g_log = g_log + id（0.0.19 全局通道；位安全累加——
+// 析构可观测：g_log = g_log + id（0.0.19 全局通道；通道安全累加——
 // 复合赋值 += 未在子集内，勿用）
 int g_log = 0;
 class Res {

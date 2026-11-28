@@ -37,5 +37,6 @@ int main() {
     r5 = typeid(p2) == typeid(Shape);        // 0
     delete sq;
     return r1 + r2 * 2 + r3 * 4 + r4 * 8 + r5 * 16;   // 1+0+4+8+0 = 13
-    // 位权重 8 位安全（exit 通道 POSIX 截断 a0 & 0xFF——1101→77 教训三犯）
+    // 乘数归约 exit 通道安全（<256——POSIX 截断 ABI a0 & 0xFF，1101→77
+    // 教训三犯；乘数 1/2/4/8/16 为进制无关算术打包，非位运算）
 }
