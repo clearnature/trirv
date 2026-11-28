@@ -390,9 +390,11 @@ def _lower_is_ancestor(anc, cur, meta):
 
 
 def _root_of(cname, classes_meta):
-    """基类链上溯到根（vtbl 槽所在子对象）。"""
+    """基类链上溯到根（vtbl 槽所在子对象）；环防御（审计 F1）。"""
     c = cname
-    while c and c in classes_meta:
+    seen = set()
+    while c and c in classes_meta and c not in seen:
+        seen.add(c)
         info = classes_meta[c]
         if not info.base:
             return c

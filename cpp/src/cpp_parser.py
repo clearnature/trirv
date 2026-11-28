@@ -459,7 +459,10 @@ class Parser:
         if self.accept("KW", "const"):
             raise ParseError("自由函数无 const 后缀（const 仅限成员函数）")
         if any(d is not None for d in defaults):
-            raise ParseError("默认实参暂不支持（后续版本）") if c_link else None
+            # 审计 F2：条件表达式 raise 陷阱——非 c_link 时 raise None
+            # → TypeError crash（0.0.11 起自由函数默认实参从未工作）
+            raise ParseError(
+                "自由函数默认实参暂不支持（方法默认实参=0.0.11）")
         if self.peek()[1] == ";" and c_link:
             self.next()
             body = None                   # 原型声明（链接面）

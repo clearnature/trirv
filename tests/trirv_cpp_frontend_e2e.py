@@ -102,6 +102,9 @@ REJECT = [
     ("test42b_missing_nondefault.cpp", "实参数"),    # 0.0.42：非默认位缺失 E0
     ("test43b_ambiguous_member.cpp", "二义"),        # 0.0.43：多基类同名字面 E0
     ("test44b_same_slot.cpp", "同名虚槽"),           # 0.0.44：多基同名虚槽 E0
+    ("test46a_self_inherit.cpp", "继承自身"),        # 审计 F1：self-inherit E0
+    ("test46b_freedfl.cpp", "自由函数默认实参"),     # 审计 F2：raise None 陷阱
+    ("test46c_targs_nontmpl.cpp", "非模板函数"),     # 审计 F3：targs 静默忽略
 ]
 
 os.makedirs(TMP, exist_ok=True)

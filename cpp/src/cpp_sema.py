@@ -438,6 +438,9 @@ class Sema:
                 bkey = self.resolve_class_name(b, ns)
                 if bkey is None:
                     raise SemaError("E0", f"基类 {b} 未定义")
+                if bkey == cd.key:
+                    raise SemaError("E0", f"类 {cd.key} 继承自身"
+                                    f"（审计 F1：曾致 _root_of 死循环）")
                 cd.bases_keys.append(bkey)
             cd.base_key = cd.bases_keys[0] if cd.bases_keys else None
         # Phase C：完整构建 + mangling 守卫
@@ -1274,6 +1277,11 @@ class Sema:
                 return e.ty
             if e.name not in self.templates and \
                     self.resolve_class_name(e.name, self.cur_ns) is None:
+                if e.targs is not None:
+                    # 审计 F3：f<int>(1) 曾静默忽略 targs 按普通调用编译
+                    raise SemaError("E0",
+                                    f"{e.name} 非模板函数"
+                                    f"（显式模板实参不适用）")
                 pass
             elif e.name in self.templates:
                 # 0.0.39/40 模板调用：显式实参或按参数位推导 → 单态化实例
