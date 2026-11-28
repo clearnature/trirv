@@ -66,6 +66,14 @@ PTok *P_expect(const char *kind, const char *val) {
 }
 
 /* ---- 顶层 ---- */
+static Node *ch_tail(Node *head, Node *n) {
+    if (!head) return n;
+    Node *e = head;
+    while (e->next) e = e->next;
+    e->next = n;
+    return head;
+}
+
 Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
     P_toks = cpp_lex(src, srclen, &P_n);
     P_i = 0;
@@ -86,7 +94,7 @@ Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
             CType *ty = !strcmp(t->val, "char") ? ctype_char(0) : ctype_int(0);
             Node *sd = ast_new(NK_STATDECL, t->line);
             sd->s2 = strdup(cn); sd->s = strdup(nm); sd->ty = ty; sd->a = init;
-            sd->next = sdefs; sdefs = sd;
+            sdefs = ch_tail(sdefs, sd);
             continue;
         }
         if (t->kind == (const char *)"KW" &&
@@ -100,7 +108,7 @@ Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
             P_expect("PUNCT", ";");
             Node *g = ast_new(NK_VARDECL, t->line);
             g->s = strdup(nm); g->ty = ty; g->a = init;
-            g->next = globals; globals = g;
+            globals = ch_tail(globals, g);
             continue;
         }
         if (t->kind == (const char *)"KW" && !strcmp(t->val, "extern")) {
@@ -109,7 +117,7 @@ Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
         }
         if (t->kind == (const char *)"KW" && !strcmp(t->val, "template")) {
             Node *ft = p_templatedef();
-            ft->next = templates; templates = ft;
+            templates = ch_tail(templates, ft);
             continue;
         }
         if (t->kind == (const char *)"KW" && !strcmp(t->val, "namespace")) {
@@ -119,7 +127,7 @@ Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
         if (t->kind == (const char *)"KW" &&
             (!strcmp(t->val, "class") || !strcmp(t->val, "struct"))) {
             Node *cd = p_classdef(NULL, NULL);
-            if (cd) { cd->next = classes; classes = cd; }
+            if (cd) classes = ch_tail(classes, cd);
             continue;
         }
         if (t->kind == (const char *)"KW" && !strcmp(t->val, "int") &&
@@ -135,12 +143,12 @@ Node *cpp_parse_tu(const char *src, int srclen, int *has_main) {
              !strcmp(t->val, "const") || !strcmp(t->val, "int") ||
              !strcmp(t->val, "char") || !strcmp(t->val, "operator"))) {
             Node *f = p_funcdef(0);
-            f->next = funcs; funcs = f;
+            funcs = ch_tail(funcs, f);
             continue;
         }
         if (t->kind == (const char *)"ID") {
             Node *f = p_funcdef(0);
-            f->next = funcs; funcs = f;
+            funcs = ch_tail(funcs, f);
             continue;
         }
         parse_err(t->line, "不支持的顶层声明");

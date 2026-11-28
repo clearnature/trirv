@@ -254,6 +254,7 @@ C++ 前端 = 独立的预处理层（.cpp → .c），trirv_cc 只看到合法 C
 | 0.1.6 | parser 模板/EH/cast（全 TU 解析完） | 同上 |
 | **0.1.4c 合并** | **（2026-11-28 计划修订）0.1.4–6 三版合并一次交付**——通用槽 tagged union AST（cfront 式）+ 全语法解析器六文件（ast.h/ast.c/parser.c/type.c/class.c/method.c/tmpl.c/stmt.c/expr.c ~1500 行）+ **setjmp 恢复栈**（L3 试探语义——_try_tcall/_try_tspec 的 ParseError 回退对应物；p_parse_type 错误出口统一走 parse_err 入栈）+ **入口硬编码常量表**；parse 差分 **75/75 恒等一次通过**（70 ok + 5 双拒；空实参守卫/测试47c 值域/测试42 特化 expect(">") 均实测挖出） | ✓ 已验证（门禁 78 套全绿；L8 重演——lexer/types 套件构建 glob 修正） |
 | 0.1.7 | sema 符号表/canon/重载 | 符号表投影+诊断码恒等 |
+| **0.1.5 S1 WIP** | **（2026-11-28 断点）sema S1 落地**：cpp_sema.h（Sema 态/ClassInfo）+ cpp_sema_build.c（Phase A 键注册 key 存 s2/Phase B 基类解析【NK_BASE 混链采集修正——成员 side 曾被当基类实证】/Phase C 构建【strdup 勘误——snprintf 写 char* 指针曾 segv】）+ build_funcs（F7 签名检查）+ tricpp selftest-build。**已知 bug：test45 parse 挂死**（parse_err 试探内静默改动相关——setjmp 栈平衡待查；parse 差分套件暂出门禁，修复后回归）。S2-S6（canon/check/模板/lower/emit）待移植 | ⏳ WIP |
 | 0.1.8 | sema 类构建/检查点/EH 面 | 同上 |
 | 0.1.9 | sema 模板实例化/惰性 | 同上 |
 | 0.1.10 | lower 表达式/语句 | C 产物恒等 |
