@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""transpiler v0.0.39 —— C++ -> C 降级器（函数模板按需实例化）。
+"""transpiler v0.0.40 —— C++ -> C 降级器（模板显式实参/多类型参数）。
 
 用法：python3 cpp/transpiler.py input.cpp output.c
 
@@ -28,7 +28,7 @@ from cpp_lower import lower_tu                         # noqa: E402
 from cpp_emit import emit                              # noqa: E402
 from cpp_types import TypeError_                       # noqa: E402
 
-VERSION = "0.0.39"
+VERSION = "0.0.40"
 
 
 def transpile(src):

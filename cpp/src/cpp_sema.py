@@ -463,15 +463,17 @@ class Sema:
         for t in tdecls:
             self.templates[t.decl.name] = t
 
-    def instantiate(self, fname, conc_type):
-        """单态化：deepcopy 模板体 + T→concrete 替换 + 重 check + 注册。"""
+    def instantiate(self, fname, concs):
+        """单态化：deepcopy 模板体 + 类型参数→concrete 替换 + 重 check +
+        注册（0.0.40 多类型：concs 与 tvars 对齐，类名 :: 平化为 _）。"""
         tmpl = self.templates[fname]
-        inst_name = f"{fname}__{type_name(conc_type)}"
+        inst_name = fname + "".join(
+            "__" + type_name(c).replace("::", "_") for c in concs)
         if inst_name in self.instantiated:
             return self.instantiated[inst_name]
         clone = _copy.deepcopy(tmpl.decl)
         clone.name = inst_name
-        self._subst(clone, tmpl.tvar, conc_type)
+        self._subst(clone, list(zip(tmpl.tvars, concs)))
         clone.mname = inst_name                     # 约定名（单态化）
         clone.call_key = inst_name
         self.instantiated[inst_name] = clone
@@ -488,15 +490,16 @@ class Sema:
         self.funcs_list.append(clone)
         return clone
 
-    def _subst(self, decl, tvar, conc):
-        """T→concrete 类型替换（ret/params/body 类型通道）。"""
-        if decl.ret.kind == "class" and decl.ret.name == tvar:
-            decl.ret = _copy.deepcopy(conc)
-        for i, (pty, pn) in enumerate(decl.params):
-            if pty.kind == "class" and pty.name == tvar:
-                decl.params[i] = (_copy.deepcopy(conc), pn)
-        for ss in decl.body:
-            self._subst_stmt(ss, tvar, conc)
+    def _subst(self, decl, pairs):
+        """类型参数→concrete 替换（ret/params/body 类型通道；0.0.40 多对）。"""
+        for (tvar, conc) in pairs:
+            if decl.ret.kind == "class" and decl.ret.name == tvar:
+                decl.ret = _copy.deepcopy(conc)
+            for i, (pty, pn) in enumerate(decl.params):
+                if pty.kind == "class" and pty.name == tvar:
+                    decl.params[i] = (_copy.deepcopy(conc), pn)
+            for ss in decl.body:
+                self._subst_stmt(ss, tvar, conc)
 
     def _subst_stmt(self, s, tvar, conc):
         if isinstance(s, VarDecl):
@@ -934,25 +937,49 @@ class Sema:
                     self.resolve_class_name(e.name, self.cur_ns) is None:
                 pass
             elif e.name in self.templates:
-                # 0.0.39 模板调用：实参推导 T → 单态化实例
-                if len(e.args) == 0:
-                    raise SemaError("E0", f"模板 {e.name} 至少一实参（推导源）")
+                # 0.0.39/40 模板调用：显式实参或按参数位推导 → 单态化实例
+                tmpl = self.templates[e.name]
+                tvars = tmpl.tvars
+                if e.targs is not None:
+                    # 0.0.40 显式模板实参（无部分显式/空 <>）
+                    if len(e.targs) != len(tvars):
+                        raise SemaError(
+                            "E0", f"模板 {e.name} 显式实参数 "
+                            f"{len(e.targs)} ≠ 类型参数数 {len(tvars)}")
+                    inst = self.instantiate(e.name, list(e.targs))
+                    while len(e.args) < len(inst.params):
+                        e.args.append(inst.defaults[len(e.args)])
+                    self.check_args(e.args, inst, sc, is_const)
+                    e.sig, e.ty, e.lval = inst, inst.ret, False
+                    return e.ty
+                # 推导：param i 类型 Tj ← arg i（去 ref）；同 Tj 多参数须一致
+                if len(e.args) > len(tmpl.decl.params):
+                    raise SemaError("E0",
+                                    f"模板 {e.name} 实参数超形参数")
                 arg_tys = []
                 for a in e.args:
                     at = self.check_expr(a, sc, is_const)
-                    ab = at.pointee if at.kind == "ref" else at
-                    arg_tys.append(ab)
-                tvar = self.templates[e.name].tvar
-                conc = arg_tys[0]
-                if conc.kind != "class" or conc.name != tvar:
-                    pass   # 非 T 实参（混合）→ 0.0.40 显式实参面
-                for at2 in arg_tys[1:]:
-                    if at2 != conc:
-                        raise SemaError("E0",
-                                        f"模板 {e.name} 实参类型不一致"
-                                        f"（{type_name(conc)} vs {type_name(at2)}）"
-                                        f"——多类型参数=0.0.40")
-                inst = self.instantiate(e.name, conc)
+                    arg_tys.append(
+                        at.pointee if at.kind == "ref" else at)
+                concs = [None] * len(tvars)
+                for i, (pty, _pn) in enumerate(tmpl.decl.params):
+                    if i >= len(arg_tys):
+                        break   # 默认实参不参与推导（子集边界）
+                    if pty.kind == "class" and pty.name in tvars:
+                        j = tvars.index(pty.name)
+                        if concs[j] is None:
+                            concs[j] = arg_tys[i]
+                        elif concs[j] != arg_tys[i]:
+                            raise SemaError(
+                                "E0",
+                                f"模板 {e.name} 实参类型不一致"
+                                f"（{type_name(concs[j])} vs "
+                                f"{type_name(arg_tys[i])}）")
+                if any(c is None for c in concs):
+                    raise SemaError("E0",
+                                    f"模板 {e.name} 无法推导全部类型参数"
+                                    f"（默认实参不参与推导）")
+                inst = self.instantiate(e.name, concs)
                 while len(e.args) < len(inst.params):
                     e.args.append(inst.defaults[len(e.args)])
                 self.check_args(e.args, inst, sc, is_const)

@@ -86,6 +86,7 @@ class MethodCall:
 class FreeCall:
     def __init__(self, name, args):
         self.name, self.args = name, args
+        self.targs = None                # 0.0.40 显式模板实参（list|None）
 
 
 class New:
@@ -131,10 +132,11 @@ class Try:
 
 
 class FuncTemplate:
-    """template<typename T> T name(...) { body }（0.0.39 按需实例化）。"""
+    """template<typename T[, typename U…]> ret name(...) { body }
+    （0.0.39 按需实例化；0.0.40 多类型参数 tvars 列表）。"""
 
-    def __init__(self, tvar, decl):
-        self.tvar, self.decl = tvar, decl
+    def __init__(self, tvars, decl):
+        self.tvars, self.decl = tvars, decl
 
 
 class Bin:
@@ -281,8 +283,12 @@ class Parser:
         """template<typename T> T name(...) { body }——T 复用类通道。"""
         self.expect("KW", "template")
         self.expect("PUNCT", "<")
-        self.expect("KW", "typename")
-        tvar = self.expect("ID")[1]
+        tvars = []                        # 0.0.40 多类型参数
+        while True:
+            self.expect("KW", "typename")
+            tvars.append(self.expect("ID")[1])
+            if not self.accept("PUNCT", ","):
+                break
         self.expect("PUNCT", ">")
         ty = self.parse_type()
         nm = self.expect("ID")[1]
@@ -294,8 +300,8 @@ class Parser:
         body = self.block()
         fd = MethodDecl(nm, ty, params, False, body)
         fd.defaults = defaults
-        fd.tvar = tvar
-        return FuncTemplate(tvar, fd)
+        fd.tvars = tvars
+        return FuncTemplate(tvars, fd)
 
     def extern_c(self, funcs):
         """extern "C" { fdecl… } / extern "C" int f(params);——裸名链接面。
@@ -821,6 +827,30 @@ class Parser:
             else:
                 return e
 
+    def _try_tcall(self, nm):
+        """ID 后 <类型序列>( 实参形态 → FreeCall(targs)；否则游标复原
+        返回 None（0.0.40 歧义消解：static_cast<int>(x) 同形态先例；
+        a < b 比较回退 Bin 层——探针实证 tmax<int>(3,5) 曾被 Bin 误吃）。"""
+        mark = self.i
+        try:
+            self.expect("PUNCT", "<")
+            targs = [self.parse_type()]
+            while self.accept("PUNCT", ","):
+                targs.append(self.parse_type())
+            self.expect("PUNCT", ">")
+            if not (self.peek()[0] == "PUNCT" and self.peek()[1] == "("):
+                self.i = mark
+                return None
+            self.next()
+            args = [] if self.peek()[1] == ")" else self.exprlist()
+            self.expect("PUNCT", ")")
+            fc = FreeCall(nm, args)
+            fc.targs = targs
+            return fc
+        except ParseError:
+            self.i = mark
+            return None
+
     def primary(self):
         t = self.next()
         if t[0] == "NUM":
@@ -832,6 +862,9 @@ class Parser:
             return StrLit(t[1])
         if t[0] == "ID":
             nm = self.qual_name(t[1])          # geo::area → 单一名字串
+            tc = self._try_tcall(nm)           # 0.0.40 <T>(…) 形态
+            if tc is not None:
+                return tc
             if self.peek()[1] == "(" and self.peek()[0] == "PUNCT":
                 self.next()
                 args = [] if self.peek()[1] == ")" else self.exprlist()
