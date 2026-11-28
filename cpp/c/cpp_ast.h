@@ -35,6 +35,10 @@ typedef enum {
     NK_MEMBERDECL, NK_STATDECL
 } NKind;
 
+/* sema 引用类别 / 实参绑定 */
+enum { RK_NONE = 0, RK_VAR, RK_MEMBER, RK_STATIC, RK_CLASS };
+enum { BIND_NONE = 0, BIND_REF, BIND_ADDR, BIND_DEREF, BIND_VALUE, BIND_MAT };
+
 /* 访问级（Method/MemberDecl f1 低 2 位） */
 enum { ACC_PUBLIC = 0, ACC_PRIVATE = 1, ACC_PROTECTED = 2 };
 /* 方法/构造标志位（f1 高位） */
@@ -58,9 +62,32 @@ struct Node {
     char *ns;                 /* 类/函数命名空间（0.0.13） */
     char *nested_in;          /* 外层类键（0.0.22） */
     int forward;              /* 前向声明 */
+    int recv_base;            /* 0.1.1a 多继承接收者子对象序（位 0 不标） */
+    /* ---- sema 期字段（0.1.5 S2）---- */
+    CType *sty;               /* check_expr 解析类型（e.ty） */
+    int lval;
+    int ref_kind;             /* RK_NONE/RK_VAR/RK_MEMBER/RK_STATIC/RK_CLASS */
+    int bind;                 /* BIND_REF/ADDR/DEREF/VALUE/MAT */
+    char *owner;              /* 成员/静态归属类键 */
+    char *cname;              /* 类名引用键（typeid 面） */
+    Node *sig;                /* 解析 callee（NK_METHOD/NK_FUNCDECL） */
+    char *sig_owner;          /* callee 声明类键 */
+    Node *call;               /* operator=/conv 包装调用 */
+    Node *conv;               /* 拷贝初始化转换 ctor */
+    int user_copy;
+    char *throw_cls;          /* 0.0.38 类对象抛出 */
+    int ti_kind;              /* 0=static 1=dyn（typeid） */
+    char *ti_class;
+    char *dtor_key, *op_del;  /* delete 面 */
+    char *mname;              /* mangling 结果（lower 用） */
+    Node *fn_dtors;           /* RAII 对链（NK_INIT: s=var s2=ckey） */
+    Node *defaults;           /* 方法/函数默认实参链（d 槽复用） */
+    char *base_key;           /* Phase B 位 0 基类键（parse 层 base 字串） */
+    Node *bases_keys;         /* 多基键链（NK_BASE） */
 };
 
 Node *ast_new(NKind k, int line);
+Node *cpp_ast_num(long long v, int line);
 Node *ast_chain(Node *head, Node *item);   /* items 链追加，返回新头计数无效 */
 int ast_count(Node *chain);
 const char *acc_name(int f1);              /* ACC_* → "public"/... */

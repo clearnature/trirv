@@ -124,6 +124,8 @@ static void phase_c(Sema *S, Node *classes) {
     }
 }
 
+Sema *GS = NULL;                           /* rw 家族全局上下文（单 TU） */
+
 void sema_build_classes(Sema *S, Node *classes) {
     /* Phase A 时把 key 存入 ClassDecl.s2（phase_c 用 key 查 info） */
     phase_a(S, classes);

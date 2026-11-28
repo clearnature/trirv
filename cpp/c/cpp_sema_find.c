@@ -158,16 +158,38 @@ Node *sema_chain_impl(Sema *S, const char *ckey, const char *slot) {
     return NULL;
 }
 
-int sema_is_abstract(Sema *S, const char *ckey) {
-    ClassInfo *ci = ci_of(S, ckey);
-    if (!ci) return 0;
-    for (int i = 0; i < ci->nvslots; i++)
-        if (!sema_chain_impl(S, ckey, ci->vslots[i])) return 1;
-    return 0;
-}
 
 /* check_defaults：N_PARAM.c（默认实参）全量 check 在 check 主面做；
  * 此处仅存在性占位（S3 扩展）。 */
 void sema_check_defaults(Sema *S, Node *params) {
     (void)S; (void)params;
+}
+
+/* fn_dtors RAII 对链（NK_INIT: s=var, s2=ckey） */
+void sema_fn_dtor_push(Sema *S, const char *var, const char *ckey) {
+    Node *n = ast_new(NK_INIT, 0);
+    n->s = strdup(var); n->s2 = strdup(ckey);
+    n->next = S->fn_dtors; S->fn_dtors = n;
+}
+
+/* 审计 F6：指针↔整数隐式转换双向拒绝（零指针字面量 0 豁免） */
+void sema_guard_ptr_int(Sema *S, CType *lt, CType *rt, Node *rhs) {
+    (void)S;
+    extern Node *cpp_ast_num(long long v, int line);
+    CType *lb = lt->kind == TY_REF ? lt->pointee : lt;
+    CType *rb = rt->kind == TY_REF ? rt->pointee : rt;
+    if (lb->kind == TY_PTR && rb->kind == TY_INT) {
+        if (!(rhs->k == NK_NUM && rhs->num == 0))
+            sema_error("E0", "整数→指针隐式转换（reinterpret_cast=0.0.31 子集拒绝；零指针字面量 0 除外）");
+    }
+    if (lb->kind == TY_INT && rb->kind == TY_PTR)
+        sema_error("E0", "指针→整数隐式转换（reinterpret_cast=0.0.31 子集拒绝）");
+}
+
+int sema_is_abstract(Sema *S, const char *ckey) {
+    ClassInfo *ci = sema_find_class(S, ckey);
+    if (!ci) return 0;
+    for (int i = 0; i < ci->nvslots; i++)
+        if (!sema_chain_impl(S, ckey, ci->vslots[i])) return 1;
+    return 0;
 }

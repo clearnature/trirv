@@ -29,22 +29,36 @@ typedef struct ClassInfo {
     int incomplete;
 } ClassInfo;
 
+
+typedef struct Scope Scope;
+struct ScopeEnt { char *name; CType *ty; };
+struct Scope {
+    Scope *parent;
+    struct ScopeEnt vars[64];
+    int nvars;
+};
+
 typedef struct {
-    ClassInfo *classes[S_MAX_CLASSES];     /* 键表（key=info->key） */
+    ClassInfo *classes[S_MAX_CLASSES];
     int nclasses;
-    Node *funcs[S_MAX_FUNCS];              /* NK_FUNCDECL 链头数组（扁平） */
+    Node *funcs[S_MAX_FUNCS];
     int nfuncs;
-    Node *decls_list;                      /* 全类链（含模板实例注入） */
+    Node *decls_list;
     int ndefls;
-    Node *templates[S_MAX_CLASSES];        /* NK_TFUNC 链 */
+    Node *templates[S_MAX_CLASSES];
     int ntemplates;
-    Node *class_templates[S_MAX_CLASSES];  /* NK_TCLASS */
+    Node *class_templates[S_MAX_CLASSES];
     int nclass_templates;
-    char *cls_insts[S_MAX_CLASSES];        /* 已实例化类键 */
+    char *cls_insts[S_MAX_CLASSES];
     int ncls_insts;
-    Node *cur_cls;                         /* NK_CLASSDECL（检查上下文） */
+    Node *cur_cls;
     char *cur_ns;
-    char *cls_keys[S_MAX_CLASSES];         /* 类模板惰性实例化登记 */
+    Node *cur_method;                      /* 检查上下文（NK_METHOD） */
+    int eh_flag, cur_catch;                /* EH 门控/catch 深度（0.0.35/36） */
+    Node *fn_dtors;                        /* RAII 对链（NK_INIT） */
+    Node *gdecls;                          /* 全局链（NK_VARDECL） */
+    struct ScopeEnt gvars[64]; int ngvars;
+    struct { char *cls, *nm; CType *ty; } sdefs[64]; int nsdefs;
 } Sema;
 
 void sema_init(Sema *S);
@@ -53,5 +67,17 @@ void sema_build_funcs(Sema *S, Node *funcs);
 const char *sema_resolve_class(Sema *S, const char *name, const char *ns);
 ClassInfo *sema_find_class(Sema *S, const char *key);
 void sema_error(const char *code, const char *msg) __attribute__((noreturn));
+extern Sema *GS;
+void sema_check_all(Sema *S, Node *tu);
+void sema_check_stmts(Sema *S, Node *ss, Scope *sc, int is_const);    /* check 主循环（0.1.5 S2） */
+extern Sema *GS;                           /* rw 家族全局上下文（单 TU） */
+Node *sema_chain_impl(Sema *S, const char *ckey, const char *slot);
+void sema_fn_dtor_push(Sema *S, const char *var, const char *ckey);
+void sema_guard_ptr_int(Sema *S, CType *lt, CType *rt, Node *rhs);
+int sema_is_abstract(Sema *S, const char *ckey);
+CType *sema_check_expr(Sema *S, Node *e, Scope *sc, int is_const);
+void sema_check_args(Sema *S, Node *args, Node *meth, Scope *sc, int is_const);
+CType *sema_sc_find(Scope *sc, const char *name);
+void sema_sc_declare(Scope *sc, const char *name, CType *ty);
 
 #endif /* CPP_SEMA_H */

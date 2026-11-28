@@ -34,3 +34,9 @@ Node *cc_tmpl_reg(const char *name, Node *ct) {
     P_nctempls++;
     return ct;
 }
+
+Node *cpp_ast_num(long long v, int line) {
+    Node *n = ast_new(NK_NUM, line);
+    n->num = (long)v;
+    return n;
+}
