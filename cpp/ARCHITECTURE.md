@@ -236,3 +236,52 @@ _ZN1XC2Ev       → X::X() base ctor
 
 trirv_cc 原样编译降级 C——**C++ 前端不修改 trirv_cc**。
 C++ 前端 = 独立的预处理层（.cpp → .c），trirv_cc 只看到合法 C。
+
+## 十、0.1.x C 移植架构（2026-11-28 定稿）
+
+**验收主武器：差分恒等**（L1）——每层完成后，C 移植层输出 vs Python
+原型层输出恒等比对（63 个 e2e 语料为差分语料）。最终端到端：tricpp
+产物 C 与 transpiler.py 产物 C 逐字节恒等 + 双 VM 期望值全绿。
+
+### 十.一 原子分解表
+
+| 版本 | 内容 | 差分验收 |
+|---|---|---|
+| 0.1.2 | tricpp 骨架 + types ADT（tagged union+构造不变式） | selftest-types | ✓ 已验证（cpp/c/{cpp_types.h,cpp_types.c,tricpp.c}；ADT 不变式 7 项 C 镜像——匿名类/ref-of-ref abort 经 fork 验证；门禁第 76 套套件内动态构建 L8） |
+| 0.1.3 | lexer.c（token 流） | 63 语料 token 流恒等 vs cpp_lexer.py |
+| 0.1.4 | ast.h + parser 表达式/语句 | AST dump 恒等 |
+| 0.1.5 | parser 声明/类/成员 | 同上 |
+| 0.1.6 | parser 模板/EH/cast（全 TU 解析完） | 同上 |
+| 0.1.7 | sema 符号表/canon/重载 | 符号表投影+诊断码恒等 |
+| 0.1.8 | sema 类构建/检查点/EH 面 | 同上 |
+| 0.1.9 | sema 模板实例化/惰性 | 同上 |
+| 0.1.10 | lower 表达式/语句 | C 产物恒等 |
+| 0.1.11 | lower EH/类布局/ctor 序 | 同上 |
+| 0.1.12 | mangle.c + emit.c + driver 集成 | 63 语料全量端到端恒等+双 VM |
+
+### 十.二 教训转规格（回审七条，移植时强制）
+
+- **L1 差分恒等=验收主武器**：层内输出 vs Python 同层输出逐字节比对
+- **L2 错误面 TDD**：127 诊断点映射表随 ast.h 定稿；每层完成时 REJECT
+  语料（27 文件）跑诊断类别恒等——错误路径不再是 13% 盲区
+- **L3 API 诱错根治**：token 访问器 `tok_kind()/tok_val()` 显式字段
+  访问，禁裸元组位置比较（peek 三元组同坑 5 次的根治）
+- **L4 就地注入显式化**：模板实例注入=显式指针表参数（inst_funcs/
+  inst_classes），禁别名突变（funcs_list/decls_list 教训）
+- **L5 helper/指令层契约分离**：纯函数 helper（divmod 型）与指令级
+  语义（trap 型）分契约各自测试（0.1.1b 教训）
+- **L6 深度帽包装式**：解析深度计数=包装函数 ++/--（泄漏式计数平级
+  累加误拒——F8f 首版教训）；帽值 20000（50000 括号 segv 实证）
+- **L7 硬编码常量单头**：constants.h 集中（TIID_STEP=11、
+  TRAP_DIVZERO=136、TERMINATE=134、TRYTE_SLOT=9、EX_BUF=72、
+  PARSE_DEPTH=20000、BASE_SLOT_PREFIX="__base"、MONO_SEP="__"）
+- **L8 产物路径唯一化**：门禁套件内动态构建 tricpp（无 bin 缓存——
+  build.sh 产 cc/ 而门禁用 cc/bin/ 的假阴性教训）
+
+### 十.三 构建与门禁
+
+- `cpp/c/*.c|*.h` ≤300 行/文件；构建=门禁套件内 `gcc -std=gnu11 -O2`
+  产物落 tmp/（L8）
+- 套件：trirv_cpp_cport_types.py（0.1.2 起）→ 后续每层追加差分套件
+- 诊断：SemaError/ParseError 对应 exit 2 + stderr（类别码恒等，
+  文案不要求逐字节）

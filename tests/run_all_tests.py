@@ -195,6 +195,7 @@ SUITES = [
     ("trirv_cpp_frontend_e2e.py", "cpp 前端契约 151 项",  False, None),
     ("trirv_cpp_audit.py", "cpp 回审模糊 97 项",  False, None),
     ("trirv_cc_audit.py", "cc 双编译器回审 68 项",  False, None),
+    ("trirv_cpp_cport_types.py", "cpp cport types 7 项",  False, None),
     ("trirv_mdiff.py",            "M 扩展差分 700 项",        True,  None),
     ("trirv_wasm_e2e.py",         "Wasm 三路差分 112 例(含 P3 浮点 19)", True, None),
     ("trirv_tritref_test.py",     "tryte 参考实现 46164 项",  True,  None),
