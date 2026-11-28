@@ -621,6 +621,56 @@ class Sema:
                             "指针→整数隐式转换"
                             "（reinterpret_cast=0.0.31 子集拒绝）")
 
+    def _const_obj_guard(self, lhs):
+        """0.1.1 G1：const 对象写拒绝（K3）。拍板第 2 条「const 交 C
+        编译器」承诺失效实证——trirv_cc 接受 const int x=1; x=2;
+        （回审 P1①）——检查由前端承担。Id 直写 / const ref 穿写 /
+        const 对象成员写。"""
+        from cpp_parser import Id, Member
+        if isinstance(lhs, Id):
+            ty = getattr(lhs, "ty", None)
+        elif isinstance(lhs, Member):
+            ot = getattr(lhs.obj, "ty", None)
+            if ot is not None:
+                base = ot.pointee if ot.kind == "ref" else ot
+                if base.kind == "class" and base.is_const:
+                    raise SemaError("K3", "const 对象成员不可写")
+            ty = getattr(lhs, "ty", None)
+        else:
+            return
+        if ty is None:
+            return
+        if ty.kind == "ref":
+            if ty.is_const:                   # const T& 穿写
+                raise SemaError("K3", "const 引用目标不可写")
+            return
+        if ty.is_const:
+            raise SemaError("K3", "const 对象不可赋值")
+
+    def _class_size(self, key, seen=None):
+        """0.1.1 G2：类尺寸（tryte）——与 trirv_cc sizeof 逐项实证对齐：
+        每成员一律一槽 9（char/int/指针同——AB=9/AM=27 实证）、嵌套类
+        成员/基子对象=递归 size、虚根头部 __vtbl+__owner=18、空类=0。"""
+        info = self.classes.get(key)
+        if info is None:
+            return 0
+        seen = seen if seen is not None else set()
+        if key in seen:
+            return 0
+        seen.add(key)
+        sz = 0
+        if info.vslots and not info.base:
+            sz += 18
+        for b in (getattr(info, "bases", None)
+                  or ([info.base] if info.base else [])):
+            sz += self._class_size(b, seen)
+        for mty in info.members.values():
+            if mty.kind == "class":
+                sz += self._class_size(mty.name, seen)
+            else:
+                sz += 9
+        return sz
+
     def _note_upcast(self, rhs, lt):
         """派生→基指针初始化/赋值：rhs=Un&(类对象) 且目标为基类指针
         → rhs.up_base=子对象序（位 0 不标注=零调整）。复杂接收形态
@@ -1035,6 +1085,15 @@ class Sema:
             self.check_expr(s.expr, sc, is_const)
             if s.expr.ty.kind == "class" and getattr(s.expr, "lval", False):
                 s.throw_cls = s.expr.ty.name    # 0.0.38 类对象抛出（左值）
+                ckey = self.resolve_class_name(s.expr.ty.name,
+                                               self.cur_ns) \
+                    or s.expr.ty.name
+                sz = self._class_size(ckey)
+                if sz > 72:                   # 0.1.1 G2：__ex_buf 容量
+                    raise SemaError(
+                        "E0", f"throw 对象 {ckey} 尺寸 {sz} tryte "
+                        f"超 __ex_buf 容量 72（≤8 int 槽）——回审 P1②"
+                        f"（溢出实证：覆盖序幸存=静默内存破坏）")
             elif s.expr.ty.kind not in ("int", "char"):
                 raise SemaError("E0",
                                 f"throw 操作数限 int/char/类左值"
@@ -1424,6 +1483,7 @@ class Sema:
             lt = self.check_expr(e.lhs, sc, is_const)
             rt = self.check_expr(e.rhs, sc, is_const)
             self._ptr_int_guard(lt, rt, e.rhs)   # 审计 F6
+            self._const_obj_guard(e.lhs)     # 0.1.1 G1：const 对象写
             self._note_upcast(e.rhs, lt)     # 0.0.43 派生→基指针偏移
             self.const_guard(e.lhs, is_const)
             if not getattr(e.lhs, "lval", False) and lt.kind != "ref":

@@ -222,6 +222,8 @@ class Parser:
         self.i = 0
         self.collected_inner = []      # 嵌套类冒泡（0.0.22）
         self.class_templs = {}         # 类模板名 → ClassTemplate（0.0.41 外联归属）
+        self._blk_depth = 0            # 0.1.1 G4 嵌套深度计数
+        self._prim_depth = 0
 
     # ---- 基元 ----
     def peek(self, k=0):
@@ -292,6 +294,9 @@ class Parser:
                 raise ParseError(f"L{t[2]}: 不支持的顶层声明 {t[1]!r}")
         classes.extend(self.collected_inner)
         self.collected_inner = []
+        if main is None:
+            raise ParseError(
+                "缺 main（可执行 TU 必需——0.1.1 G5：空 TU 曾静默通过）")
         return classes, funcs, globals_, sdefs, templates, main
 
     def templatedef(self):
@@ -779,10 +784,18 @@ class Parser:
 
     # ---- 语句 ----
     def block(self):
-        self.expect("PUNCT", "{")
+        self._blk_depth += 1
+        if self._blk_depth > 150:         # 0.1.1 G4：嵌套深度限制
+            self._blk_depth -= 1
+            raise ParseError("块嵌套过深（>150）——子集边界（诚实拒绝，"
+                             "非 RecursionError crash）")
         ss = []
-        while not self.accept("PUNCT", "}"):
-            ss.append(self.stmt())
+        try:
+            self.expect("PUNCT", "{")
+            while not self.accept("PUNCT", "}"):
+                ss.append(self.stmt())
+        finally:
+            self._blk_depth -= 1
         return ss
 
     def stmt(self):
@@ -967,7 +980,11 @@ class Parser:
         if lv >= len(self.BINLV):
             return self.unary()
         l = self.binary(lv + 1)
+        n_ops = 0
         while self.peek()[0] == "PUNCT" and self.peek()[1] in self.BINLV[lv]:
+            n_ops += 1
+            if n_ops > 200:               # 0.1.1 G4：同层链长限制（lower/sema
+                raise ParseError("表达式链过长（>200 操作符）——子集边界")
             op = self.next()[1]
             l = Bin(op, l, self.binary(lv + 1))
         return l
@@ -1030,12 +1047,27 @@ class Parser:
             return None
 
     def primary(self):
+        self._prim_depth += 1
+        if self._prim_depth > 45:         # 0.1.1 G4：表达式嵌套限制
+            # （80 层×~12 Python 帧/层 < 栈限 1000——校准实证）
+            self._prim_depth -= 1
+            raise ParseError("表达式嵌套过深（>45）——子集边界（每层括号走完整优先级栈 ~18 帧——校准实证）")
+        try:
+            return self._primary_body()
+        finally:
+            self._prim_depth -= 1
+
+    def _primary_body(self):
         t = self.next()
         if t[0] == "NUM":
             s = t[1]
             if "." in s or "e" in s.lower():
                 raise ParseError(f"L{t[2]}: 浮点字面量暂不支持 {s!r}")
-            return Num(int(s, 0))
+            v = int(s, 0)
+            if v >= 3 ** 45:              # 0.1.1 G3：45-trit 字值域
+                raise ParseError(
+                    f"L{t[2]}: 字面量 {s} 超 45-trit 字值域（<3^45）")
+            return Num(v)
         if t[0] == "STR":
             return StrLit(t[1])
         if t[0] == "ID":

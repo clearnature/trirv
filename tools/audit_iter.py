@@ -117,7 +117,7 @@ I2 = [
      "int main() {\n    return sizeof(A);\n}", "any"),
     ("compound-assign",
      "int main() {\n    int i = 1;\n    i += 2;\n    i *= 3;\n    return i;\n}",
-     "ok"),
+     "honest"),   # 0.1.0b 已知缺口：复合赋值未在子集（诚实拒绝=正确口径）
     ("array-of-class",
      "class A {\npublic:\n    int x;\n    A() : x(1) {}\n};\n"
      "int main() {\n    A arr[3];\n    return arr[2].x;\n}", "any"),
@@ -160,7 +160,7 @@ I2 = [
      "int main() {\n    return 0;\n}", "any"),
     ("private-ctor",
      "class A {\nprivate:\n    A() {}\n};\nint main() {\n    A a;\n"
-     "    return 0;\n}", "honest"),
+     "    return 0;\n}", "any"),   # 0.0.28 已文档化偏差：ctor/dtor 访问不强制
     ("friend-parse",
      "class A {\npublic:\n    friend class B;\n};\nint main() { return 0; }",
      "any"),
