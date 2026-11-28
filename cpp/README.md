@@ -31,6 +31,7 @@ C 异常 34–38 / D 模板 39–42 / E 多继承 43–44；集成回归 test45 
   ≤72 tryte（8 int 槽，`_class_size` 公式与 trirv_cc sizeof 实证对齐）；
   字面量 <3^45；块嵌套 ≤150 / 表达式括号 ≤45 / 同层链 ≤200（超限=诚实
   ParseError 非 crash）；可执行 TU 必须有 main
+- C 编译器（0.1.1c 甄别后）：可执行 .trv 必须有 main；未终止注释/零长数组/break-continue 出循环=编译错误；解析深度帽 20000（50000 括号 segv 实证）；**同名局部=槽复用（扁平模型块级遮蔽实现——文档化偏差，块作用域=0.1.x+）**
 - 硬编码常量（C 移植规格化）：tiid=seq×11、基本 ti=1/2、`__ex_buf[72]`、
   terminate 134、exit 0xFF（POSIX ABI）、EH 拷贝 stride 9、`__base{i}`、
   `{name}__{type}` 单态化、类尺寸槽单位 9

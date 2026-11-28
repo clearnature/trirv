@@ -303,7 +303,9 @@ static void lex(const char*src){
     while(*p){
         if(isspace((unsigned char)*p)){p++;continue;}
         if(p[0]=='/'&&p[1]=='/'){ while(*p&&*p!='\n')p++; continue; }
-        if(p[0]=='/'&&p[1]=='*'){ p+=2; while(*p&&!(p[0]=='*'&&p[1]=='/'))p++; if(*p)p+=2; continue; }
+        if(p[0]=='/'&&p[1]=='*'){ p+=2; while(*p&&!(p[0]=='*'&&p[1]=='/'))p++;
+            if(!*p){ fprintf(stderr,"unterminated block comment\n"); exit(1); }  /* 0.1.1c F8b */
+            p+=2; continue; }
         if(*p=='#'){                                        /* 行指令（2026-11-22 A6）：
                #pragma weak a = b —— 弱别名（a 引用绑 b 的体，强定义可覆盖）；
                其余 # 行跳过（本编译器无预处理指令集） */
@@ -781,7 +783,7 @@ static Node* parse_assign(void){
     }
     return l;
 }
-static Node* parse_expr(void){
+static Node* parse_expr_r(void){  /* F8f 包装式：体在此，帽在包装 */
     /* 三目 cond ? a : b（右结合，优先级在赋值之上、|| 之下） */
     Node*c=parse_assign();
     if(at("?")){
@@ -861,6 +863,8 @@ static Node* parse_decl(void){
         /* 数组维度并入类型: int a[100] -> "int[100]" */
         while(at("[")){
             take(); char cnt[32]; dim_text(cnt,sizeof(cnt)); expect("]");
+            if(!strcmp(cnt,"0")){ fprintf(stderr,              /* 0.1.1c F8e */
+                "zero-size array\n"); exit(1); }
             char buf[256]; snprintf(buf,sizeof(buf),"%s[%s]",dty,cnt);
             dty=malloc(256); snprintf(dty,256,"%s",buf);
         }
@@ -894,7 +898,20 @@ static int is_decl_start(void){
     return 0;
 }
 
+static int PDEPTH=0;  /* 0.1.1c F8f：解析深度帽（50000 括号 segv 实证——
+                          20000 帽留 2.5× 余量；包装式计数防平级累加） */
+static int EDEPTH=0;
+static Node* parse_stmt_r(void);
 static Node* parse_stmt(void){
+    if(++PDEPTH>20000){ fprintf(stderr,"statement nesting too deep\n"); exit(1); }
+    Node*n=parse_stmt_r(); PDEPTH--; return n;
+}
+static Node* parse_expr_r(void);
+static Node* parse_expr(void){
+    if(++EDEPTH>20000){ fprintf(stderr,"expression nesting too deep\n"); exit(1); }
+    Node*n=parse_expr_r(); EDEPTH--; return n;
+}
+static Node* parse_stmt_r(void){  /* F8f 包装式：体在此，帽在包装 */
     /* C 标签语句 name:（musl strlcpy 的 finish: 惯用法）——
        TK_ID + ":" 且非 case/default 形态 */
     if(atk(TK_ID)&&TOKS[IPOS+1].s&&!strcmp(TOKS[IPOS+1].s,":")
@@ -3234,8 +3251,12 @@ static void gen_stmt(Node*n){
         if(FUNC_EPILOGUE) emitf("JAL zero, %s",FUNC_EPILOGUE);
         else emitf("JALR zero, 0(ra)");
         break;
-    case N_BREAK: if(NLOOP>0) emitf("JAL zero, %s",LOOPEND[NLOOP-1]); break;
-    case N_CONT:  if(NLOOP>0) emitf("JAL zero, %s",LOOPCONT[NLOOP-1]); break;
+    case N_BREAK: if(NLOOP>0) emitf("JAL zero, %s",LOOPEND[NLOOP-1]);
+                  else { fprintf(stderr,"break outside loop\n"); exit(1); }  /* 0.1.1c F8d */
+                  break;
+    case N_CONT:  if(NLOOP>0) emitf("JAL zero, %s",LOOPCONT[NLOOP-1]);
+                  else { fprintf(stderr,"continue outside loop\n"); exit(1); }  /* 0.1.1c F8d */
+                  break;
     default: break;
     }
 }
@@ -3245,6 +3266,11 @@ static void collect_decls(Node*n){
     switch(n->k){
     case N_DECL:
         for(int i=0;i<n->ndecls;i++){
+            /* 0.1.1c F8c 回退：同名=槽复用是扁平局部模型的**块级遮蔽
+             * 实现**（test35-38/45/time 全依赖——catch 体内 e、try 体
+             * 内 r 与外层同名）。同块重声明与跨块遮蔽在无块作用域
+             * 模型下不可区分——C 非法但方言容忍，偏差文档化（块作用
+             * 域=0.1.x+ 面）。 */
             if(findloc(n->dnames[i])) continue;
             LocVar*v=loc_new(); v->name=n->dnames[i]; v->ty=n->dtypes[i];
             int isarr; ty_size(v->ty,&isarr);
@@ -4359,6 +4385,18 @@ int main(int argc,char**argv){
      * 而 __libc_start_main 这类前向引用在第一遍时 main 还没生成。
      * 第一遍：_start + 每函数"标签+1条返回"占位，只为锁定标签行号；
      * 第二遍：清空重生成（此时 fn_label_addr 能查到正确地址）。 */
+    {   /* 0.1.1c F8a：可执行 .trv 必须有 main（回审——空文件/缺 main
+         * 曾静默产出；.trvo 目标文件豁免） */
+        int is_trvo_out = strlen(argv[2])>5 &&
+            !strcmp(argv[2]+strlen(argv[2])-5,".trvo");
+        if(!is_trvo_out){
+            int have_main=0;
+            for(int i=0;i<NFN;i++) if(!strcmp(FNS[i]->s,"main")) have_main=1;
+            if(!have_main){ fprintf(stderr,
+                "no 'main' defined (executable output requires main)\n");
+                exit(1); }
+        }
+    }
     for(int pass=0;pass<2;pass++){
         if(pass==1){ NOUT=0; LBL=0;
             emitf("_start:");                  /* _start 也得重来（占用指令下标） */
