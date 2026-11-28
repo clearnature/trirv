@@ -603,6 +603,24 @@ class Sema:
                 return i
         return None
 
+    def _ptr_int_guard(self, lt, rt, rhs):
+        """审计 F6：指针↔整数隐式转换双向拒绝（0.0.31 只查了显式
+        reinterpret_cast——隐式赋值/初始化漏查，静默错编实证）。
+        Num 0 → 任何指针（零指针语义，test33 np=0 先例）。"""
+        from cpp_parser import Num
+        rb = rt.pointee if rt.kind == "ref" else rt
+        lb = lt.pointee if lt.kind == "ref" else lt
+        if lb.kind == "ptr" and rb.kind == "int":
+            if not (isinstance(rhs, Num) and rhs.v == 0):
+                raise SemaError("E0",
+                                "整数→指针隐式转换"
+                                "（reinterpret_cast=0.0.31 子集拒绝；"
+                                "零指针字面量 0 除外）")
+        if lb.kind == "int" and rb.kind == "ptr":
+            raise SemaError("E0",
+                            "指针→整数隐式转换"
+                            "（reinterpret_cast=0.0.31 子集拒绝）")
+
     def _note_upcast(self, rhs, lt):
         """派生→基指针初始化/赋值：rhs=Un&(类对象) 且目标为基类指针
         → rhs.up_base=子对象序（位 0 不标注=零调整）。复杂接收形态
@@ -682,8 +700,12 @@ class Sema:
             if c is None or c in seen:
                 return False              # False=未命中声明
             seen.add(c)
+            cinfo = self.classes.get(c)
+            if cinfo is None:
+                raise SemaError("E0",
+                                f"类 {c} 未定义（{name} 解析——审计 F7）")
             found_here = False
-            for m in self.classes[c].methods:
+            for m in cinfo.methods:
                 if m.name != name:
                     continue
                 found_here = True
@@ -710,9 +732,22 @@ class Sema:
         return hits[0] if hits else None
 
     def build_funcs(self, funcs):
-        """自由函数符号表：ns 函数以 ns::name 为键（限定调用 + ns 内裸调）。"""
+        """自由函数符号表：ns 函数以 ns::name 为键（限定调用 + ns 内裸调）。
+        审计 F7：签名类型未定义 → E0（裸 T 曾静默注册、体内算子解析
+        才 KeyError crash——诚实于声明处）。"""
         self.funcs = {}            # call-name → [MethodDecl…]
         self.funcs_list = funcs
+        for f in funcs:
+            fkey = getattr(f, "key", None) or f.name
+            for (pty, _pn) in f.params:
+                if pty.kind == "class" and \
+                        self.resolve_class_name(pty.name, None) is None:
+                    raise SemaError("E0",
+                                    f"{fkey}: 形参类型 {pty.name} 未定义")
+            if f.ret.kind == "class" and \
+                    self.resolve_class_name(f.ret.name, None) is None:
+                raise SemaError("E0",
+                                f"{fkey}: 返回类型 {f.ret.name} 未定义")
         for f in funcs:
             clink = getattr(f, "c_link", False)
             if clink:
@@ -953,7 +988,8 @@ class Sema:
                                     f"——C++ 法：保持拒绝")
                 # 物化改写在 check 末尾统一跑
             elif s.init is not None:
-                self.check_expr(s.init, sc, is_const)
+                it = self.check_expr(s.init, sc, is_const)
+                self._ptr_int_guard(s.ty, it, s.init)   # 审计 F6
                 self._note_upcast(s.init, s.ty)   # 0.0.43：声明类型为准
                 # 调用初始化不再报错——lower 两步发射
             sc.declare(s.name, s.ty)
@@ -1387,6 +1423,7 @@ class Sema:
         elif isinstance(e, Assign):
             lt = self.check_expr(e.lhs, sc, is_const)
             rt = self.check_expr(e.rhs, sc, is_const)
+            self._ptr_int_guard(lt, rt, e.rhs)   # 审计 F6
             self._note_upcast(e.rhs, lt)     # 0.0.43 派生→基指针偏移
             self.const_guard(e.lhs, is_const)
             if not getattr(e.lhs, "lval", False) and lt.kind != "ref":

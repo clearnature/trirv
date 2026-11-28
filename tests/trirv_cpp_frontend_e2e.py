@@ -105,6 +105,9 @@ REJECT = [
     ("test46a_self_inherit.cpp", "继承自身"),        # 审计 F1：self-inherit E0
     ("test46b_freedfl.cpp", "自由函数默认实参"),     # 审计 F2：raise None 陷阱
     ("test46c_targs_nontmpl.cpp", "非模板函数"),     # 审计 F3：targs 静默忽略
+    ("test46d_try_nocatch.cpp", "try 无 catch"),     # 审计 F4：零 catch 误收
+    ("test46e_ptr_int.cpp", "隐式转换"),             # 审计 F6：指针/整数互转
+    ("test46f_undef_class.cpp", "未定义"),           # 审计 F7：签名未定义类
 ]
 
 os.makedirs(TMP, exist_ok=True)

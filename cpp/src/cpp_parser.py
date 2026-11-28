@@ -817,8 +817,8 @@ class Parser:
             self.next()                       # 0.0.35 try/catch
             tbody = self.block()
             catches = []
-            while self.peek() == ("KW", "catch") or \
-                    (self.peek()[0] == "KW" and self.peek()[1] == "catch"):
+            while self.peek()[0] == "KW" and \
+                    self.peek()[1] == "catch":
                 self.next()
                 self.expect("PUNCT", "(")
                 if self.accept("PUNCT", "..."):
@@ -829,6 +829,10 @@ class Parser:
                 cvar = self.expect("ID")[1]
                 self.expect("PUNCT", ")")
                 catches.append((cty, cvar, self.block()))
+            if not catches:
+                raise ParseError(
+                    f"L{t[2]}: try 无 catch（审计 F4：曾误收——"
+                    f"等价函数级上浮形态未定义）")
             return Try(tbody, catches)
         if t[0] == "KW" and t[1] == "delete":
             self.next()
